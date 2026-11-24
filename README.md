@@ -1,6 +1,6 @@
 # Zombiebox
 
-A single-player isometric zombie survival sandbox. The browser prototype lets you scavenge a residential block and use your supplies to clear three approaching zombies. Native Android and iOS apps are planned.
+A single-player isometric zombie survival sandbox. In the browser playtest, enter the house on Birch Street, scavenge a pistol, and clear three zombies from the block. Native Android and iOS apps are planned.
 
 ## Run the browser playtest
 
@@ -10,7 +10,7 @@ From the repository root, start the dev server with stable Rust 1.87 or newer.
 cargo run --locked -p zombiebox-web
 ```
 
-Open `http://127.0.0.1:8765`. Use the on-screen controls or **WASD** or the **arrow keys** to move, **L** to scavenge, **Space** to blast, and **Escape** to pause. Stand on the marked cache before scavenging and get within range of a zombie before blasting.
+Open `http://127.0.0.1:8765`. Follow the lit doorway and stand on the marked crate to scavenge. **Fire** highlights when the pistol has a clear shot. Use the on-screen controls or move with **WASD** or the **arrow keys**, scavenge with **L**, fire with **Space**, and pause with **Escape**.
 
 ### Play on Android
 
@@ -29,7 +29,7 @@ Open `http://<tailscale-ip>:8765` on the phone, substituting the development mac
 cargo run --locked -p zombiebox-core --example survival -- 42
 ```
 
-`42` is the world seed. The example runs a fixed sequence and prints the remaining supplies, zombie count, and effects after each command. The same seed and commands reproduce the encounter.
+`42` is the world seed. The example replays the original cache and blast encounter used by the headless tests and prints the results after each command.
 
 ## Project structure
 

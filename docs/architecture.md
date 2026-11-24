@@ -21,6 +21,8 @@ The checked-in C ABI lets a native owner create a run, step it, copy its HUD, an
 
 The dev host owns each `Game` in Rust and serves a Canvas client. The client drives the 20 Hz clock, sends ordered batches of up to three commands, and renders the returned tile window, actors, HUD, and tick events. The simulation advances only when a command batch arrives. This lets Android Chrome test the encounter and touch controls on the Debian host through Tailscale.
 
+The browser host starts the residential scenario. Rust defines the playable bounds, house walls, doorway, and pistol cache. The same rules govern player collision, zombie pathfinding, and the current clear shot. The renderer uses the house geometry for roof cutaway and the shot event for the tracer and muzzle flash. The headless example and existing C callers continue to start the original encounter.
+
 The browser transport and Canvas view are specific to the playtest. The native Android view will own its game locally and can reuse the core's commands, snapshots, and events. The iOS adapter can use the same core contracts and native renderer after the Android device experiment.
 
 ## One frame on a phone

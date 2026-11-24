@@ -14,6 +14,7 @@ const VIEW: i32 = 23;
 const INDEX: &str = include_str!("../../../apps/web/index.html");
 const JS: &str = include_str!("../../../apps/web/game.js");
 const CSS: &str = include_str!("../../../apps/web/style.css");
+const SCENE: &str = include_str!("../../../apps/web/scene.js");
 
 struct Session {
     seed: u64,
@@ -163,6 +164,7 @@ fn route(method: &str, path: &str, body: &[u8], state: &mut HostState) -> Vec<u8
         return match path {
             "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX.as_bytes()),
             "/game.js" => response(200, "text/javascript; charset=utf-8", JS.as_bytes()),
+            "/scene.js" => response(200, "text/javascript; charset=utf-8", SCENE.as_bytes()),
             "/style.css" => response(200, "text/css; charset=utf-8", CSS.as_bytes()),
             _ => response(404, "text/plain", b"not found\n"),
         };
@@ -187,7 +189,7 @@ fn route(method: &str, path: &str, body: &[u8], state: &mut HostState) -> Vec<u8
         }
         let id = state.next_id;
         state.next_id = state.next_id.wrapping_add(1).max(1);
-        let game = Game::new(seed);
+        let game = Game::residential(seed);
         state.sessions.insert(id, Session { seed, game });
         state.order.push_back(id);
         return match state_json(id, &state.sessions[&id], &[]) {
@@ -259,9 +261,30 @@ fn state_json(id: u64, s: &Session, events: &[(u64, Event)]) -> Result<String, s
     let mut out = String::new();
     write!(
         out,
-        "{{\"id\":\"{id}\",\"seed\":\"{}\",\"tick\":{},\"player\":{{\"x\":{},\"y\":{}}},\"health\":{},\"armed\":{},\"supplies\":{},\"zombies\":[",
+        "{{\"id\":\"{id}\",\"seed\":\"{}\",\"tick\":{},\"player\":{{\"x\":{},\"y\":{}}},\"health\":{},\"armed\":{},\"supplies\":{}",
         s.seed, hud.tick, hud.player.x, hud.player.y, hud.health, hud.armed, hud.supplies
     )?;
+    if let Some(house) = s.game.house() {
+        write!(
+            out,
+            ",\"house\":{{\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"door\":{{\"x\":{},\"y\":{}}}}}",
+            house.x, house.y, house.width, house.height, house.door.x, house.door.y
+        )?;
+    }
+    if let Some((min, max)) = s.game.block_bounds() {
+        write!(
+            out,
+            ",\"block\":{{\"min\":{{\"x\":{},\"y\":{}}},\"max\":{{\"x\":{},\"y\":{}}}}}",
+            min.x, min.y, max.x, max.y
+        )?;
+    }
+    out.push_str(",\"aim\":");
+    if let Some(aim) = s.game.shot_target() {
+        write!(out, "{{\"x\":{},\"y\":{}}}", aim.x, aim.y)?;
+    } else {
+        out.push_str("null");
+    }
+    out.push_str(",\"zombies\":[");
     for (i, z) in s.game.snapshot().zombies.iter().enumerate() {
         if i > 0 {
             out.push(',')
@@ -314,6 +337,11 @@ fn state_json(id: u64, s: &Session, events: &[(u64, Event)]) -> Result<String, s
                 out,
                 "{{\"type\":\"explosion\",\"tick\":{tick},\"x\":{},\"y\":{}}}",
                 at.x, at.y
+            )?,
+            Event::Gunshot { from, at } => write!(
+                out,
+                "{{\"type\":\"gunshot\",\"tick\":{tick},\"from\":{{\"x\":{},\"y\":{}}},\"at\":{{\"x\":{},\"y\":{}}}}}",
+                from.x, from.y, at.x, at.y
             )?,
             Event::Hurt => write!(out, "{{\"type\":\"hurt\",\"tick\":{tick}}}")?,
             Event::Died => write!(out, "{{\"type\":\"died\",\"tick\":{tick}}}")?,

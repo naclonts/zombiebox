@@ -22,9 +22,14 @@
             <strong> ZOMBIEBOX </strong>
           </div>
         </div>
-        <button aria-label="How to play" class="icon-button" id="help">
-          ?
-        </button>
+        <div class="toolbar">
+          <button aria-label="Mute sound" aria-pressed="false" class="icon-button" id="sound">
+            <span aria-hidden="true">♪</span>
+          </button>
+          <button aria-label="Pause and show controls" class="icon-button" id="help">
+            <span aria-hidden="true">Ⅱ</span>
+          </button>
+        </div>
       </header>
       <section aria-label="Zombie survival game" class="game">
         <div class="hud" inert>
@@ -40,7 +45,7 @@
           </div>
           <div class="hud-stats">
             <div>
-              <span class="eyebrow"> SUPPLIES </span>
+              <span class="eyebrow" id="weapon-label">UNARMED</span>
               <strong id="supplies"> — </strong>
             </div>
             <div>
@@ -54,13 +59,11 @@
           <div class="world-top">
             <span>
               <i> </i>
-              THE OUTSKIRTS
+              BIRCH STREET
             </span>
-            <span id="tick"> DAY 01 · 00:00 </span>
+            <span id="tick" aria-label="Elapsed time">00:00</span>
           </div>
-          <div class="toast" id="toast" role="status">
-            Find the supply cache
-          </div>
+          <div class="toast" id="toast" role="status" hidden></div>
         </div>
         <div class="bottom" inert>
           <div class="mission">
@@ -68,7 +71,7 @@
             <div>
               <span class="eyebrow"> YOUR OBJECTIVE </span>
               <strong id="objective">
-                Scavenge supplies. Clear the threats.
+                Find the pistol inside the house.
               </strong>
             </div>
           </div>
@@ -93,14 +96,14 @@
                 <span class="action-icon"> ▣ </span>
                 <span>
                   SCAVENGE
-                  <small> AT A CACHE </small>
+                  <small id="loot-hint">AT A CACHE</small>
                 </span>
               </button>
               <button class="action attack" id="attack">
                 <span class="action-icon"> ✳ </span>
                 <span>
-                  BLAST
-                  <small> USES SUPPLIES </small>
+                  FIRE
+                  <small id="fire-hint">UNARMED</small>
                 </span>
               </button>
             </div>
@@ -110,7 +113,7 @@
             <span> · </span>
             L TO SCAVENGE
             <span> · </span>
-            SPACE TO BLAST
+            SPACE TO FIRE
           </div>
         </div>
         <div class="overlay" id="overlay">
@@ -128,22 +131,22 @@
               <em> on the block. </em>
             </h1>
             <p id="modal-copy">
-              The streets aren't empty. Find the supply cache, then use your
-              blast to clear all three threats.
+              There’s a pistol in the house on Birch Street. Get inside,
+              scavenge the marked crate, and clear the block.
             </p>
             <div class="instructions" id="instructions">
               <div>
                 <span>
-                  Move with the arrows. Their directions match the street.
+                  Follow the lit doorway into the house.
                 </span>
               </div>
               <div>
                 <span>
-                  Stand on the marked cache and scavenge for supplies.
+                  Stand on the marked crate and tap Scavenge.
                 </span>
               </div>
               <div>
-                <span> Get close to the infected and tap blast. </span>
+                <span>Get a clear shot and tap Fire.</span>
               </div>
             </div>
             <button class="primary" id="start" autofocus>
@@ -154,6 +157,7 @@
         </div>
       </section>
     </main>
+    <script src="scene.js"></script>
     <script src="game.js"></script>
   </body>
 </html>
