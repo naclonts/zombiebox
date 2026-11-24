@@ -1,6 +1,6 @@
 # A county worth learning
 
-Zombiebox draws on the familiar towns, scavenging, and sound-sensitive hordes of Project Zomboid. For the first mobile version, concentrate that tension into a short supply run. Track health and carried supplies. Detailed wounds, hunger, crafting trees, and base construction can wait until the trip itself is worth repeating. [Project Zomboid on Steam](https://store.steampowered.com/app/108600/Project_Zomboid/)
+Zombiebox draws on the familiar towns, scavenging, and sound-sensitive hordes of a zombie survival game. For the first mobile version, concentrate that tension into a short supply run. Track health and carried supplies. Detailed wounds, hunger, crafting trees, and base construction can wait until the trip itself is worth repeating.
 
 Use a **hand-laid county with seeded local variation**. A returning player should remember the road from the suburbs to the hospital. Which doors open, what the pharmacy still has, and what waits in the ambulance bay can change each run. Cataclysm: Dark Days Ahead uses this kind of local variation, selecting building layouts according to the terrain on the larger map. [Cataclysm map generation](https://docs.cataclysmdda.org/JSON/MAPGEN.html)
 
