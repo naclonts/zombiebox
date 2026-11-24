@@ -1,0 +1,57 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'com.facebook.react'
+
+react {
+    autolinkLibrariesWithApp()
+}
+
+def zombieboxAbis = providers.gradleProperty('reactNativeArchitectures').get().split(',')
+def rustSources = rootProject.layout.projectDirectory.dir('../../..')
+def rustLibraries = layout.buildDirectory.dir('generated/zombiebox/jniLibs')
+def rustScript = rootProject.layout.projectDirectory.file('build-rust.sh')
+def jniSource = rootProject.layout.projectDirectory.file('zombiebox_jni.c')
+
+android {
+    namespace 'game.zombiebox.mobile'
+    ndkVersion rootProject.ext.ndkVersion
+    buildToolsVersion rootProject.ext.buildToolsVersion
+    compileSdk rootProject.ext.compileSdkVersion
+
+    defaultConfig {
+        applicationId 'game.zombiebox.mobile'
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    sourceSets.main.jniLibs.srcDir(rustLibraries.get().asFile)
+
+    buildTypes {
+        release {
+            // The sideload build bundles JavaScript and uses the local Android debug key.
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+
+def buildZombieboxRust = tasks.register('buildZombieboxRust', Exec) {
+    inputs.file(rustScript)
+    inputs.files(rustSources.file('Cargo.toml'), rustSources.file('Cargo.lock'))
+    inputs.dir(rustSources.dir('crates'))
+    inputs.file(jniSource)
+    inputs.property('abis', zombieboxAbis.join(','))
+    outputs.dir(rustLibraries)
+    commandLine(['bash', rustScript.asFile.absolutePath, rustLibraries.get().asFile.absolutePath] + zombieboxAbis.toList())
+    doFirst {
+        environment('ANDROID_HOME', androidComponents.sdkComponents.sdkDirectory.get().asFile.absolutePath)
+    }
+}
+
+tasks.named('preBuild') { dependsOn(buildZombieboxRust) }
+
+dependencies {
+    implementation('com.facebook.react:react-android')
+    implementation('com.facebook.react:hermes-android')
+}

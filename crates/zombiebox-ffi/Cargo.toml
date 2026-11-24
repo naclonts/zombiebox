@@ -10,3 +10,4 @@ crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
 zombiebox-core = { path = "../zombiebox-core" }
+zombiebox-render = { path = "../zombiebox-render" }

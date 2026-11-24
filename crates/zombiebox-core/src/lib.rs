@@ -1,6 +1,12 @@
 //! Deterministic single-player rules. One call to `step` consumes one tick.
 
+mod action;
 mod world;
+
+pub use action::{
+    ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionHud, ActionInput, ActionOutcome, Pose,
+    Vec2,
+};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 pub use world::{
@@ -305,6 +311,10 @@ impl Game {
         in_block && self.world.district_at(p).is_some() && !self.house.is_some_and(|h| h.is_wall(p))
     }
 
+    pub(crate) fn action_is_walkable(&self, p: Position) -> bool {
+        self.is_walkable(p)
+    }
+
     fn clear_shot(&self, from: Position, to: Position) -> bool {
         let Some(house) = self.house else {
             return true;
@@ -368,6 +378,14 @@ impl Game {
             }
         }
         None
+    }
+
+    pub(crate) fn action_next_path_step(
+        &self,
+        start: Position,
+        target: Position,
+    ) -> Option<Position> {
+        self.next_path_step(start, target)
     }
 }
 

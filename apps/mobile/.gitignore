@@ -1,2 +1,6 @@
 node_modules/
 build/
+.gradle/
+.cxx/
+.kotlin/
+local.properties

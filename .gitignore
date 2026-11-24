@@ -1,3 +1,13 @@
 /target/
 node_modules/
 .DS_Store
+
+# Local credentials and Android distribution files
+/.aws/
+.env
+.env.*
+!.env.example
+*.apk
+*.aab
+*.jks
+*.keystore

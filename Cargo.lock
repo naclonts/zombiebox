@@ -11,6 +11,14 @@ name = "zombiebox-ffi"
 version = "0.1.0"
 dependencies = [
  "zombiebox-core",
+ "zombiebox-render",
+]
+
+[[package]]
+name = "zombiebox-render"
+version = "0.1.0"
+dependencies = [
+ "zombiebox-core",
 ]
 
 [[package]]

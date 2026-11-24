@@ -1,62 +1,66 @@
-# Mobile host
+# Android app
 
-This directory defines the React Native side of the first device experiment. One Fabric view presents the game, while ordinary React Native views display inventory, menus, and the HUD. The check below generates bindings for the game surface. A native host on each platform is the next milestone.
+The Android build runs the action game locally. The game surface is a native Android view that calls the Rust action runtime and software renderer through JNI. Rust renders RGBA pixels into an Android bitmap; React Native draws the HUD, loading and pause states, and action controls above the game surface. The repository also retains the separate browser playtest and its legacy command-based rules.
 
-## Generate the bindings
+## Build and sideload
 
-Use Node 22.13+ within the 22.x series, or another supported version listed in `package.json`. The manifest pins React Native and its Codegen tool to 0.88.0. Run from this directory. [React Native versions](https://reactnative.dev/versions) · [Using Codegen](https://reactnative.dev/docs/0.88/the-new-architecture/using-codegen)
+Use Node 22, JDK 17, CMake 3.22.1, the Android SDK command-line tools, and Rust. Set `ANDROID_HOME` to the SDK installation. Install Android platform 37, Build Tools 36.0.0 and 37.0.0, CMake, NDK, and platform tools, plus the Rust targets used by the Gradle project:
+
+```sh
+sdkmanager 'platform-tools' 'platforms;android-37.0' 'build-tools;36.0.0' 'build-tools;37.0.0' 'cmake;3.22.1' 'ndk;27.1.12297006'
+rustup target add aarch64-linux-android x86_64-linux-android
+```
+
+Install the JavaScript dependencies and build the release APK. Run Gradle from `apps/mobile/android`:
+
+```sh
+cd apps/mobile
+npm ci
+cd android
+./gradlew :app:assembleRelease
+mkdir -p ../build
+cp app/build/outputs/apk/release/app-release.apk ../build/zombiebox-android.apk
+```
+
+Gradle builds the Rust native library for the configured Android ABIs and packages the React Native bundle. The release variant uses the machine's local Android debug signing key so the APK can be sideloaded. The distributable workspace copy is `apps/mobile/build/zombiebox-android.apk`.
+
+With USB debugging enabled and the phone listed by `adb devices`, install or update the app with:
+
+```sh
+adb install -r apps/mobile/build/zombiebox-android.apk
+```
+
+You can also transfer `apps/mobile/build/zombiebox-android.apk` to the phone, open it in the Downloads app or a file manager, and tap it to install. Android may ask you to allow that file manager to install unknown apps; enable that permission for the install, then confirm **Install**. The app opens in landscape and runs without a server. Tap **Enter the block** on the opening screen. The local debug key is for development and sideloading; it is not a Play Store signing key.
+
+On an API 35 x86_64 emulator in airplane mode, the app launched in landscape. A playtest covered simultaneous movement and aiming, pistol pickup, and firing a shot that used one round and dropped one zombie.
+
+## Controls and encounter
+
+- Drag the **left stick** to move. Movement is analog and slides along house walls.
+- Drag the **right stick** to aim. The right stick only aims; its last direction stays active after you release it.
+- Tap the **Search**, **Fire**, or **Use** action control, or tap anywhere on the game scene except the left movement-stick area and React Native overlay controls. The action label changes with the situation. Near the pistol cache it searches; after pickup, a tap fires one round in the current aim direction.
+- Walk through the open doorway, enter the house, and approach the marked pistol cache. Six rounds are available. Aim around walls and clear the three zombies to win.
+- The HUD shows health, ammunition, and remaining zombies. Pause suspends the native simulation.
+
+## What runs where
+
+The Android native host owns the run, fixed-step clock, bitmap surface, touch sampling, and JNI calls. The Rust action runtime owns float player and zombie positions, collision, aim, shots, ammo, health, and win/death state. The Rust software renderer draws the isometric block and sprites into an RGBA framebuffer, which JNI copies into an Android `Bitmap`. React Native renders the HUD and controls over that native surface.
+
+The game uses seeded residential world geometry and the house, door, and cache location from `zombiebox-core`. The action runtime is separate from the legacy 20 Hz tile-command `Game`; the browser playtest continues to use its existing controls and rules.
+
+## Fabric surface contract
+
+`specs/ZombieboxSurfaceNativeComponent.ts` defines the `ZombieboxSurface` Fabric component contract for the native view. It identifies a run with a decimal-string `seed` and `runId`, accepts a `paused` flag, and reports HUD changes. A string preserves an unsigned 64-bit seed across the JavaScript boundary. The Android implementation and its touch controls are in `android/`; there is no iOS host in this app yet.
+
+The standalone Codegen check can be run from this directory:
 
 ```sh
 npm ci
 npm run codegen
 ```
 
-The standalone check installs only Codegen and its dependencies. It writes Android bindings under `build/android/` and iOS bindings under `build/ios/`. The future host projects will install the pinned React and React Native peers and run Codegen from Gradle and Xcode as part of their builds.
+React Native is pinned to 0.88.0. The project's Android SDK values are platform 37.0.0, Build Tools 37.0.0, and NDK 27.1.12297006; the Rust build targets `aarch64-linux-android` and `x86_64-linux-android`. The Rust JNI build script needs a Linux or macOS host. [React Native versions](https://reactnative.dev/versions) · [Codegen](https://reactnative.dev/docs/0.88/the-new-architecture/using-codegen) · [Android SDK tools](https://developer.android.com/tools)
 
-## Surface contract
+## iOS
 
-`specs/ZombieboxSurfaceNativeComponent.ts` names the native component `ZombieboxSurface`. The shell can mount it as follows once both native view adapters exist.
-
-```tsx
-import GameSurface from './specs/ZombieboxSurfaceNativeComponent';
-
-<GameSurface
-  style={{flex: 1}}
-  runId={run.id}
-  seed={run.seed}
-  paused={inventoryOpen}
-  onHudChanged={({nativeEvent}) => setHud(nativeEvent)}
-/>
-```
-
-- `runId` identifies one run across surface mounts. The host attaches the named session on mount and detaches on unmount. A fresh run gets a new ID, even when replaying a seed.
-- `seed` is a decimal string representing an unsigned 64-bit integer, immutable for the lifetime of a run. A string preserves every Rust seed across JavaScript's numeric boundary.
-- `paused` lets the shell suspend the simulation while a menu is open. The host also suspends play when the app becomes inactive or loses the drawing surface. On resume, reset the time accumulator and clear held touches.
-- `onHudChanged` sends health, supply count and equipped-weapon status on attach and when those values change. Publish one complete HUD snapshot after a tick. Movement, aiming and world drawing stay in the native view and Rust runtime.
-
-## Android bring-up on Debian
-
-The repository has the Fabric spec, Rust library, and a C smoke test. The Gradle app, JNI adapter, and native renderer are still to be built. Use the [browser playtest](../../README.md#play-on-android) for phone play while those pieces are in development.
-
-Install JDK 17, a Node version supported by `package.json`, and the Android SDK command-line tools. The React Native 0.88.0 app template uses Android platform 37, Build Tools 37.0.0, and NDK 27.1.12297006. Set `ANDROID_HOME` to the SDK path and install these packages from `sdkmanager` along with `platform-tools` for `adb`. [Android SDK command-line tools](https://developer.android.com/tools) · [React Native 0.88.0 Android template](https://github.com/react-native-community/template/blob/0.88.0/template/android/build.gradle)
-
-```sh
-sdkmanager 'platform-tools' 'platforms;android-37' 'build-tools;37.0.0' 'ndk;27.1.12297006'
-rustup target add x86_64-linux-android aarch64-linux-android
-```
-
-For an emulator, install the `emulator` package and an x86_64 Android system image at API 24 or newer, create an AVD, and verify KVM access using `emulator -accel-check`. The Rust build for that emulator uses `x86_64-linux-android`. For an arm64 phone, use `aarch64-linux-android`, enable USB debugging, and check that `adb devices` shows it as `device`. [Android Emulator acceleration](https://developer.android.com/studio/run/emulator-acceleration) · [Android Debug Bridge](https://developer.android.com/tools/adb) · [Android Rust targets](https://doc.rust-lang.org/rustc/platform-support/android.html)
-
-### First installable milestone
-
-1. Add the pinned React Native Gradle host in `apps/mobile/android`. Package `zombiebox-ffi` as a shared library for the selected ABI and load it from a thin JNI adapter. Keep the run handle and its tick clock on one owner thread. Register the generated `ZombieboxSurface` view and publish its initial HUD through the Fabric event.
-2. Use a simple native view to mark the player's position while exercising movement and the existing `zb_v1_*` entry points. Run the seed-42 sequence `Scavenge`, `Attack`, `West`, `Attack` with ticks controlled by the smoke test. The HUD should end at tick 4, one tile west of the spawn with full health and one charge left. Use the headless example to check zombie removal until the renderer has access to world snapshots. [Headless example](../../crates/zombiebox-core/examples/survival.rs) · [C interface](../../crates/zombiebox-ffi/include/zombiebox.h)
-3. Install the debug APK and exercise focus loss, inventory pause, and view detach and reattach. Verify that the paused tick stays fixed, a remount with the same run ID restores the HUD, and closing the run releases its handle after callbacks stop. Repeat on an arm64 handset once the emulator smoke test passes.
-
-## Native rendering and iOS reuse
-
-**Android.** Register a Fabric view manager named `ZombieboxSurface` around a `SurfaceView`. Obtain the `ANativeWindow` from the live Java surface through JNI. Send touch input to the session and pass resize events to the renderer. Stop presentation and wait for the render thread to release the surface before returning from `surfaceDestroyed`. Package the Rust shared library for each tested ABI with the Android NDK through Gradle. [Fabric native components](https://reactnative.dev/docs/0.88/fabric-native-components-introduction) · [Surface callbacks](https://developer.android.com/reference/android/view/SurfaceHolder.Callback.html) · [cargo-ndk](https://github.com/bbqsrc/cargo-ndk)
-
-**iOS.** Reuse the Fabric spec, Rust run, C header, and seed-42 sequence on macOS with Xcode. Implement `RCTZombieboxSurface` as a Fabric component view containing a Metal-backed `UIView`. A display link requests frames while the scene is active. Pass touch events and drawable size changes to the runtime, and stop the display link before detaching the Metal layer. Link Rust static libraries built for the iOS device and simulator SDKs via an XCFramework. [Metal layers](https://developer.apple.com/documentation/QuartzCore/CAMetalLayer) · [Rust iOS targets](https://doc.rust-lang.org/rustc/platform-support/apple-ios.html)
-
-**Device acceptance.** On an iPhone and an Android handset, move a sprite under a React Native HUD, open and close inventory to pause and resume, background the app, then detach and reattach the view. Confirm the same survivor returns, input releases correctly, and frame pacing remains steady during a particle burst.
+iOS is a future port. The Rust core and renderer are platform-independent, but this repository does not yet include an iOS app, native view adapter, Metal presentation path, or an iOS device build. A future host can reuse the gameplay rules and adapt the framebuffer to a UIKit/Metal surface while providing equivalent movement, aim, and action controls.
