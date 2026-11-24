@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/zombiebox-core", "crates/zombiebox-ffi"]
+members = ["crates/zombiebox-core", "crates/zombiebox-ffi", "crates/zombiebox-web"]
 
 [workspace.package]
 edition = "2024"

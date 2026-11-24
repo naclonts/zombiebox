@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+      name="viewport"
+    />
+    <meta content="#101b19" name="theme-color" />
+    <title>Zombiebox — Last Light</title>
+    <link href="style.css" rel="stylesheet" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="top" inert>
+        <div class="brand">
+          <span class="brand-mark">
+            Z
+            <span> ✳ </span>
+          </span>
+          <div>
+            <strong> ZOMBIEBOX </strong>
+          </div>
+        </div>
+        <button aria-label="How to play" class="icon-button" id="help">
+          ?
+        </button>
+      </header>
+      <section aria-label="Zombie survival game" class="game">
+        <div class="hud" inert>
+          <div class="hud-block">
+            <span class="eyebrow"> SURVIVOR </span>
+            <div class="health-row">
+              <span class="cross"> ✚ </span>
+              <div class="health-track">
+                <div id="health-bar"></div>
+              </div>
+              <strong id="health"> — </strong>
+            </div>
+          </div>
+          <div class="hud-stats">
+            <div>
+              <span class="eyebrow"> SUPPLIES </span>
+              <strong id="supplies"> — </strong>
+            </div>
+            <div>
+              <span class="eyebrow"> THREATS </span>
+              <strong id="threats"> — </strong>
+            </div>
+          </div>
+        </div>
+        <div class="world" inert>
+          <canvas aria-label="Isometric game world" id="world"> </canvas>
+          <div class="world-top">
+            <span>
+              <i> </i>
+              THE OUTSKIRTS
+            </span>
+            <span id="tick"> DAY 01 · 00:00 </span>
+          </div>
+          <div class="toast" id="toast" role="status">
+            Find the supply cache
+          </div>
+        </div>
+        <div class="bottom" inert>
+          <div class="mission">
+            <div class="mission-icon">✳</div>
+            <div>
+              <span class="eyebrow"> YOUR OBJECTIVE </span>
+              <strong id="objective">
+                Scavenge supplies. Clear the threats.
+              </strong>
+            </div>
+          </div>
+          <div class="controls">
+            <div aria-label="Movement controls" class="pad">
+              <button aria-label="Move northwest" class="up" data-move="W">
+                ↖
+              </button>
+              <button aria-label="Move northeast" class="right" data-move="N">
+                ↗
+              </button>
+              <button aria-label="Move southwest" class="left" data-move="S">
+                ↙
+              </button>
+              <button aria-label="Move southeast" class="down" data-move="E">
+                ↘
+              </button>
+              <span class="pad-center"> MOVE </span>
+            </div>
+            <div class="actions">
+              <button class="action loot" id="loot">
+                <span class="action-icon"> ▣ </span>
+                <span>
+                  SCAVENGE
+                  <small> AT A CACHE </small>
+                </span>
+              </button>
+              <button class="action attack" id="attack">
+                <span class="action-icon"> ✳ </span>
+                <span>
+                  BLAST
+                  <small> USES SUPPLIES </small>
+                </span>
+              </button>
+            </div>
+          </div>
+          <div class="controls-note">
+            ARROW KEYS / WASD TO MOVE
+            <span> · </span>
+            L TO SCAVENGE
+            <span> · </span>
+            SPACE TO BLAST
+          </div>
+        </div>
+        <div class="overlay" id="overlay">
+          <div
+            class="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-title"
+            aria-describedby="modal-copy"
+          >
+            <div class="modal-symbol">✳</div>
+            <h1 id="modal-title">
+              Last light
+              <br />
+              <em> on the block. </em>
+            </h1>
+            <p id="modal-copy">
+              The streets aren't empty. Find the supply cache, then use your
+              blast to clear all three threats.
+            </p>
+            <div class="instructions" id="instructions">
+              <div>
+                <span>
+                  Move with the arrows. Their directions match the street.
+                </span>
+              </div>
+              <div>
+                <span>
+                  Stand on the marked cache and scavenge for supplies.
+                </span>
+              </div>
+              <div>
+                <span> Get close to the infected and tap blast. </span>
+              </div>
+            </div>
+            <button class="primary" id="start" autofocus>
+              ENTER THE BLOCK
+              <span> ↗ </span>
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="game.js"></script>
+  </body>
+</html>

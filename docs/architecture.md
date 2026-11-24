@@ -17,6 +17,12 @@ The cost is the pair of platform adapters and the tools needed to author buildin
 
 The checked-in C ABI lets a native owner create a run, step it, copy its HUD, and release it. Handles stay on the native side. The renderer will use the core crate directly. Add GPU surface entry points at the first device spike, when the actual platform lifetimes can be exercised. [Public C header](../crates/zombiebox-ffi/include/zombiebox.h) · [Mobile component spec](../apps/mobile/specs/ZombieboxSurfaceNativeComponent.ts)
 
+## Browser playtest
+
+The dev host owns each `Game` in Rust and serves a Canvas client. The client drives the 20 Hz clock, sends ordered batches of up to three commands, and renders the returned tile window, actors, HUD, and tick events. The simulation advances only when a command batch arrives. This lets Android Chrome test the encounter and touch controls on the Debian host through Tailscale.
+
+The browser transport and Canvas view are specific to the playtest. The native Android view will own its game locally and can reuse the core's commands, snapshots, and events. The iOS adapter can use the same core contracts and native renderer after the Android device experiment.
+
 ## One frame on a phone
 
 1. Collect thumb movement and action edges in the native view. Inverse-project screen direction into world axes so dragging right always feels like moving right on screen. Consume an attack tap once, including when several ticks fall into a frame.
@@ -41,7 +47,7 @@ Keep the first renderer in a sibling crate, `crates/zombiebox-render`, depending
 
 ## First device decision
 
-The current headless example exercises the game rules and the C smoke test exercises native linking. Neither measures mobile frame pacing. The next milestone is a **single residential block on a physical iPhone and a midrange Android phone**. Log device models, OS versions, and release build settings alongside the measurements.
+The headless example exercises the game rules, the C smoke test exercises native linking, and the browser playtest exercises touch controls. The native milestone is a **single residential block on a midrange Android phone**, followed by the same experiment on an iPhone. Log device models, OS versions, and release build settings alongside the measurements.
 
 | Exercise | Initial acceptance target |
 | --- | --- |

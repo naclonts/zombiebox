@@ -12,3 +12,10 @@ version = "0.1.0"
 dependencies = [
  "zombiebox-core",
 ]
+
+[[package]]
+name = "zombiebox-web"
+version = "0.1.0"
+dependencies = [
+ "zombiebox-core",
+]

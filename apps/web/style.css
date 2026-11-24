@@ -1,0 +1,513 @@
+@import url('data:text/css,');
+:root {
+  color-scheme:dark;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  background:#0b1211;
+  color:#e8eadb
+}
+* {
+  box-sizing:border-box
+}
+body {
+  margin:0;
+  min-height:100dvh;
+  background:radial-gradient(ellipse at 50% 10%,#26352e,#0b1211 70%);
+  display:flex;
+  justify-content:center
+}
+.shell {
+  width:min(100%,560px);
+  min-height:100dvh;
+  display:flex;
+  flex-direction:column;
+  padding:0 14px
+}
+.top {
+  height:54px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between
+}
+.brand {
+  display:flex;
+  align-items:center;
+  gap:9px
+}
+.brand-mark {
+  font-size:27px;
+  line-height:1;
+  font-weight:1000;
+  color:#e2e8d4;
+  position:relative
+}
+.brand-mark span {
+  position:absolute;
+  color:#df9d52;
+  font-size:12px;
+  right:-8px;
+  top:0
+}
+.brand strong {
+  display:block;
+  font-size:13px;
+  letter-spacing:.15em
+}
+.brand small {
+  display:block;
+  color:#83948b;
+  font-size:8px;
+  letter-spacing:.18em;
+  margin-top:2px
+}
+.icon-button {
+  width:30px;
+  height:30px;
+  border:1px solid #52665b;
+  background:transparent;
+  color:#ced9cc;
+  border-radius:50%;
+  font-weight:800
+}
+.game {
+  position:relative;
+  flex:1;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  background:#17241f;
+  border:1px solid #526052;
+  box-shadow:0 18px 60px #0008;
+  overflow:hidden
+}
+.hud {
+  height:67px;
+  flex:none;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:10px 15px;
+  background:#1a2923
+}
+.eyebrow {
+  display:block;
+  color:#92a397;
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:.15em
+}
+.hud-block {
+  width:42%
+}
+.health-row {
+  display:flex;
+  align-items:center;
+  gap:7px;
+  margin-top:7px
+}
+.cross {
+  color:#ecb069;
+  font-size:14px
+}
+.health-track {
+  height:6px;
+  flex:1;
+  background:#435248
+}
+.health-track div {
+  width:100%;
+  height:100%;
+  background:#e3a762;
+  transition:width .2s
+}
+.health-row strong,.hud-stats strong {
+  font-size:14px
+}
+.hud-stats {
+  display:flex;
+  gap:25px;
+  text-align:right
+}
+.hud-stats strong {
+  display:block;
+  margin-top:4px;
+  color:#f0e7cd
+}
+.world {
+  position:relative;
+  flex:1;
+  min-height:170px;
+  overflow:hidden;
+  background:#34443a
+}
+canvas {
+  width:100%;
+  height:100%;
+  display:block
+}
+.world:after {
+  content:"";
+  pointer-events:none;
+  position:absolute;
+  inset:0;
+  box-shadow:inset 0 0 70px #0b1712aa
+}
+.world-top,.world-bottom {
+  position:absolute;
+  z-index:1;
+  left:12px;
+  right:12px;
+  display:flex;
+  justify-content:space-between;
+  color:#d3dfc5b8;
+  font-size:8px;
+  font-weight:800;
+  letter-spacing:.14em;
+  pointer-events:none
+}
+.world-top {
+  top:12px
+}
+.world-bottom {
+  bottom:10px
+}
+.world-top i {
+  display:inline-block;
+  width:6px;
+  height:6px;
+  background:#e7a55a;
+  border-radius:50%;
+  margin-right:5px
+}
+.toast {
+  position:absolute;
+  z-index:2;
+  left:50%;
+  bottom:24px;
+  transform:translateX(-50%);
+  padding:7px 11px;
+  background:#18251edb;
+  color:#e7e9d5;
+  border:1px solid #a8b49755;
+  font-size:10px;
+  letter-spacing:.04em;
+  white-space:nowrap
+}
+.bottom {
+  flex:none;
+  padding:11px 15px 8px;
+  background:#1a2923
+}
+.mission {
+  display:flex;
+  gap:10px;
+  align-items:center
+}
+.mission-icon {
+  display:grid;
+  place-items:center;
+  width:30px;
+  height:30px;
+  border:1px solid #b6814f;
+  color:#e5a45a;
+  font-size:20px
+}
+.mission strong {
+  font-size:12px;
+  display:block;
+  margin-top:3px
+}
+.controls {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  margin-top:10px
+}
+.pad {
+  width:128px;
+  height:92px;
+  position:relative;
+  flex:none
+}
+.pad button {
+  position:absolute;
+  width:45px;
+  height:40px;
+  background:#34463b;
+  color:#eef1df;
+  border:1px solid #64776a;
+  font-size:20px;
+  touch-action:none
+}
+.pad .up {
+  left:22px;
+  top:0
+}
+.pad .right {
+  left:67px;
+  top:0
+}
+.pad .left {
+  left:22px;
+  top:41px
+}
+.pad .down {
+  left:67px;
+  top:41px
+}
+.pad-center {
+  position:absolute;
+  left:51px;
+  top:36px;
+  background:#26372d;
+  border-radius:50%;
+  height:24px;
+  width:31px;
+  text-align:center;
+  padding-top:9px;
+  font-size:6px;
+  font-weight:900;
+  letter-spacing:.1em;
+  pointer-events:none
+}
+.actions {
+  display:flex;
+  gap:8px;
+  flex:1;
+  justify-content:flex-end
+}
+.action {
+  height:72px;
+  min-width:76px;
+  max-width:120px;
+  flex:1;
+  border:1px solid #718175;
+  background:#35483b;
+  color:#eef0e0;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  gap:4px;
+  font-size:9px;
+  font-weight:900;
+  letter-spacing:.08em
+}
+.action-icon {
+  font-size:22px;
+  line-height:1
+}
+.action small {
+  display:block;
+  font-size:7px;
+  font-weight:700;
+  color:#b3c0ad;
+  margin-top:3px;
+  letter-spacing:.06em
+}
+.attack {
+  background:#b76d3e;
+  border-color:#e5a466;
+  color:#fff4de
+}
+.attack small {
+  color:#f5d1a7
+}
+button {
+  cursor:pointer;
+  touch-action:manipulation
+}
+button:active,button.pressed {
+  filter:brightness(1.35)
+}
+button:focus-visible {
+  outline:2px solid #fff;
+  outline-offset:2px
+}
+.controls-note {
+  text-align:center;
+  color:#768a7c;
+  font-size:7px;
+  letter-spacing:.08em;
+  font-weight:700;
+  margin-top:6px
+}
+.controls-note span {
+  color:#c08d5a
+}
+footer {
+  height:25px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  color:#6f8276;
+  font-size:8px;
+  font-weight:800;
+  letter-spacing:.13em
+}
+.overlay {
+  position:absolute;
+  z-index:4;
+  inset:0;
+  background:#0a1511dc;
+  display:grid;
+  place-items:center;
+  padding:20px
+}
+.overlay[hidden] {
+  display:none
+}
+.modal {
+  width:min(100%,360px);
+  text-align:center
+}
+.modal-kicker {
+  color:#d7a16b;
+  font-size:9px;
+  letter-spacing:.2em;
+  font-weight:900
+}
+.modal-symbol {
+  font-size:40px;
+  color:#db9d59;
+  line-height:1;
+  margin:12px 0 6px
+}
+.modal h1 {
+  font-family:Georgia,serif;
+  font-size:clamp(34px,8vw,48px);
+  line-height:.98;
+  letter-spacing:-.04em;
+  margin:0;
+  color:#f1efdb
+}
+.modal h1 em {
+  font-weight:400;
+  color:#c5d1b9
+}
+.modal p {
+  font-size:12px;
+  line-height:1.55;
+  color:#b7c6b5;
+  max-width:290px;
+  margin:12px auto
+}
+.instructions {
+  border-top:1px solid #6b7d6b;
+  border-bottom:1px solid #6b7d6b;
+  text-align:left;
+  margin:15px 0
+}
+.instructions div {
+  display:flex;
+  gap:12px;
+  padding:7px 0;
+  font-size:11px;
+  line-height:1.3;
+  color:#d0dac9
+}
+.instructions b {
+  color:#dfa267
+}
+.primary {
+  width:100%;
+  padding:14px 16px;
+  background:#df9c5c;
+  color:#1e2921;
+  border:0;
+  font-size:10px;
+  font-weight:1000;
+  letter-spacing:.15em;
+  text-align:left
+}
+.primary span {
+  float:right;
+  font-size:15px;
+  line-height:10px
+}
+.modal-foot {
+  display:block;
+  color:#839486;
+  font-size:8px;
+  letter-spacing:.13em;
+  margin-top:12px
+}
+@media(max-height:650px) {
+  .top {
+    height:43px
+  }
+  .hud {
+    height:56px
+  }
+  .bottom {
+    padding-top:7px
+  }
+  .controls {
+    margin-top:5px
+  }
+  .modal-symbol {
+    margin:5px 0
+  }
+  .modal p {
+    margin:8px auto
+  }
+  .instructions {
+    margin:8px 0
+  }
+  .instructions div {
+    padding:5px 0
+  }
+  footer {
+    height:18px
+  }
+}
+@media(orientation:landscape) and (max-height:550px) {
+  .shell {
+    width:min(100%,900px)
+  }
+  .game {
+    display:grid;
+    grid-template-columns:1fr 245px;
+    grid-template-rows:52px 1fr
+  }
+  .hud {
+    grid-column:1/3;
+    height:52px
+  }
+  .world {
+    grid-column:1;
+    grid-row:2
+  }
+  .bottom {
+    grid-column:2;
+    grid-row:2;
+    display:flex;
+    flex-direction:column;
+    justify-content:center
+  }
+  .controls {
+    flex-direction:column
+  }
+  .controls-note {
+    display:none
+  }
+  .modal {
+    width:min(100%,500px)
+  }
+  .modal-symbol {
+    display:none
+  }
+  .modal h1 {
+    font-size:30px
+  }
+  .instructions {
+    display:flex;
+    gap:12px
+  }
+  .instructions div {
+    flex:1
+  }
+  .overlay {
+    padding:8px
+  }
+}
