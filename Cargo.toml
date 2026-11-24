@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = ["crates/zombiebox-core", "crates/zombiebox-ffi"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.87"

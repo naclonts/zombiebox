@@ -1,0 +1,35 @@
+{
+  "name": "zombiebox-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "^22.13.0 || ^24.3.0 || >=26.0.0"
+  },
+  "scripts": {
+    "codegen": "node scripts/codegen.cjs"
+  },
+  "peerDependencies": {
+    "react": "19.3.0",
+    "react-native": "0.88.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {"optional": true},
+    "react-native": {"optional": true}
+  },
+  "devDependencies": {
+    "@react-native/codegen": "0.88.0"
+  },
+  "codegenConfig": {
+    "name": "ZombieboxSpec",
+    "type": "components",
+    "jsSrcsDir": "specs",
+    "android": {
+      "javaPackageName": "game.zombiebox.mobile"
+    },
+    "ios": {
+      "componentProvider": {
+        "ZombieboxSurface": "RCTZombieboxSurface"
+      }
+    }
+  }
+}
