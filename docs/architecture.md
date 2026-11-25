@@ -37,7 +37,12 @@ The 2:1 diamond camera projects tile coordinates `(x, y)` to `((x − y) × tile
 
 ## Scaling from one street to the county
 
-The core can already regenerate any 16 × 16 chunk by coordinate. For a larger phone world, cache visible chunks plus a margin and evict distant tile batches. Track active zombies in spatial buckets so shots and noise query nearby cells. Give moving entities stable IDs independent of their current chunk. A zombie crossing a road seam changes its spatial bucket and keeps its identity.
+The core can already regenerate any 16 × 16 chunk by coordinate. For a larger phone world, cache visible chunks plus a margin and evict distant tile batches. Track active monsters in spatial buckets so shots, blasts, sightlines, and noise query nearby cells. Give moving entities stable IDs independent of their current chunk. A monster crossing a road seam changes its spatial bucket and keeps its identity.
+
+As the residential block expands to multiple multi-level houses, breakable tiles/props, and larger reactive monster groups, keep three architectural boundaries clean:
+- **Data-driven building and material definitions.** Move beyond hardcoded house/prop coordinates in Rust toward reusable floor blueprints and a material durability table so multi-level layouts and destruction stay fast to author and persist as chunk edits.
+- **Throttled, invalidatable pathfinding.** Replace per-tick full BFS with cached/throttled pathfinding across floors that invalidates locally when doors open or windows and walls break.
+- **Renderer and audio headroom.** Keep an eye on CPU software-rendering cost as lights, multi-level cutaways, debris, and enemy counts grow (using physical Android handset pacing to decide when to adopt GPU rendering via `wgpu`), and keep audio playback cleanly decoupled from fixed simulation ticks so sound effects and haptics fire from simulation events without stalling frames.
 
 The software renderer lives in `crates/zombiebox-render` and depends on the core. The Android host is in `apps/mobile/android`. An iOS adapter is still future work. A car can later use the same world coordinates and spatial queries, with a larger collision footprint and a longer loading distance in its direction of travel.
 
@@ -54,9 +59,9 @@ The headless example exercises legacy game rules, core action tests cover the na
 
 | Exercise | Initial acceptance target |
 | --- | --- |
-| Move, pick up the pistol, aim, and shoot under the React Native HUD | Either thumbstick can be used without triggering an action. Pistol pickup works near the cache, shots respect walls, and ammo, health, and zombie count match the Rust action runtime. Pause freezes simulation ticks. |
+| Move, pick up tools, aim, and shoot under the React Native HUD | Movement feels brisk and shooting integrates cleanly with twin-stick ergonomics without requiring mid-screen thumb travel. Pickup works near caches, shots respect intact walls, and ammo, health, and threat count match the Rust action runtime. Pause freezes simulation ticks. |
 | Play Birch Street on a modest Android handset | Record the handset model and frame pacing during movement, aiming, and repeated shots. Check that touch controls stay responsive and that threats, the doorway, and loot stay easy to read during combat. |
 | Pause and resume or background and foreground the Android app | Input releases cleanly and the game clock resumes without a catch-up burst. |
 | Stress a street with 100 visible zombies and repeated shots | Target 60 Hz. Record p95 frame time against 16.7 ms, tick CPU cost, memory, and sustained behavior over ten minutes. These numbers are budgets to test. |
 
-After Android device validation, the next gameplay slice can add a return trip with saved inventory and a depleted pharmacy. Expand district encounters and distant hordes after that loop feels good. Vehicle streaming gets its own cross-county test. [World design and milestones](world-design.md)
+Next, refine action playability and audio feedback, validate on a physical Android handset, and build out a high-quality destructible residential block with multi-level houses, expanded tools, reactive AI, and monster variety. Once the residential block feels great, connect the persistent medicine run, expand into a full city and county with distant hordes, and test vehicle streaming. [World design and milestones](world-design.md)
