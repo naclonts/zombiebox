@@ -33,7 +33,7 @@ The browser transport, Canvas view, and legacy rules are independent of the loca
 3. After each tick, the FFI reads events before the next step clears them and informs the renderer. Gameplay damage and outcomes are resolved in the core; the renderer adds transient hit and shot flashes. The HUD status packs health, ammunition, zombie count, weapon, loot proximity, and outcome for the React Native layer.
 4. The software renderer draws visible terrain, the house, cache, actors, and effects into a packed RGBA framebuffer. JNI copies the bytes to an Android bitmap presented by the native game view. React Native lays out its HUD and action controls above the game surface.
 
-For the low-fi look, start with a small nearest-filtered atlas and a 2:1 diamond camera. For tile coordinates `(x, y)`, the ground projection is `((x − y) × tileWidth/2, (x + y) × tileHeight/2)`. Draw floors first, then order standing sprites and walls by projected foot position with a stable tie-break. Fade roofs around the player. Batch debris sprites, and keep enemy silhouettes legible during the flash.
+The 2:1 diamond camera projects tile coordinates `(x, y)` to `((x − y) × tileWidth/2, (x + y) × tileHeight/2)`. Use projected foot positions for depth ordering and keep the player, routes, and enemies legible when walls, roofs, or effects obscure the scene. Choose assets, lighting, and rendering techniques that meet the visual target within the frame budget on modest Android hardware. [Visual and performance target](product-decisions.md#visual-and-performance-target)
 
 ## Scaling from one street to the county
 
@@ -55,6 +55,7 @@ The headless example exercises legacy game rules, core action tests cover the na
 | Exercise | Initial acceptance target |
 | --- | --- |
 | Move, pick up the pistol, aim, and shoot under the React Native HUD | Pistol pickup works near the cache, shots respect walls, and ammo, health, and zombie count match the Rust action runtime. Pause freezes simulation ticks. |
+| Play Birch Street on a modest Android handset | Record the handset model and frame pacing during movement, aiming, and repeated shots. Check that touch controls stay responsive and that threats, the doorway, and loot stay easy to read during combat. |
 | Pause and resume or background and foreground the Android app | Input releases cleanly and the game clock resumes without a catch-up burst. |
 | Stress a street with 100 visible zombies and repeated shots | Target 60 Hz. Record p95 frame time against 16.7 ms, tick CPU cost, memory, and sustained behavior over ten minutes. These numbers are budgets to test. |
 

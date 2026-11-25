@@ -1,6 +1,6 @@
 # Zombiebox
 
-A single-player isometric zombie survival sandbox. The local Android app is a landscape twin-stick action game: enter the house on Birch Street, pick up a pistol, and clear three zombies from the block. The browser playtest remains available, and an iOS app is a future platform target.
+A single-player isometric action-adventure and zombie survival sandbox built for Android. The local app plays in landscape with twin-stick controls. Enter the house on Birch Street, pick up a pistol, and clear three zombies from the block. The browser playtest remains available, and an iOS app is a future platform target.
 
 ## Run the browser playtest
 

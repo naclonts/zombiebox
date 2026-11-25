@@ -1,0 +1,32 @@
+# Zombiebox product decisions
+
+Zombiebox is a single-player isometric action-adventure and zombie survival sandbox. Exploration, scavenging, combat, and escape flow together in real time as threats move around the player. The first playable slice is one residential block on Birch Street. A persistent medicine run is the next gameplay slice after Android handset validation.
+
+Check marks indicate what is in the current build or world scaffold. For work on a milestone, use its completion checks to verify player-visible behavior and record what was exercised. Implementation details can evolve within these decisions.
+
+## Visual and performance target
+
+Aim for moderate visual fidelity with the finish of a high-quality Sega Genesis or early PlayStation isometric game. Give the county detailed, recognizable places, characters with distinct silhouettes and expressive movement, and lighting and effects that make combat easy to read. Use the console era as an art reference and choose rendering techniques that suit the game.
+
+For visual changes, use Birch Street as a review scene. During movement and combat, the player should be able to pick out the survivor, threats, doorway, and pistol cache at a glance. Check substantial rendering changes on a modest physical Android handset and record the device and frame pacing during movement, aiming, and repeated shots. Responsive touch input and smooth action are part of the target. [Device criteria](architecture.md#first-device-decision)
+
+## Current build
+
+- [x] **Android first.** The native app runs offline in landscape and can be built as a sideloadable APK. The browser build remains available for playtesting. [Project README](../README.md) · [Android guide](../apps/mobile/README.md)
+- [x] **One block, one objective.** Start unarmed, enter the house through its doorway, and search the marked cache for a pistol and six rounds. Clear three zombies to win. Death ends the attempt. The current Android and browser playtests replay seed `42`. [Android run flow](../apps/mobile/App.tsx) · [Browser run flow](../apps/web/game.js)
+- [x] **Android twin-stick controls.** The left stick moves, the right stick sets aim and retains it on release, and a button or scene tap searches or fires. Walls stop shots. A miss spends a round, and a hit drops one zombie. [Android controls](../apps/mobile/README.md) · [Combat rules](../crates/zombiebox-core/src/action.rs)
+- [x] **Simple browser controls.** Move tile by tile with keyboard or touch, stand on the crate to scavenge, and fire at the nearest eligible target. Fire highlights when there is a clear shot. [Browser playtest](../README.md#run-the-browser-playtest) · [Targeting rules](../crates/zombiebox-core/src/lib.rs)
+- [x] **Readable encounter and HUD.** The isometric view uses foot shadows and shot and hit flashes. The HUD shows health, weapon and ammo, the current objective, and remaining infected. Pause freezes the encounter. [Rendering](architecture.md#one-frame-on-a-phone) · [Android HUD](../apps/mobile/App.tsx)
+- [x] **A county players can learn.** The scaffold fixes roads and the residential, city, hospital, farm, and military districts. Seeds vary ground details and cache sites. [World design](world-design.md) · [World generation](../crates/zombiebox-core/src/world.rs)
+
+For changes to the browser encounter, play from the opening screen through a block clear. Verify that the cache can only be searched once, that Fire highlights for a clear target and spends a round only when a shot is available, and that pause and replay work. Use the Android handset checks below for the corresponding native behavior.
+
+## Planned milestones and completion checks
+
+- [ ] **Validate Birch Street on a modest Android handset.** Sideload the APK and play offline from the opening screen through a win. Verify simultaneous movement and aiming, one-time pistol pickup, retained aim, wall-blocked shots, and the HUD updating as ammo, health, and zombie count change. Check the visual and performance target during the run. Pause and background the app during play, then confirm that resuming clears held input and avoids a burst of simulation ticks. Record APK build, emulator, and physical handset results separately. An offline emulator playtest is already recorded. [Android playtest record](../apps/mobile/README.md) · [Device criteria](architecture.md#first-device-decision)
+- [ ] **Complete a persistent medicine run.** Play from the residential start to the hospital pharmacy and back home. An exploding prop scatters nearby zombies and attracts another group. Stashing the medicine completes the outing and leaves the survivor free to venture out again. Verify that death ends the run and the next survivor gets a new seed. Track health and carried supplies. Defer detailed wounds, hunger, crafting trees, and base construction until the supply run is worth repeating. [First supply run](world-design.md#the-first-supply-run)
+  - Suspend and resume mid-trip. Verify the same inventory, depleted containers, and local threats. Leave and revisit a looted chunk and confirm that loot stays depleted and dropped items remain where they were left. [Save plan](architecture.md#platform-and-persistence) · [Prototype milestones](world-design.md#prototype-milestones)
+  - When introducing seeded interiors, loot, or encounters, check that landmark routes stay recognizable across seeds and that the starter cache and a public entrance to every landmark are reachable on foot. [Generation plan](world-design.md#generate-only-the-part-that-benefits-from-surprise)
+- [ ] **Bring the wider county under pressure.** Add city, farm, and military-base encounters once the supply run is in place. Distant hordes travel on roads and resolve into individual zombies near the player. Lure a horde across a chunk boundary, double back, and account for the surviving zombies on return. [Prototype milestones](world-design.md#prototype-milestones)
+- [ ] **Prototype one drivable vehicle.** Enter a car, drive from town to the farm, park across a chunk boundary, and exit. Reload and recover exactly one car with its cargo intact. [Prototype milestones](world-design.md#prototype-milestones)
+- [ ] **Port to iOS.** iOS is the next native platform target. Run the encounter on a physical iOS device with equivalent movement, aiming, and action controls before treating it as supported. [Platform plan](architecture.md#platform-and-persistence) · [iOS notes](../apps/mobile/README.md#ios)
