@@ -271,21 +271,21 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         val y = stick.centerY
         val radius = stickRadius
         controlPaint.style = Paint.Style.FILL
-        controlPaint.color = 0xA0151C19.toInt()
+        controlPaint.color = 0xB5171D22.toInt()
         canvas.drawCircle(x, y, radius, controlPaint)
         controlPaint.style = Paint.Style.STROKE
         controlPaint.strokeWidth = density
-        controlPaint.color = 0xA0E5B96D.toInt()
+        controlPaint.color = if (stick.active) 0xFFE1AE63.toInt() else 0xC79FABB0.toInt()
         canvas.drawCircle(x, y, radius, controlPaint)
-        controlPaint.color = 0x40E5B96D
+        controlPaint.color = 0x649FABB0
         canvas.drawCircle(x, y, radius * 0.63f, controlPaint)
         canvas.drawLine(x - radius * 0.82f, y, x + radius * 0.82f, y, controlPaint)
         canvas.drawLine(x, y - radius * 0.82f, x, y + radius * 0.82f, controlPaint)
 
         controlPaint.style = Paint.Style.FILL
-        controlPaint.color = if (stick.active) 0xEEE5B96D.toInt() else 0x90E5B96D.toInt()
+        controlPaint.color = if (stick.active) 0xFFE1AE63.toInt() else 0xABBEBBB3.toInt()
         canvas.drawCircle(x + stick.x * radius * 0.58f, y + stick.y * radius * 0.58f, radius * 0.24f, controlPaint)
-        controlPaint.color = 0xFFF3E4C4.toInt()
+        controlPaint.color = 0xFFF1EAE0.toInt()
         controlPaint.textSize = 10f * density
         controlPaint.typeface = Typeface.MONOSPACE
         controlPaint.textAlign = Paint.Align.CENTER
@@ -316,11 +316,10 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         val x = event.getX(index)
         val y = event.getY(index)
         val hitRadius = stickRadius + 12f * density
-        if (!move.active && move.contains(x, y, hitRadius)) {
-            move.take(pointer, x, y, stickRadius)
-        } else {
-            if (!aim.active && aim.contains(x, y, hitRadius)) aim.take(pointer, x, y, stickRadius)
-            if (tapId == INVALID_POINTER) {
+        when {
+            move.contains(x, y, hitRadius) -> if (!move.active) move.take(pointer, x, y, stickRadius)
+            aim.contains(x, y, hitRadius) -> if (!aim.active) aim.take(pointer, x, y, stickRadius)
+            tapId == INVALID_POINTER -> {
                 tapId = pointer
                 tapX = x
                 tapY = y

@@ -32,7 +32,7 @@ The APK is written to `apps/mobile/build/zombiebox-android.apk`. To install it o
 adb install -r apps/mobile/build/zombiebox-android.apk
 ```
 
-The app runs locally on the phone and does not need the browser server. It opens in landscape. Drag the left stick to move and the right stick to aim; aiming does not fire. Tap the **Search**, **Fire**, or **Use** action button, or tap the game scene. Near the pistol cache the action searches; after pickup it fires in the current aim direction. Move through the house doorway and approach the pistol to collect it. A clear shot is required to hit a zombie.
+The app runs offline in landscape. Drag the left stick to move and the right stick to aim, including while moving. Tap the **Search**, **Fire**, or **Use** action button, or tap the scene outside both sticks and the overlay controls. Follow the lit doorway and search the warm-lit cache inside for a pistol and six rounds. After pickup, the action fires in the current aim direction. Walls stop shots.
 
 To install manually, transfer the APK to the phone and open it from Downloads or a file manager. If prompted, allow that app to install unknown apps, then confirm installation. See the [mobile guide](apps/mobile/README.md) for SDK setup and current emulator verification.
 
@@ -63,6 +63,7 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | --- | --- |
 | [crates/zombiebox-core](crates/zombiebox-core) | Fixed-tick survival rules, world generation, gameplay events, and the headless example |
 | [crates/zombiebox-ffi](crates/zombiebox-ffi) | Versioned C interface for native hosts to own and step a Rust run |
+| [crates/zombiebox-render](crates/zombiebox-render) | Native isometric rendering, Birch Street art, character animation, and combat effects |
 | [crates/zombiebox-web](crates/zombiebox-web) | Playtest HTTP host for the Rust simulation |
 | [apps/mobile](apps/mobile) | React Native Android app, JNI host, and native build guide |
 | [apps/web](apps/web) | Isometric Canvas view, touch controls, and HUD for the browser playtest |

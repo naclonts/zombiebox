@@ -78,8 +78,18 @@ pub struct ActionInput {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ActionEvent {
-    Looted { at: Position },
-    Shot { from: Vec2, at: Vec2 },
+    Looted {
+        at: Position,
+    },
+    Shot {
+        from: Vec2,
+        at: Vec2,
+    },
+    /// The index in the infected pose list immediately before the shot.
+    InfectedDown {
+        index: usize,
+        at: Vec2,
+    },
     Hurt,
     Died,
     Won,
@@ -319,6 +329,7 @@ impl ActionGame {
             let at = self.zombies.remove(i).position;
             self.bite_cooldowns.remove(i);
             self.events.push(ActionEvent::Shot { from, at });
+            self.events.push(ActionEvent::InfectedDown { index: i, at });
             if self.zombies.is_empty() {
                 self.outcome = ActionOutcome::Won;
                 self.events.push(ActionEvent::Won);
@@ -422,10 +433,15 @@ mod tests {
         }];
         game.bite_cooldowns = vec![10];
         game.player.facing = Vec2::new(1.0, 0.0);
+        let target = game.zombies[0].position;
         game.step(ActionInput {
             fire: true,
             ..ActionInput::default()
         });
+        assert!(game.events().contains(&ActionEvent::InfectedDown {
+            index: 0,
+            at: target
+        }));
         assert_eq!(game.hud().zombie_count, 0);
         assert_eq!(game.hud().ammo, 5);
         assert_eq!(game.outcome(), ActionOutcome::Won);

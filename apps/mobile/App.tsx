@@ -26,12 +26,12 @@ type Menu = 'start' | 'paused' | 'won' | 'dead';
 const menuContent = {
   start: {
     title: 'Zombiebox',
-    description: 'Find the pistol inside the house and clear the residential block.',
+    description: 'Find the pistol inside the house and clear the block.',
     action: 'Enter the block',
   },
   paused: {
     title: 'Paused',
-    description: 'Resume when you’re ready.',
+    description: null,
     action: 'Resume',
   },
   won: {
@@ -48,13 +48,15 @@ const menuContent = {
 
 function Game() {
   const insets = useSafeAreaInsets();
-  const {height} = useWindowDimensions();
+  const {height, width} = useWindowDimensions();
   const surface = useRef<React.ComponentRef<typeof GameSurface>>(null);
   const [run, setRun] = useState(1);
   const [menu, setMenu] = useState<Menu | null>('start');
   const [hud, setHud] = useState<Hud | null>(null);
-  const activeMenu: Menu | null = menu ?? (hud?.won ? 'won' : hud?.dead ? 'dead' : null);
-  const compact = height < 340;
+  const activeMenu: Menu | null =
+    menu ?? (hud?.won ? 'won' : hud?.dead ? 'dead' : null);
+  const compact = height - insets.top - insets.bottom < 340;
+  const menuWidth = Math.min(356, Math.max(260, Math.floor(width * 0.49)));
 
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -80,7 +82,9 @@ function Game() {
   const content = activeMenu ? menuContent[activeMenu] : null;
   const health = hud?.health ?? MAX_HEALTH;
   const action = hud?.nearLoot ? 'Search' : hud?.armed ? 'Fire' : 'Use';
-  const actionLabel = hud?.nearLoot ? 'Search the cache' : hud?.armed ? 'Fire pistol' : 'Use';
+  const actionLabel = hud?.nearLoot
+    ? 'Search the cache'
+    : hud?.armed ? 'Fire pistol' : 'Use';
   const outOfAmmo = !!hud?.armed && !hud.nearLoot && hud.supplies === 0;
   const objective = hud?.nearLoot
     ? 'Search the cache'
@@ -102,7 +106,10 @@ function Game() {
         <>
           <View
             pointerEvents="box-none"
-            style={[styles.top, {top: insets.top + 14, left: insets.left + 18, right: insets.right + 18}]}>
+            style={[
+              styles.top,
+              {top: insets.top + 12, left: insets.left + 16, right: insets.right + 16},
+            ]}>
             <View pointerEvents="none" style={styles.status}>
               <View accessible accessibilityLabel={`Health ${health} out of ${MAX_HEALTH}`}>
                 <Text style={styles.statusLabel}>HEALTH</Text>
@@ -119,13 +126,20 @@ function Game() {
             </View>
 
             <View pointerEvents="none" style={styles.objective}>
-              <Text style={styles.objectiveText}>{objective}</Text>
+              <View style={styles.objectiveCard}>
+                <Text style={styles.statusLabel}>OBJECTIVE</Text>
+                <Text style={styles.objectiveText}>{objective}</Text>
+              </View>
             </View>
 
             <View pointerEvents="box-none" style={styles.right}>
-              <View pointerEvents="none" style={styles.threats}>
+              <View
+                accessible
+                accessibilityLabel={`${hud?.zombies ?? 3} infected remaining`}
+                pointerEvents="none"
+                style={styles.threats}>
                 <Text style={styles.statusLabel}>INFECTED</Text>
-                <Text style={styles.statusValue}>{hud?.zombies ?? 3} left</Text>
+                <Text style={styles.threatCount}>{hud?.zombies ?? 3}</Text>
               </View>
               <Pressable
                 accessibilityRole="button"
@@ -144,7 +158,13 @@ function Game() {
               accessibilityLabel={outOfAmmo ? 'Out of rounds' : actionLabel}
               disabled={outOfAmmo}
               onPress={use}
-              style={({pressed}) => [styles.action, hud?.nearLoot && styles.actionReady, outOfAmmo && styles.actionDisabled, pressed && styles.controlPressed]}>
+              style={({pressed}) => [
+                styles.action,
+                hud?.armed && !outOfAmmo && styles.actionArmed,
+                hud?.nearLoot && styles.actionReady,
+                outOfAmmo && styles.actionDisabled,
+                pressed && styles.controlPressed,
+              ]}>
               <Text style={[styles.actionText, hud?.nearLoot && styles.actionReadyText]}>
                 {outOfAmmo ? 'Out of rounds' : action}
               </Text>
@@ -156,14 +176,32 @@ function Game() {
       {content && activeMenu && (
         <View
           accessibilityViewIsModal
-          style={[styles.scrim, {paddingLeft: insets.left + 20, paddingRight: insets.right + 20, paddingTop: insets.top + 14, paddingBottom: insets.bottom + 14}]}>
-          <View style={[styles.menu, compact && styles.menuCompact]}>
-            <Text accessibilityRole="header" style={[styles.title, compact && styles.titleCompact]}>{content.title}</Text>
-            <Text style={styles.description}>{content.description}</Text>
+          style={[
+            styles.scrim,
+            {
+              paddingLeft: insets.left + 20,
+              paddingRight: insets.right + 20,
+              paddingTop: insets.top + 14,
+              paddingBottom: insets.bottom + 14,
+            },
+          ]}>
+          <View style={[styles.menu, {width: menuWidth}, compact && styles.menuCompact]}>
+            <Text style={styles.location}>BIRCH STREET</Text>
+            <Text
+              accessibilityRole="header"
+              style={[
+                styles.title,
+                activeMenu === 'start' && styles.gameTitle,
+                compact && styles.titleCompact,
+              ]}>
+              {content.title}
+            </Text>
+            {content.description && <Text style={styles.description}>{content.description}</Text>}
             {activeMenu === 'start' && (
-              <Text style={styles.instructions}>
-                Left stick to move. Right stick to aim. Tap the scene or action button to search or fire.
-              </Text>
+              <View style={styles.instructions}>
+                <Text style={styles.instructionText}>Left stick to move · Right stick to aim</Text>
+                <Text style={styles.instructionText}>Tap the scene or action button to search or fire.</Text>
+              </View>
             )}
             <View style={styles.menuActions}>
               <Pressable
@@ -196,75 +234,90 @@ export default function App() {
   );
 }
 
-const amber = '#E5B96D';
-const cream = '#F3E4C4';
-const charcoal = '#151C19';
-const glass = '#151C19E8';
-const outline = '#E5B96D55';
+const amber = '#E1AE63';
+const bone = '#F1EAE0';
+const muted = '#BEBBB3';
+const ink = '#15191D';
+const glass = '#171D22F2';
+const outline = '#465159';
 
 const styles = StyleSheet.create({
-  screen: {flex: 1, backgroundColor: charcoal},
+  screen: {flex: 1, backgroundColor: ink},
   top: {position: 'absolute', flexDirection: 'row', alignItems: 'flex-start', gap: 8},
   status: {
-    flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 10,
-    minHeight: 44, backgroundColor: glass, borderWidth: 1, borderColor: outline, borderRadius: 7,
+    flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 10,
+    minHeight: 44, backgroundColor: glass, borderWidth: 1, borderColor: outline,
   },
-  statusLabel: {fontFamily: 'monospace', fontSize: 9, letterSpacing: 0.4, color: amber},
+  statusLabel: {
+    fontFamily: 'monospace', fontSize: 10, fontWeight: '700', letterSpacing: 0.6, color: muted,
+  },
   health: {flexDirection: 'row', gap: 3, marginTop: 4},
-  healthBar: {width: 10, height: 6, borderRadius: 1, backgroundColor: '#665242'},
-  healthFull: {backgroundColor: '#D78257'},
+  healthBar: {width: 9, height: 6, backgroundColor: '#464742'},
+  healthFull: {backgroundColor: amber},
   weapon: {borderLeftWidth: 1, borderColor: outline, paddingLeft: 10},
-  statusValue: {fontSize: 11, color: cream, fontWeight: '600'},
-  objective: {flex: 1, alignItems: 'center', paddingTop: 4},
-  objectiveText: {
-    color: cream, fontSize: 11, fontWeight: '700', textAlign: 'center',
-    backgroundColor: glass, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 4,
-    overflow: 'hidden',
+  statusValue: {fontSize: 12, color: bone, fontWeight: '700'},
+  objective: {flex: 1, alignItems: 'center'},
+  objectiveCard: {
+    alignItems: 'center', justifyContent: 'center', minHeight: 44, paddingHorizontal: 12,
+    paddingVertical: 3, borderBottomWidth: 2, borderColor: amber, backgroundColor: glass,
   },
+  objectiveText: {color: bone, fontSize: 12, fontWeight: '700', textAlign: 'center'},
   right: {flexDirection: 'row', alignItems: 'center', gap: 6},
   threats: {
-    paddingHorizontal: 10, paddingVertical: 5, justifyContent: 'center', minHeight: 44,
-    borderWidth: 1, borderColor: outline, backgroundColor: glass, borderRadius: 7,
+    paddingHorizontal: 10, paddingVertical: 3, justifyContent: 'center', minHeight: 44,
+    borderWidth: 1, borderColor: outline, backgroundColor: glass,
   },
+  threatCount: {color: bone, fontFamily: 'monospace', fontSize: 15, fontWeight: '700'},
   pause: {
     minWidth: 44, minHeight: 44, backgroundColor: glass, borderWidth: 1, borderColor: outline,
-    borderRadius: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
   },
-  pauseBar: {width: 3, height: 12, borderRadius: 1, backgroundColor: cream},
+  pauseBar: {width: 3, height: 12, backgroundColor: bone},
   bottom: {position: 'absolute', left: 0, right: 0, alignItems: 'center'},
   action: {
-    minHeight: 44, minWidth: 104, borderWidth: 1, borderColor: outline, borderRadius: 7,
+    minHeight: 44, minWidth: 104, borderWidth: 1, borderColor: outline,
     justifyContent: 'center', alignItems: 'center', paddingHorizontal: 12, backgroundColor: glass,
   },
-  actionText: {fontSize: 13, fontWeight: '800', color: cream},
+  actionText: {fontSize: 14, fontWeight: '800', letterSpacing: 0.4, color: bone},
+  actionArmed: {borderColor: amber},
   actionReady: {backgroundColor: amber, borderColor: amber},
-  actionReadyText: {color: charcoal},
-  actionDisabled: {opacity: 0.7},
+  actionReadyText: {color: ink},
+  actionDisabled: {opacity: 0.75},
   controlPressed: {opacity: 0.72},
   scrim: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: '#1016128A',
+    backgroundColor: '#10131765',
     justifyContent: 'center',
-    alignItems: 'center',
+    alignItems: 'flex-start',
   },
   menu: {
-    width: '100%', maxWidth: 410, backgroundColor: '#18221EFA', borderWidth: 1,
-    borderColor: outline, borderRadius: 11, paddingHorizontal: 26, paddingVertical: 20, gap: 8,
+    maxWidth: '100%', backgroundColor: '#171C21FA', borderWidth: 1, borderColor: outline,
+    borderLeftWidth: 3, borderLeftColor: amber, paddingHorizontal: 22, paddingVertical: 19, gap: 5,
   },
-  menuCompact: {paddingVertical: 13, gap: 6},
-  title: {color: cream, fontSize: 38, lineHeight: 42, fontWeight: '900', letterSpacing: -1.2},
-  titleCompact: {fontSize: 30, lineHeight: 34},
-  description: {color: cream, fontSize: 14, lineHeight: 19},
-  instructions: {color: '#C7B998', fontSize: 12, lineHeight: 17},
-  menuActions: {flexDirection: 'row', gap: 9, marginTop: 7},
+  menuCompact: {paddingHorizontal: 16, paddingVertical: 12, gap: 4},
+  location: {
+    color: amber, fontFamily: 'monospace', fontSize: 11, fontWeight: '700', letterSpacing: 2,
+  },
+  title: {
+    color: bone, fontFamily: 'sans-serif-condensed', fontSize: 42, lineHeight: 47,
+    fontWeight: '900', letterSpacing: -0.6,
+  },
+  gameTitle: {fontSize: 53, lineHeight: 56, textTransform: 'uppercase'},
+  titleCompact: {fontSize: 36, lineHeight: 40},
+  description: {color: bone, fontSize: 14, lineHeight: 19},
+  instructions: {
+    borderTopWidth: 1, borderColor: outline, marginTop: 6, paddingTop: 7, gap: 2,
+  },
+  instructionText: {color: muted, fontSize: 12, lineHeight: 15},
+  menuActions: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 7},
   primary: {
-    alignItems: 'center', justifyContent: 'center', minHeight: 44, paddingHorizontal: 18,
-    borderRadius: 6, backgroundColor: amber,
+    alignItems: 'center', justifyContent: 'center', minHeight: 44, paddingHorizontal: 16,
+    backgroundColor: amber,
   },
-  primaryText: {fontSize: 13, color: charcoal, fontWeight: '900'},
+  primaryText: {fontSize: 14, color: ink, fontWeight: '900'},
   secondary: {
     alignItems: 'center', justifyContent: 'center', minHeight: 44, paddingHorizontal: 14,
-    borderRadius: 6, borderColor: outline, borderWidth: 1,
+    borderColor: outline, borderWidth: 1,
   },
-  secondaryText: {fontSize: 13, color: cream, fontWeight: '700'},
+  secondaryText: {fontSize: 14, color: bone, fontWeight: '700'},
 });
