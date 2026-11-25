@@ -1,6 +1,6 @@
 # Zombiebox
 
-A single-player isometric action-adventure and zombie survival sandbox built for Android. The local app plays in landscape with twin-stick controls. Enter the house on Birch Street, pick up a pistol, and clear three zombies from the block. The browser playtest remains available, and an iOS app is a future platform target.
+A single-player isometric action-adventure and zombie survival sandbox built for Android. The local app plays in landscape with twin-stick controls across a dusk-lit, destructible, multi-level Birch Street residential block: scavenge tools, firearms, and medkits across three two-story houses and surrounding yards, smash windows or breach walls, and clear sight- and sound-reactive infected threats. The legacy browser playtest remains available, and an iOS app is a future platform target.
 
 ## Run the browser playtest
 
@@ -32,7 +32,7 @@ The APK is written to `apps/mobile/build/zombiebox-android.apk`. To install it o
 adb install -r apps/mobile/build/zombiebox-android.apk
 ```
 
-The app runs offline in landscape. Drag the left stick to move and the right stick to aim, including while moving. Tap the **Search**, **Fire**, or **Use** action button, or tap the scene outside both sticks and the overlay controls. Follow the lit doorway and search the warm-lit cache inside for a pistol and six rounds. After pickup, the action fires in the current aim direction. Walls stop shots.
+The app runs offline in landscape. Drag the left stick to move (light tilt walks quietly without footstep noise) and use the right stick to aim and fire with your chosen scheme in **Settings** (**Tap Stick** by default: drag to aim, tap to fire, double-tap & hold for continuous fire; **Outer Ring** auto-fire; or **Release** to fire with center-cancel). Use the bottom hotbar to switch between the **Axe**, **Pistol**, **Shotgun**, and **Rocket Launcher**, tap **+ MED** for quick-heal, and tap the contextual interact prompt (or scene near a prompt) to search caches, open/close doors, vault broken windows, drop from 2F windows, or take stairs. Procedural retro SFX, Android haptics, and aim look-ahead are configurable in **Settings**.
 
 To install manually, transfer the APK to the phone and open it from Downloads or a file manager. If prompted, allow that app to install unknown apps, then confirm installation. See the [mobile guide](apps/mobile/README.md) for SDK setup and current emulator verification.
 

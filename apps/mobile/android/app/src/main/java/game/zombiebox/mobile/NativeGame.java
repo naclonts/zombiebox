@@ -14,4 +14,11 @@ final class NativeGame {
     static native void resetClock(long handle);
     static native long frame(long handle, Bitmap bitmap, long frameTimeNanos,
         float moveX, float moveY, float aimX, float aimY, boolean use);
+
+    static native long createV2(long seed);
+    static native void destroyV2(long handle);
+    static native void resetClockV2(long handle);
+    static native boolean frameV2(long handle, Bitmap bitmap, long frameTimeNanos,
+        float moveX, float moveY, float aimX, float aimY,
+        int actionFlags, int selectWeapon, int[] outState);
 }

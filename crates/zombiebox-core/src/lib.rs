@@ -4,8 +4,14 @@ mod action;
 mod world;
 
 pub use action::{
-    ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionHud, ActionInput, ActionOutcome, Pose,
-    Vec2,
+    ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionHud, ActionInput, ActionOutcome,
+    AwarenessIcon, BLOCK_HEIGHT, BLOCK_WIDTH, BuildingInfo, BuildingStyle, CacheKind, CacheLoot,
+    CacheView, CombatWorld, DT, DamageKind, Floor, FloorTransition, InteractPrompt, Inventory,
+    LightKind, LightSourceView, Material, MaterialCategory, MonsterId, MonsterKind, MonsterView,
+    NUM_FLOORS, NoiseEvent, NoiseKind, ObjectiveKind, PLAYER_MAX_HEALTH, PlayerRenderState, Pose,
+    ProjectileId, ProjectileKind, ProjectileView, PropKind, ReloadMode, Surface, Tile3D,
+    TileDamageResult, TileKind, TileObstruction, TileRenderInfo, TileVisibility, Vec2,
+    WallOrientation, Weapon, WeaponSpec, mix64, weapon_spec,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -311,10 +317,6 @@ impl Game {
         in_block && self.world.district_at(p).is_some() && !self.house.is_some_and(|h| h.is_wall(p))
     }
 
-    pub(crate) fn action_is_walkable(&self, p: Position) -> bool {
-        self.is_walkable(p)
-    }
-
     fn clear_shot(&self, from: Position, to: Position) -> bool {
         let Some(house) = self.house else {
             return true;
@@ -378,14 +380,6 @@ impl Game {
             }
         }
         None
-    }
-
-    pub(crate) fn action_next_path_step(
-        &self,
-        start: Position,
-        target: Position,
-    ) -> Option<Position> {
-        self.next_path_step(start, target)
     }
 }
 

@@ -42,7 +42,40 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
         view.paused = paused
     }
 
-    override fun requestUse(view: ZombieboxSurfaceView) = view.requestUse()
+    @ReactProp(name = "controlScheme")
+    override fun setControlScheme(view: ZombieboxSurfaceView, controlScheme: String?) {
+        view.controlScheme = controlScheme ?: "tap_stick"
+    }
+
+    @ReactProp(name = "sfxVolumePct", defaultInt = 75)
+    override fun setSfxVolumePct(view: ZombieboxSurfaceView, sfxVolumePct: Int) {
+        view.sfxVolumePct = sfxVolumePct
+    }
+
+    @ReactProp(name = "sfxMuted", defaultBoolean = false)
+    override fun setSfxMuted(view: ZombieboxSurfaceView, sfxMuted: Boolean) {
+        view.sfxMuted = sfxMuted
+    }
+
+    @ReactProp(name = "hapticsEnabled", defaultBoolean = true)
+    override fun setHapticsEnabled(view: ZombieboxSurfaceView, hapticsEnabled: Boolean) {
+        view.hapticsEnabled = hapticsEnabled
+    }
+
+    @ReactProp(name = "aimLookAhead", defaultBoolean = true)
+    override fun setAimLookAhead(view: ZombieboxSurfaceView, aimLookAhead: Boolean) {
+        view.aimLookAhead = aimLookAhead
+    }
+
+    override fun requestInteract(view: ZombieboxSurfaceView) = view.requestInteract()
+
+    override fun selectWeapon(view: ZombieboxSurfaceView, slot: Int) = view.selectWeapon(slot)
+
+    override fun requestReload(view: ZombieboxSurfaceView) = view.requestReload()
+
+    override fun requestHeal(view: ZombieboxSurfaceView) = view.requestHeal()
+
+    override fun playUiClick(view: ZombieboxSurfaceView) = view.playUiClick()
 
     override fun onAfterUpdateTransaction(view: ZombieboxSurfaceView) {
         super.onAfterUpdateTransaction(view)

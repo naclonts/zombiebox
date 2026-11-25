@@ -65,6 +65,133 @@ int64_t zb_action_v1_frame(ZbAction *run, uint8_t *pixels, uint32_t width,
                            float move_x, float move_y, float aim_x, float aim_y,
                            bool use_item);
 
+/* Action v2 interface: multi-weapon hotbar, contextual interact, audio/haptics
+ * event bitmask, look-ahead camera toggle, and full multi-level block HUD. */
+enum ZbWeapon {
+    ZB_WEAPON_UNCHANGED = -1,
+    ZB_WEAPON_AXE = 0,
+    ZB_WEAPON_PISTOL = 1,
+    ZB_WEAPON_SHOTGUN = 2,
+    ZB_WEAPON_ROCKET = 3
+};
+
+#define ZB_WEAPON_NONE UINT8_C(255)
+
+enum ZbActionInputFlags {
+    ZB_INPUT_FIRE_PULSE = 1u << 0,
+    ZB_INPUT_FIRE_HOLD = 1u << 1,
+    ZB_INPUT_INTERACT = 1u << 2,
+    ZB_INPUT_RELOAD = 1u << 3,
+    ZB_INPUT_HEAL = 1u << 4,
+    ZB_INPUT_LOOK_AHEAD = 1u << 5
+};
+
+enum ZbInteractKind {
+    ZB_INTERACT_NONE = 0,
+    ZB_INTERACT_SEARCH = 1,
+    ZB_INTERACT_OPEN_DOOR = 2,
+    ZB_INTERACT_CLOSE_DOOR = 3,
+    ZB_INTERACT_CLIMB_WINDOW = 4,
+    ZB_INTERACT_DROP_WINDOW = 5,
+    ZB_INTERACT_STAIRS_UP = 6,
+    ZB_INTERACT_STAIRS_DOWN = 7
+};
+
+enum ZbObjectiveKind {
+    ZB_OBJECTIVE_SCAVENGE = 0,
+    ZB_OBJECTIVE_CLEAR_BLOCK = 1,
+    ZB_OBJECTIVE_WON = 2,
+    ZB_OBJECTIVE_DEAD = 3
+};
+
+enum ZbActionV2Status {
+    ZB_V2_WON = 1u << 0,
+    ZB_V2_DEAD = 1u << 1,
+    ZB_V2_RELOADING = 1u << 2,
+    ZB_V2_CAN_RELOAD = 1u << 3,
+    ZB_V2_CAN_HEAL = 1u << 4,
+    ZB_V2_LOW_AMMO = 1u << 5,
+    ZB_V2_INDOORS = 1u << 6,
+    ZB_V2_DANGER_CLOSE = 1u << 7
+};
+
+#define ZB_SFX_AXE_SWING         (UINT64_C(1) << 0)
+#define ZB_SFX_AXE_HIT_FLESH     (UINT64_C(1) << 1)
+#define ZB_SFX_AXE_HIT_WOOD      (UINT64_C(1) << 2)
+#define ZB_SFX_PISTOL_FIRE       (UINT64_C(1) << 3)
+#define ZB_SFX_SHOTGUN_FIRE      (UINT64_C(1) << 4)
+#define ZB_SFX_ROCKET_LAUNCH     (UINT64_C(1) << 5)
+#define ZB_SFX_EXPLOSION         (UINT64_C(1) << 6)
+#define ZB_SFX_DRY_FIRE          (UINT64_C(1) << 7)
+#define ZB_SFX_RELOAD_START      (UINT64_C(1) << 8)
+#define ZB_SFX_RELOAD_FINISH     (UINT64_C(1) << 9)
+#define ZB_SFX_GLASS_SHATTER     (UINT64_C(1) << 10)
+#define ZB_SFX_WOOD_SPLINTER     (UINT64_C(1) << 11)
+#define ZB_SFX_STONE_THUD        (UINT64_C(1) << 12)
+#define ZB_SFX_STREETLIGHT_BREAK (UINT64_C(1) << 13)
+#define ZB_SFX_DOOR_TOGGLE       (UINT64_C(1) << 14)
+#define ZB_SFX_WINDOW_CLIMB      (UINT64_C(1) << 15)
+#define ZB_SFX_STAIRS_STEP       (UINT64_C(1) << 16)
+#define ZB_SFX_PICKUP            (UINT64_C(1) << 17)
+#define ZB_SFX_MEDKIT_HEAL       (UINT64_C(1) << 18)
+#define ZB_SFX_WEAPON_SWITCH     (UINT64_C(1) << 19)
+#define ZB_SFX_MONSTER_ALERT     (UINT64_C(1) << 20)
+#define ZB_SFX_MONSTER_HIT       (UINT64_C(1) << 21)
+#define ZB_SFX_MONSTER_DOWN      (UINT64_C(1) << 22)
+#define ZB_SFX_BLOATER_BURST     (UINT64_C(1) << 23)
+#define ZB_SFX_SHOOTER_FIRE      (UINT64_C(1) << 24)
+#define ZB_SFX_PLAYER_HURT       (UINT64_C(1) << 25)
+#define ZB_SFX_WIN               (UINT64_C(1) << 26)
+#define ZB_SFX_DEATH             (UINT64_C(1) << 27)
+#define ZB_SFX_STRUCTURAL_BREACH (UINT64_C(1) << 28)
+
+typedef struct {
+    float move_x;
+    float move_y;
+    float aim_x;
+    float aim_y;
+    uint32_t action_flags;
+    int32_t select_weapon;
+} ZbActionFrameInput;
+
+typedef struct {
+    uint64_t audio_events;
+    uint16_t active_reserve;
+    uint16_t pistol_reserve;
+    uint16_t shotgun_reserve;
+    uint16_t rocket_reserve;
+    uint16_t zombies;
+    uint16_t zombies_total;
+    uint16_t status_flags;
+    uint8_t health;
+    uint8_t max_health;
+    uint8_t floor;
+    uint8_t equipped_weapon;
+    uint8_t owned_weapons_mask;
+    uint8_t active_mag;
+    uint8_t active_mag_cap;
+    uint8_t pistol_mag;
+    uint8_t shotgun_mag;
+    uint8_t rocket_mag;
+    uint8_t reload_progress;
+    uint8_t medkits;
+    uint8_t caches_found;
+    uint8_t caches_total;
+    uint8_t interact_kind;
+    uint8_t objective_kind;
+} ZbActionFrameOutput;
+
+ZbAction *zb_action_v2_create(uint64_t seed);
+void zb_action_v2_destroy(ZbAction *run);
+/* Suspend the run between display callbacks and discard all latched input. */
+void zb_action_v2_reset_clock(ZbAction *run);
+/* Step simulation (60 Hz fixed step), render RGBA8888 into pixels, and write
+ * the current HUD + frame audio bitmask into out. Returns false on invalid args. */
+bool zb_action_v2_frame(ZbAction *run, uint8_t *pixels, uint32_t width,
+                        uint32_t height, size_t stride, uint64_t frame_time_ns,
+                        const ZbActionFrameInput *input,
+                        ZbActionFrameOutput *out);
+
 #ifdef __cplusplus
 }
 #endif

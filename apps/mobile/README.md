@@ -34,18 +34,20 @@ You can also transfer `apps/mobile/build/zombiebox-android.apk` to the phone, op
 
 ## Verification
 
-- **Release APK.** The signed sideload build is at `apps/mobile/build/zombiebox-android.apk`. Rust tests, formatting, Clippy, the C smoke test, and mobile type checking and Codegen passed.
-- **Host checks.** A seed `42` run cleared the block with five health and two rounds left after one wall-blocked shot. It covered one-time cache pickup, simultaneous movement and aim, and retained aim. A C ABI check verified that resetting the clock discards a queued action and resumes without catching up elapsed ticks. At 800 × 360 on the build host, p95 render time was 1.25 ms for software rendering alone.
-- **Current APK on emulator.** A clean install launched in landscape in airplane mode on an API 35 x86_64 emulator. Two runs reached **Block cleared**. The playtest verified HUD updates for health, ammo, and infected count, simultaneous movement and aiming, one-time cache pickup, an aim-stick tap that preserved ammo, retained aim while moving, and a wall-blocked shot that spent one round. The scene stayed fixed while paused. Backgrounding an active run with both sticks held cleared the input on return, and play continued without a visible catch-up burst. **Restart run** and **Play again** each started a fresh run.
-- **Physical handset.** Birch Street playthrough and frame pacing on a modest Android handset are pending. [Handset completion checks](../../docs/product-decisions.md#planned-milestones-and-completion-checks)
+- **Current implementation (host-verified).** The expanded Birch Street residential block (3 two-story destructible houses, 6 streetlights, 8 caches, 12 reactive infected across 4 archetypes, Axe/Pistol/Shotgun/Rocket Launcher/Medkit, dusk lighting & room visibility, `zb_action_v2` FFI/JNI, 3 twin-stick control schemes, procedural Genesis/PS1 `AudioTrack` SFX + Android haptics, and updated Fabric/React Native HUD & Settings) passed `zombiebox-core` tests (36/36), `zombiebox-render` tests (2/2), strict C11 syntax checks on `host.c` & `zombiebox_jni.c`, and mobile `npm run codegen` & `npm run typecheck`. At `800 × 360` on the build host (release), software rendering measured `p95 = 1.64 ms` on the full residential block and `p95 = 1.69 ms` with 100 stress zombies; four rendered scenes (`street`, `interior`, `upstairs`, `combat`) were visually verified.
+- **Release APK & emulator.** Signed sideload APK rebuilt cleanly at `apps/mobile/build/zombiebox-android.apk` (`:app:assembleRelease` succeeded across `arm64-v8a` and `x86_64` Rust/JNI, Kotlin/Java, Fabric Codegen, Hermes JS bundle, and `lintVitalRelease`). Emulator playthrough of the expanded Birch Street block is pending. (Prior one-house APK verification passed offline on an API 35 x86_64 emulator.)
+- **Physical handset.** Birch Street playthrough, touch/audio latency, and frame pacing on a modest Android handset are pending. [Handset completion checks](../../docs/product-decisions.md#planned-milestones-and-completion-checks)
 
 ## Controls and encounter
 
-- Drag the **left stick** to move. Movement is analog and slides along house walls.
-- Drag the **right stick** to aim. The right stick only aims; its last direction stays active after you release it.
-- Tap **Search**, **Fire**, or **Use**, or tap the scene outside both thumbsticks and the overlay controls. Near the pistol cache the action searches. After pickup, a tap fires one round in the current aim direction.
-- Walk through the lit doorway and approach the warm-lit pistol cache inside the furnished house. Search once for a pistol and six rounds. Aim around walls and clear the three zombies to win.
-- The HUD shows health, weapon and ammunition, the current objective, and remaining infected. Pause suspends the native simulation.
+- Drag the **left stick** to move briskly; light tilt (`<= 52%`) walks quietly without emitting footstep noise.
+- Use the **right stick** to aim and fire without moving your thumb to the center of the screen. Select your preferred scheme in **Settings**:
+  - **Tap Stick (default):** drag to aim (aim stays locked on release), tap the right stick to fire/swing, or double-tap & hold for continuous fire/chopping.
+  - **Outer Ring:** inner 78% aims; push past the amber ring to auto-fire.
+  - **Release:** drag past deadzone to aim and release to fire; pull back to center to cancel safely.
+- Tap the **bottom hotbar** (`AXE`, `PST`, `SHT`, `RKT`) to switch tools (tap the active firearm or **RLD** to reload), tap **+ MED** to quick-heal without changing weapons, and tap the contextual **Interact** button (or tap the scene while an interact prompt is shown) to search caches, open/close doors, vault broken windows, drop from 2F windows, or take stairs.
+- Explore Birch Street's three multi-level houses and yards: grab the **Axe** on the front stoop (shatters glass in 1 hit), **Pistol** inside Birch Bungalow, **Shotgun** in Elm Corner Duplex, **Rocket Launcher** upstairs in Oak Ridge Split-Level (breaches structural walls & collapses unsupported 2F overhangs), and **Medkits** / ammo caches. Clear all 12 sight- and sound-reactive threats (**Shamblers**, **Brisk** runners, **Bloaters**, and telegraphed **Shooters**).
+- **Settings** (top-right gear or Start/Pause menu) controls twin-stick scheme, SFX volume & mute, Android haptics, and camera aim look-ahead. Pause suspends the native simulation and clears held input; backgrounding suspends audio cleanly.
 
 ## What runs where
 
