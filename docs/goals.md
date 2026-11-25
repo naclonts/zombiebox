@@ -6,58 +6,93 @@ Directional guidance for upcoming milestones. Keep implementation choices flexib
 
 - **Faster, snappier movement.** Tune survivor movement speed (and matching enemy/combat pacing) so maneuvering around houses, kiting threats, and slipping through doorways feels brisk rather than sluggish.
 - **Twin-stick firing without mid-screen thumb travel.** Shooting should never require leaving the sticks to tap a separate Fire button in the middle of the screen.
-  - **Preferred direction to try first:** tapping the right-stick area fires while dragging aims.
-  - **Other mobile twin-stick patterns to keep open:** pushing the right stick past an outer fire ring (auto-fire), release-to-fire, or a fire trigger tucked right beside the right thumb.
-  - **Configurable control options:** consider offering multiple selectable twin-stick control schemes in a simple settings menu so players can pick what feels best on their phone.
-- **Ergonomic interactions and camera sightlines.** Keep Search/Interact and tool/medkit switching within easy thumb reach without causing accidental misfires. As movement speeds up and ranged enemies arrive, consider subtle camera aim look-ahead so threats stay visible before they attack.
+  - **Implemented schemes to validate and refine on hardware:** Tap Stick (drag to aim, tap to fire, double-tap & hold for continuous fire), Outer Ring auto-fire, and Release-to-fire with center cancel—selectable in Settings.
+- **Ergonomic interactions and camera sightlines.** Keep Search/Interact and tool/medkit switching within easy thumb reach without causing accidental misfires. Tune subtle camera aim look-ahead so threats stay visible during faster movement and ranged combat.
 
 ## Audio, haptics, and settings
 
-- **Sound effects across gameplay and UI.** Add responsive audio for UI clicks, weapon fire (pistol, shotgun, rocket launch/blast, axe swing/hit), material impacts (shattering glass, splintering wood, stone/wall thuds), item pickups/switches, medkit use, monster alerts/hits, and player damage.
+- **Sound effects across gameplay and UI.** Maintain responsive retro audio for UI clicks, weapon fire (pistol, shotgun, rocket launch/blast, axe swing/hit), material impacts (shattering glass, splintering wood, stone/wall thuds), item pickups/switches, medkit use, monster alerts/hits, player damage, and upcoming vehicle sounds (engine RPM, tire skid/gravel, crash/scrape, water/propeller audio).
 - **Asset strategy.** Use FOSS/CC0 sound libraries, procedural/synthetic audio, or a blend of both so audio matches the retro Genesis/PS1 feel, stays license-clean, and works fully offline.
-- **Touch polish and basic settings.** Consider subtle Android haptic feedback for shots, melee hits, blasts, and damage, paired with a lightweight settings panel (SFX volume/mute and control-scheme selection).
+- **Touch polish and settings.** Pair subtle Android haptic feedback (shots, melee hits, blasts, damage, and future vehicle traction/crash cues) with a lightweight settings panel (SFX volume/mute, control scheme, camera options).
 
 ## Residential block and destructible environments
 
-- **Quality before map scale.** Expand Birch Street from one single-story house into a full, high-craft **residential block** before scaling out to a larger city:
-  - Multiple **multi-level residential houses** with distinct floor plans, yards, sidewalks, **streetlights**, and lived-in neighborhood props.
-  - **Multi-level readability and verticality:** plan clean upper-floor/roof cutaways, smooth stair transitions, and true cross-floor gameplay—monsters follow the player up and down stairs, and the survivor can shoot out of or drop from upper-story windows.
-  - **Structural collapse (aspirational):** as destruction matures, explore structural support physics so destroying load-bearing supports causes unsupported upper floors, overhangs, or roofs to collapse inward.
-  - **Atmosphere and visibility:** pair streetlights with dusk/night lighting or interior line-of-sight shading (fog of war) so dark corners, lit porches, and peeking through windows matter—and knocking out a streetlight meaningfully darkens its corner.
-- **Broadly destructible world.** Aim for nearly everything in the environment to be breakable with intuitive material durability and tool matchups:
-  - Light/fragile elements like **windows** shatter in a single axe hit (or gunfire/blasts), opening new sightlines and climbable entry routes.
-  - **Doors, furniture, fences, and streetlights** break under sustained melee or gunfire (and doors/broken windows should support opening, closing, or climbing through, not only destruction).
-  - **Structural walls** resist light tools (e.g., ~1000 axe hits) but breach quickly under heavy explosives like a rocket launcher.
+- **High craft as the baseline bar.** Birch Street's three multi-level houses, yards, streetlights, dusk lighting, and destructible materials set the quality bar to carry forward into procedural districts:
+  - Multiple **multi-level structures** with distinct floor plans, clean upper-floor/roof cutaways, smooth stair transitions, and true cross-floor combat (monsters following stairs; shooting out of or dropping from upper-story windows).
+  - **Broadly destructible world:** fragile elements like **windows** shatter in one axe hit and become climbable; **doors, furniture, fences, and streetlights** break under melee or gunfire (and broken streetlights darken their area); **structural walls** resist light tools but breach under heavy explosives, with unsupported overhangs collapsing inward.
   - Destruction dynamically updates walkability, line of sight, pathfinding, lighting, sound emission, and saved chunk edits.
-- **Toward a full city.** Longer term, grow into a full city map—hand-laid or procedural—only as building templates and block pieces meet the residential quality bar. Moving houses and props out of hardcoded Rust coordinates into lightweight data-driven templates and a destructible material/HP table will make iterating on quality much faster.
+- **Data-driven templates for scale.** Move building footprints, multi-floor layouts, props, and material/HP definitions out of hardcoded coordinates into reusable, composable templates so residential neighborhoods, downtown blocks, hospitals, police stations, army bases, and woodland cabins can all share the same destructible quality.
+
+## Procedural world and plausible regions
+
+- **Minecraft-style seeded worlds.** Every world is procedurally generated from a seed: the overall terrain, where regions sit relative to each other, road and river networks, each district's street/campus layout, and the individual buildings inside each area all vary from seed to seed. Players should be able to share or replay a seed and get the same county.
+- **Rich region & biome roster.** Grow from a single residential block into a full county containing:
+  - **Residential neighborhoods:** varied multi-level houses, driveways, yards, fences, and streetlights.
+  - **Downtown:** denser, larger-scale multi-story commercial/mixed-use buildings, shops, apartments, alleys, parking lots, and wide intersections.
+  - **Hospital:** multi-wing, multi-story medical complex with varied campus layouts per seed (ambulance bay, wards, pharmacy, service halls) and strong visual identity.
+  - **Police station(s):** tactical precinct buildings with offices, cells, parking, and armories.
+  - **Army base:** fortified perimeter compound with gates, barracks, motor pool, armory, and open runway/pad space.
+  - **Countryside & woods with cabins:** rural roads, fields/farms, dense woods, and occasional secluded cabins.
+  - **Natural terrain:** **mountains** (elevation/ridges/passes), **rivers** (with bridges where roads cross), and **lakes** (shorelines, docks, lakeside cabins).
+- **Geographic plausibility.** Procedural layouts must feel believable rather than random:
+  - Downtown sits adjacent to residential neighborhoods—never dropped in the middle of deep woods.
+  - The hospital connects cleanly to town arterials near downtown/residential areas; police stations sit in or bordering downtown.
+  - The army base sits on the outer edge of town with road access and room around it.
+  - Country roads, farms, woods, cabins, lakes, and mountains ring the developed area and connect via bridges and mountain passes without stranding required locations.
+- **District identity in loot and threats.** Give every area a clear gameplay reason to visit and a distinct tactical profile:
+  - **Hospitals:** higher concentrations of **medkits**, **melee zombies**, and **mutated zombies**.
+  - **Army bases & police stations:** higher concentrations of firearms/heavy gear and **shooting zombies**.
+  - **Downtown / residential / country:** distinct balances of supplies, vehicles, cover density, and threat pressure.
+- **Wayfinding in a procedural world.** Because each seed has a new map, help players read the world naturally through road hierarchy (highways -> town streets -> dirt lanes), intersection signage, distinct architecture/lighting, and optional map/compass aids.
+
+## Vehicles and motorcycle riding
+
+- **Long-term vehicle lineup:** **motorcycles**, **jeeps**, **motorboats**, and **planes**—giving land, off-road, water (rivers/lakes), and air (mountains/long-range) traversal across the procedural county.
+- **Start with motorcycles.** Prototype motorcycles first as the flagship testbed for vehicle feel, physics, camera behavior, and fast chunk streaming.
+- **Semi-realistic dual-stick motorcycle controls (to prototype and tune):**
+  - **Left virtual stick:** controls turning the **handlebars** (steering input; explore pairing vertical axis or a clean throttle/brake input with it so accelerating, braking, and steering all work comfortably with two thumbs).
+  - **Right virtual stick:** controls rider **leaning** (shifting body weight left/right, and potentially forward/back pitch/tuck).
+  - Keep exact throttle/brake curves, assist levels, and deadzones flexible—expect to iterate and play-test extensively until the controls feel physical, learnable, and fun on a touchscreen.
+- **Physical consequences & mastery:**
+  - **Speed-dependent stability:** handlebars and leaning must work in concert with speed.
+  - **High-speed handlebar yank (e.g., ~40 mph):** yanking the handlebars hard right without appropriate speed/lean breaks traction or violently upsets the bike—ejecting the survivor off the bike to tumble and take **injury**, while the **unmanned motorcycle skids onward** on its momentum (scraping sparks, knocking props, or plowing into zombies).
+  - **Low-speed excessive lean (e.g., ~2 mph):** leaning sharply with too little forward speed lacks centrifugal force to hold the bike upright—causing the bike to **tip/fall over** on the spot.
+  - **Rewarding riding feel:** smooth low-speed handlebar maneuvering, coordinated lean-into-turns at road speed, surface traction differences (asphalt vs gravel/grass), braking/drifting, and mounting/dismounting cleanly.
+- **Vehicle camera exploration:**
+  - In a fixed isometric camera, mapping "lean left/right" and "turn handlebars left/right" to a stick can feel backwards or confusing whenever the bike heads down-screen or diagonally.
+  - **Explore a dedicated riding camera mode**—such as a **behind-overhead / chase-aligned camera** oriented behind the bike's direction of travel so screen-left always equals bike-left, screen-right always equals bike-right, and the player gets longer look-ahead down the road at speed.
+  - Compare behind-overhead chase view against fixed isometric (and consider smooth transitions when mounting/dismounting or a toggle in Settings during prototyping).
+- **Readable vehicle feedback:** communicate speed, handlebar angle, lean angle, and grip/stability limit clearly through bike sprite/model tilt, dust/skid VFX, subtle HUD/gauge indicators, engine & tire-screech SFX, and haptic rumble before a wipeout.
+- **Subsequent vehicles:**
+  - **Jeeps:** steadier 4-wheel handling, cargo storage, light off-roading, and durability against bumps/infected.
+  - **Motorboats:** buoyant water physics, wake/turn radius, river/lake navigation, and shoreline/dock boarding.
+  - **Planes:** takeoff roll, pitch/bank flight controls, landing gear/runway space (army base airstrip or open country fields), high-speed aerial camera/streaming, and dramatic crash consequences.
 
 ## Tools and weapons
 
-- **Distinct survival kit.** Expand beyond the pistol with tools that fill clearly different combat, survival, and breaching roles:
-  - **Axe:** close-range melee, rapid window/prop breaching, and a dependable fallback when ammo runs dry.
+- **Distinct survival kit.** Maintain clearly differentiated combat, survival, and breaching roles:
+  - **Axe:** close-range melee, rapid window/prop breaching, and dependable fallback when ammo runs dry.
   - **Pistol:** accurate, low-bulk sidearm.
   - **Shotgun:** close-range spread with strong stopping power / knockback.
-  - **Rocket launcher:** explosive area damage and heavy structural breaching (with clear blast feedback so self-damage feels fair).
+  - **Rocket launcher:** explosive area damage and heavy structural breaching (with fair, readable blast feedback).
   - **Medkit:** restores survivor health.
-  - Leave room for additional survival tools later (e.g., flashlight, distractions/throwables, crowbar).
-- **Switching and ammo.** Support thumb-friendly quick-switching (such as a compact hotbar or quick-slot + dedicated quick-heal), distinct ammo pools/reloading as weapons diversify, and clear equipped/ammo readability on the HUD so running dry on one firearm still leaves melee or secondary options.
+  - Leave room for additional survival tools later (e.g., flashlight, distractions/throwables, crowbar, repair/fuel tools for vehicles).
+- **Switching and ammo.** Keep thumb-friendly quick-switching, quick-heal, distinct ammo pools/reloading, and clear HUD readability—and decide cleanly how weapon access behaves while riding/driving vs on foot (e.g., dismount to fight first, with optional one-handed drive-by fire only if it fits later).
 
 ## Monster AI and variety
 
-- **Sight- and sound-reactive AI.** Replace omniscient pursuit with awareness states:
-  - **Wander / idle** when unaware of the player.
+- **Sight- and sound-reactive AI.** Maintain awareness states:
+  - **Wander / idle** when unaware.
   - **Sight:** detect the survivor via line of sight (blocked by intact walls, floors, and poor visibility).
-  - **Sound:** react to gunshots, explosions, breaking windows/walls, and loud movement by moving to investigate the sound's origin.
+  - **Sound:** react to gunshots, explosions, breaking windows/walls, movement noise, and loud **vehicle engines / crashes** by moving to investigate.
   - Investigate last-seen or last-heard locations, then settle back into wandering if the trail goes cold.
-- **Distinct monster archetypes.** Build recognizable silhouettes and combat behaviors beyond basic shamblers:
-  - **Humanoids:** baseline melee threats (with room for speed/toughness variation).
-  - **Big bloated things:** heavy, high-HP bruisers (e.g., heavy hits, knockback, or a volatile burst on death).
-  - **Shooters:** ranged threats that reward using cover, flanking, and breaking new lines of sight.
-  - Leave room for further archetypes as districts expand.
-- **Combat readability.** Multi-HP enemies, hit reactions, knockback, and readable attack telegraphs (especially for shooters and heavy attacks) keep touch combat fair and satisfying.
+- **Distinct monster archetypes.** Build recognizable silhouettes, audio cues, and combat behaviors tied into district ecology:
+  - **Humanoids (melee zombies):** shamblers and brisk runners forming baseline street and interior threats (especially dense in neighborhoods, downtown, and hospitals).
+  - **Mutated zombies:** heavy bloated monsters (volatile/high-HP) plus room for additional hospital/late-game mutant variants (e.g., leapers, armored brutes, or caustic spitters) that make medical campuses genuinely dangerous.
+  - **Shooters:** ranged armed infected that reward cover, flanking, and breaching new sightlines—concentrated especially in **army bases** and **police stations**.
+- **Combat readability.** Multi-HP enemies, hit reactions, knockback, and clear attack telegraphs keep touch combat fair and satisfying.
 
 ## Supporting notes for future sessions
 
-- **Block objective loop.** As the residential block grows beyond three zombies and one house, define a replayable block objective (e.g., scavenge/clear/extract or return to a safe house) that bridges naturally into the persistent medicine run.
-- **Performance and scaling headroom.** Current action AI runs per-tick BFS and rendering uses CPU software pixel fills; budget pathfinding throttling/caching (invalidated on wall/window breaks) and watch physical Android handset frame pacing as multi-level houses, lights, and monster counts grow (GPU rendering via `wgpu` remains an option noted in [architecture.md](architecture.md#platform-and-persistence)).
-- **Browser playtest scope.** The web build still runs the separate 20 Hz tile-command runtime; future sessions can either keep it as a lightweight legacy harness or migrate it to `ActionGame` (WASD + mouse) if desktop testing of action features becomes valuable.
+- **Performance and scaling headroom.** Keep watching frame pacing on modest physical Android hardware as the world expands from one block to streamed procedural chunks, multi-district buildings, elevation/water, and vehicles. Notice that a **rotating behind-overhead vehicle camera** and high-speed driving put new pressure on the current fixed-angle CPU software renderer—evaluate early whether a rotated software pass or moving to GPU rendering (`wgpu`) is the cleaner path (see [architecture.md](architecture.md#scaling-from-one-street-to-the-county)).
+- **Browser playtest scope.** The web build still runs the separate 20 Hz tile-command runtime; future sessions can keep it as a lightweight legacy harness or migrate it to `ActionGame` if desktop testing of procedural worlds and vehicle physics becomes useful.

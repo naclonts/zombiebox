@@ -68,9 +68,9 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | [apps/mobile](apps/mobile) | React Native Android app, JNI host, and native build guide |
 | [apps/web](apps/web) | Isometric Canvas view, touch controls, and HUD for the browser playtest |
 | [docs/product-decisions.md](docs/product-decisions.md) | Product checklist, visual/performance targets, and milestone completion checks |
-| [docs/goals.md](docs/goals.md) | Directional guidance for upcoming gameplay, controls, environment, AI, and audio goals |
-| [docs/architecture.md](docs/architecture.md) | Stack decision, runtime ownership, rendering plan, and device acceptance criteria |
-| [docs/world-design.md](docs/world-design.md) | County layout, supply-run design, and progression through hordes and vehicles |
+| [docs/goals.md](docs/goals.md) | Directional guidance for upcoming gameplay, procedural world, vehicle, AI, and audio goals |
+| [docs/architecture.md](docs/architecture.md) | Stack decision, runtime ownership, procedural streaming, rendering plan, and device criteria |
+| [docs/world-design.md](docs/world-design.md) | Seed-driven procedural county design, plausible district rules, loot/infected ecology, and vehicles |
 
 ## Run the checks
 
