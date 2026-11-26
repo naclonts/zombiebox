@@ -41,6 +41,11 @@ bool zb_v1_step(ZbGame *game, uint32_t command);
 bool zb_v1_read_hud(const ZbGame *game, ZbHud *out);
 void zb_v1_destroy(ZbGame *game);
 
+/* Offline field atlas. The returned UTF-8 JSON belongs to the caller.
+ * Release it exactly once with zb_survey_v1_free. */
+char *zb_survey_v1_generate(uint64_t seed);
+void zb_survey_v1_free(char *survey);
+
 /* Action-game run and renderer. Call on one thread for the lifetime of the run. */
 typedef struct ZbAction ZbAction;
 

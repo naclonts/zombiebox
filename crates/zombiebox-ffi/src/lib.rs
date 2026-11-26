@@ -80,3 +80,21 @@ pub unsafe extern "C" fn zb_v1_destroy(game: *mut ZbGame) {
         drop(unsafe { Box::from_raw(game) });
     }
 }
+
+/// Produce the same NUL-terminated ASCII atlas served by the browser host.
+#[unsafe(no_mangle)]
+pub extern "C" fn zb_survey_v1_generate(seed: u64) -> *mut std::ffi::c_char {
+    std::ffi::CString::new(zombiebox_core::county_survey_json(seed))
+        .expect("atlas JSON is ASCII without embedded NULs")
+        .into_raw()
+}
+
+/// # Safety
+/// A non-null pointer must have been returned by zb_survey_v1_generate and
+/// must be released exactly once after the last reader has finished.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zb_survey_v1_free(survey: *mut std::ffi::c_char) {
+    if !survey.is_null() {
+        drop(unsafe { std::ffi::CString::from_raw(survey) });
+    }
+}

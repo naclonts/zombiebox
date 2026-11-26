@@ -577,6 +577,21 @@ function Game() {
                 <Text style={styles.primaryText}>{content.action}</Text>
               </Pressable>
 
+              {activeMenu === 'start' && (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => {
+                    playClick();
+                    if (surface.current) Commands.openCounty(surface.current);
+                  }}
+                  style={({pressed}) => [
+                    styles.secondary,
+                    pressed && styles.controlPressed,
+                  ]}>
+                  <Text style={styles.secondaryText}>County atlas</Text>
+                </Pressable>
+              )}
+
               {(activeMenu === 'start' || activeMenu === 'paused') && (
                 <Pressable
                   accessibilityRole="button"

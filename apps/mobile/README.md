@@ -36,7 +36,12 @@ You can also transfer `apps/mobile/build/zombiebox-android.apk` to the phone, op
 
 - **Current implementation (host-verified).** The expanded Birch Street residential block (3 two-story destructible houses, 6 streetlights, 8 caches, 12 reactive infected across 4 archetypes, Axe/Pistol/Shotgun/Rocket Launcher/Medkit, dusk lighting & room visibility, `zb_action_v2` FFI/JNI, 3 twin-stick control schemes, procedural Genesis/PS1 `AudioTrack` SFX + Android haptics, and updated Fabric/React Native HUD & Settings) passed `zombiebox-core` tests (36/36), `zombiebox-render` tests (2/2), strict C11 syntax checks on `host.c` & `zombiebox_jni.c`, and mobile `npm run codegen` & `npm run typecheck`. At `800 × 360` on the build host (release), software rendering measured `p95 = 1.64 ms` on the full residential block and `p95 = 1.69 ms` with 100 stress zombies; four rendered scenes (`street`, `interior`, `upstairs`, `combat`) were visually verified.
 - **Release APK & emulator.** Signed sideload APK rebuilt cleanly at `apps/mobile/build/zombiebox-android.apk` (`:app:assembleRelease` succeeded across `arm64-v8a` and `x86_64` Rust/JNI, Kotlin/Java, Fabric Codegen, Hermes JS bundle, and `lintVitalRelease`). Emulator playthrough of the expanded Birch Street block is pending. (Prior one-house APK verification passed offline on an API 35 x86_64 emulator.)
+- **County atlas emulator (2026-11-25).** The release APK (SHA-256 `93ccec00fcbf603276ea6743c784cd0a60d6d67ff2119259306ad0463bfe6c37`) was installed on an API 35 x86_64 emulator. With airplane mode enabled, the atlas opened from the menu, generated seed 42, started a walk and moved east, then generated seed 312 offline; Android Back returned to the menu. This was an atlas smoke test, not a Birch Street playthrough.
 - **Physical handset.** Birch Street playthrough, touch/audio latency, and frame pacing on a modest Android handset are pending. [Handset completion checks](../../docs/product-decisions.md#planned-milestones-and-completion-checks)
+
+### County field atlas
+
+Choose **County atlas** on the opening menu. Enter a decimal seed or survey reference seed **42**. Select a landmark to inspect its site and floors, or use **Start walk** and the directional pad to explore. The plus and minus buttons change floors when standing on stairs. Android Back returns to the Birch Street menu. The APK bundles the atlas assets and generates each county locally.
 
 ## Controls and encounter
 

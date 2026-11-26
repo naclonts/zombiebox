@@ -6,7 +6,9 @@ use std::{
     thread,
     time::Duration,
 };
-use zombiebox_core::{Command, Direction, Event, Game, Ground, Position, WORLD_SIZE};
+use zombiebox_core::{
+    Command, Direction, Event, Game, Ground, Position, WORLD_SIZE, county_survey_json,
+};
 
 const MAX_REQUEST: usize = 4096;
 const MAX_SESSIONS: usize = 256;
@@ -84,6 +86,8 @@ fn handle(mut stream: TcpStream, state: &Mutex<HostState>) {
         Ok((method, path, body, cross_site)) => {
             if method == "POST" && cross_site {
                 response(403, "text/plain", b"cross-site request denied\n")
+            } else if method == "GET" {
+                static_route(&path)
             } else {
                 let mut state = state.lock().expect("host state poisoned");
                 route(&method, &path, &body, &mut state)
@@ -159,16 +163,39 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
     Ok((method, path, bytes[split..split + len].to_vec(), cross_site))
 }
 
-fn route(method: &str, path: &str, body: &[u8], state: &mut HostState) -> Vec<u8> {
-    if method == "GET" {
-        return match path {
-            "/" | "/index.html" => response(200, "text/html; charset=utf-8", INDEX.as_bytes()),
-            "/game.js" => response(200, "text/javascript; charset=utf-8", JS.as_bytes()),
-            "/scene.js" => response(200, "text/javascript; charset=utf-8", SCENE.as_bytes()),
-            "/style.css" => response(200, "text/css; charset=utf-8", CSS.as_bytes()),
-            _ => response(404, "text/plain", b"not found\n"),
-        };
+fn static_route(path: &str) -> Vec<u8> {
+    let path = path.split('?').next().unwrap_or(path);
+    if let Some(value) = path.strip_prefix("/api/county/") {
+        if let Some(seed) = value
+            .parse::<u64>()
+            .ok()
+            .filter(|_| value.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return response(200, "application/json", county_survey_json(seed).as_bytes());
+        }
+        return response(400, "text/plain", b"invalid seed\n");
     }
+    let (mime, data) = match path {
+        "/" | "/index.html" => ("text/html", INDEX),
+        "/game.js" => ("text/javascript", JS),
+        "/scene.js" => ("text/javascript", SCENE),
+        "/style.css" => ("text/css", CSS),
+        "/county" | "/county.html" => ("text/html", include_str!("../../../apps/web/county.html")),
+        "/county-map.js" => (
+            "text/javascript",
+            include_str!("../../../apps/web/county-map.js"),
+        ),
+        "/county.js" => (
+            "text/javascript",
+            include_str!("../../../apps/web/county.js"),
+        ),
+        "/county.css" => ("text/css", include_str!("../../../apps/web/county.css")),
+        _ => return response(404, "text/plain", b"not found\n"),
+    };
+    response(200, mime, data.as_bytes())
+}
+
+fn route(method: &str, path: &str, body: &[u8], state: &mut HostState) -> Vec<u8> {
     if method != "POST" {
         return response(405, "text/plain", b"method not allowed\n");
     }
@@ -300,11 +327,12 @@ fn state_json(id: u64, s: &Session, events: &[(u64, Event)]) -> Result<String, s
             let p = Position::new(x, y);
             let tile = s.game.world().tile_at(p).expect("viewport in world");
             out.push(match tile.ground {
-                Ground::Road => 'r',
-                Ground::Grass => 'g',
+                Ground::Road | Ground::Street | Ground::Bridge => 'r',
+                Ground::Grass | Ground::Forest => 'g',
                 Ground::Pavement => 'p',
                 Ground::Field => 'f',
-                Ground::Gravel => 'v',
+                Ground::Gravel | Ground::Trail | Ground::Mountain => 'v',
+                Ground::River | Ground::Lake => 'w',
             });
         }
     }

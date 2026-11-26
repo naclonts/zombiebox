@@ -1,6 +1,8 @@
 //! Deterministic single-player rules. One call to `step` consumes one tick.
 
 mod action;
+mod survey;
+pub use survey::county_survey_json;
 mod world;
 
 pub use action::{
@@ -15,10 +17,7 @@ pub use action::{
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};
-pub use world::{
-    CHUNK_SIZE, CHUNKS_PER_SIDE, District, GENERATOR_VERSION, Ground, Position, Tile, WORLD_SIZE,
-    World,
-};
+pub use world::*;
 
 pub const TICKS_PER_SECOND: u32 = 20;
 const ZOMBIE_MOVE_INTERVAL: u64 = 8;
@@ -110,7 +109,7 @@ pub struct Game {
 
 impl Game {
     pub fn new(seed: u64) -> Self {
-        let world = World::new(seed);
+        let world = World::birch_street(seed);
         let player = world.wake_position();
         let zombies = [(4, 0), (5, 1), (-5, 1)]
             .map(|(dx, dy)| Position::new(player.x + dx, player.y + dy))

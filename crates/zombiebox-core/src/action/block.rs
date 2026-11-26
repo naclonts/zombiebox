@@ -2071,13 +2071,13 @@ mod tests {
     use crate::Ground;
 
     fn block_for_seed(seed: u64) -> (World, ResidentialBlock) {
-        let world = World::new(seed);
+        let world = World::birch_street(seed);
         let block = ResidentialBlock::new(&world, seed);
         (world, block)
     }
 
     #[test]
-    fn roads_align_with_county_world_and_origin_matches_chunk() {
+    fn birch_street_roads_align_with_backdrop_and_origin_matches_chunk() {
         for seed in [42, 7, 99] {
             let (world, block) = block_for_seed(seed);
             let wake = world.wake_position();

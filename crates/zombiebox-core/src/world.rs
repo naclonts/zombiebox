@@ -1,9 +1,18 @@
-//! Baseline geography can be rebuilt from coordinates in any order.
+//! Immutable, seed-generated county baseline. A chunk is a window onto the
+//! same plan regardless of the order in which a caller visits its neighbors.
+mod dressing;
+mod geography;
+mod parcels;
+use parcels::{ParcelTiles, Parcels};
+mod sites;
+pub use sites::*;
+
+use std::sync::Arc;
 
 pub const CHUNK_SIZE: i32 = 16;
 pub const CHUNKS_PER_SIDE: i32 = 32;
 pub const WORLD_SIZE: i32 = CHUNK_SIZE * CHUNKS_PER_SIDE;
-pub const GENERATOR_VERSION: u32 = 1;
+pub const GENERATOR_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Position {
@@ -19,78 +28,225 @@ impl Position {
     pub(crate) fn distance(self, other: Self) -> u32 {
         self.x.abs_diff(other.x) + self.y.abs_diff(other.y)
     }
+
+    fn index(self) -> Option<usize> {
+        ((0..WORLD_SIZE).contains(&self.x) && (0..WORLD_SIZE).contains(&self.y))
+            .then(|| (self.y * WORLD_SIZE + self.x) as usize)
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
 pub enum District {
     Residential,
     City,
     Hospital,
+    Police,
+    #[default]
     Farm,
     MilitaryBase,
+    Woods,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
 pub enum Ground {
     Road,
+    Street,
+    Trail,
+    Bridge,
+    #[default]
     Grass,
     Pavement,
     Field,
     Gravel,
+    Forest,
+    Mountain,
+    River,
+    Lake,
+}
+
+impl Ground {
+    pub fn is_road(self) -> bool {
+        matches!(self, Self::Road | Self::Street | Self::Trail | Self::Bridge)
+    }
+
+    pub fn walkable(self) -> bool {
+        !matches!(self, Self::Mountain | Self::River | Self::Lake)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Water {
+    River,
+    Lake,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct Tile {
     pub ground: Ground,
-    /// Initial cache site. Query the game for whether the contents remain.
+    pub district: District,
+    pub elevation: u8,
+    /// Original water body, including the channel beneath bridge decks.
+    pub water: Option<Water>,
+    pub feature: Feature,
+    /// Initial ground-floor cache. Upper floors are recorded in the site's loot.
     pub cache: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+impl Tile {
+    pub fn walkable(self) -> bool {
+        self.ground.walkable() && self.feature.walkable()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum LandmarkKind {
+    Residential,
+    Downtown,
+    Hospital,
+    Police,
+    ArmyBase,
+    Cabin,
+    Lake,
+    Mountain,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Landmark {
+    pub kind: LandmarkKind,
+    pub entrance: Position,
+}
+
+/// Inclusive parcel with a designated public frontage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Lot {
+    min: Position,
+    max: Position,
+    district: District,
+    front: Position,
+}
+
+/// Buildings intersecting this chunk, and spawn sites owned by it on any floor.
+#[derive(Debug, Default)]
+pub struct ChunkSites<'a> {
+    pub buildings: Vec<&'a Building>,
+    pub loot: Vec<&'a LootSite>,
+    pub infected: Vec<&'a InfectedSite>,
+}
+
+#[derive(Debug)]
+struct County {
+    tiles: Vec<Tile>,
+    landmarks: Vec<Landmark>,
+    parcels: Parcels,
+    spawn: Position,
+}
+
+#[derive(Clone, Debug)]
 pub struct World {
     seed: u64,
+    // The original encounter uses its authored grid as a low-cost backdrop.
+    // Only the two fixed encounter constructors use this variant.
+    county: Option<Arc<County>>,
 }
 
 impl World {
-    pub const fn new(seed: u64) -> Self {
-        Self { seed }
+    pub fn new(seed: u64) -> Self {
+        let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
+        let (landmarks, lots) = geography::generate(seed, &mut tiles);
+        let parcels = Parcels::new(lots);
+        let spawn = landmarks
+            .iter()
+            .find(|l| l.kind == LandmarkKind::Residential)
+            .expect("county has a residential entrance")
+            .entrance;
+        Self {
+            seed,
+            county: Some(Arc::new(County {
+                tiles,
+                landmarks,
+                parcels,
+                spawn,
+            })),
+        }
+    }
+
+    pub(crate) fn birch_street(seed: u64) -> Self {
+        Self { seed, county: None }
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
     pub fn wake_position(&self) -> Position {
-        self.cache_position(8, 16)
+        self.county
+            .as_ref()
+            .map_or_else(|| self.fixture_cache(8, 16), |c| c.spawn)
+    }
+
+    pub fn landmarks(&self) -> &[Landmark] {
+        self.county.as_ref().map_or(&[], |c| &c.landmarks)
+    }
+
+    pub fn sites(&self) -> Option<&Sites> {
+        self.county
+            .as_ref()
+            .map(|c| c.parcels.sites(self.seed, &c.tiles))
+    }
+
+    /// Resolve only the parcels intersecting this 16 × 16 chunk. Individual
+    /// spawn sites belong to exactly one chunk, even when a building spans several.
+    pub fn chunk_sites(&self, cx: i32, cy: i32) -> Option<ChunkSites<'_>> {
+        if !(0..CHUNKS_PER_SIDE).contains(&cx) || !(0..CHUNKS_PER_SIDE).contains(&cy) {
+            return None;
+        }
+        let min = Position::new(cx * CHUNK_SIZE, cy * CHUNK_SIZE);
+        let max = Position::new(min.x + CHUNK_SIZE - 1, min.y + CHUNK_SIZE - 1);
+        Some(self.county.as_ref().map_or_else(ChunkSites::default, |c| {
+            c.parcels.chunk_sites(min, max, self.seed, &c.tiles)
+        }))
+    }
+
+    pub fn walkable_at(&self, p: Position, floor: u8) -> bool {
+        if floor == 0 {
+            return self.tile_at(p).is_some_and(Tile::walkable);
+        }
+        p.index()
+            .and_then(|i| {
+                let c = self.county.as_ref()?;
+                c.parcels.feature_at(p, i, floor, self.seed, &c.tiles)
+            })
+            .is_some_and(|f| f != Feature::Empty && f.walkable())
     }
 
     pub fn district_at(&self, p: Position) -> Option<District> {
-        if !(0..WORLD_SIZE).contains(&p.x) || !(0..WORLD_SIZE).contains(&p.y) {
-            return None;
-        }
-        let district = match (p.x / CHUNK_SIZE, p.y / CHUNK_SIZE) {
-            (16..=18, 12..=13) => District::Hospital,
-            (25..=28, 3..=6) => District::MilitaryBase,
-            (12..=21, 10..=21) => District::City,
-            (22.., _) | (_, 23..) => District::Farm,
-            _ => District::Residential,
-        };
-        Some(district)
+        let i = p.index()?;
+        Some(
+            self.county
+                .as_ref()
+                .map_or(District::Residential, |c| c.tiles[i].district),
+        )
     }
 
     pub fn tile_at(&self, p: Position) -> Option<Tile> {
-        let district = self.district_at(p)?;
-        let variant = self.hash(p.x, p.y) % 8;
+        let index = p.index()?;
+        if let Some(county) = &self.county {
+            return Some(county.parcels.tile_at(p, index, self.seed, &county.tiles));
+        }
+        // Preserve the original residential fixture's road alignment and scatter
+        // across the native camera apron as well as the headless encounter.
         let ground = if p.x % CHUNK_SIZE == 8 || p.y % CHUNK_SIZE == 8 {
             Ground::Road
+        } else if fixture_hash(self.seed, p.x, p.y).is_multiple_of(8) {
+            Ground::Gravel
         } else {
-            match (district, variant) {
-                (District::Farm, 0) | (District::Residential, 0) => Ground::Gravel,
-                (District::Farm, _) => Ground::Field,
-                (District::Residential, _) | (District::Hospital, 0..=2) => Ground::Grass,
-                (District::MilitaryBase, 0..=5) => Ground::Gravel,
-                _ => Ground::Pavement,
-            }
+            Ground::Grass
         };
         Some(Tile {
             ground,
-            cache: p == self.cache_position(p.x / CHUNK_SIZE, p.y / CHUNK_SIZE),
+            district: District::Residential,
+            cache: p == self.fixture_cache(p.x / CHUNK_SIZE, p.y / CHUNK_SIZE),
+            ..Tile::default()
         })
     }
 
@@ -105,23 +261,27 @@ impl World {
         }
         Some(std::array::from_fn(|y| {
             std::array::from_fn(|x| {
-                let p = Position::new(cx * CHUNK_SIZE + x as i32, cy * CHUNK_SIZE + y as i32);
-                self.tile_at(p).expect("validated chunk coordinates")
+                self.tile_at(Position::new(
+                    cx * CHUNK_SIZE + x as i32,
+                    cy * CHUNK_SIZE + y as i32,
+                ))
+                .expect("validated chunk coordinates")
             })
         }))
     }
 
-    fn cache_position(&self, cx: i32, cy: i32) -> Position {
-        let offset = 1 + (self.hash(cx, cy) % 14) as i32;
+    fn fixture_cache(&self, cx: i32, cy: i32) -> Position {
+        let offset = 1 + (fixture_hash(self.seed, cx, cy) % 14) as i32;
         Position::new(cx * CHUNK_SIZE + offset, cy * CHUNK_SIZE + 8)
     }
+}
 
-    fn hash(&self, x: i32, y: i32) -> u64 {
-        // SplitMix64 finalizer over the seed and packed coordinates.
-        let coordinates = (u64::from(x as u32) << 32) | u64::from(y as u32);
-        let mut n = (self.seed ^ coordinates).wrapping_add(0x9e37_79b9_7f4a_7c15);
-        n = (n ^ (n >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        n = (n ^ (n >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        n ^ (n >> 31)
-    }
+fn fixture_hash(seed: u64, x: i32, y: i32) -> u64 {
+    let packed = (u64::from(x as u32) << 32) | u64::from(y as u32);
+    crate::mix64(seed ^ packed)
+}
+
+fn noise(seed: u64, domain: u64, x: i32, y: i32) -> u64 {
+    let stream = crate::mix64(domain.wrapping_add(u64::from(GENERATOR_VERSION) << 32));
+    fixture_hash(seed ^ stream, x, y)
 }

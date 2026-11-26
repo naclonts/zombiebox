@@ -1,6 +1,6 @@
 # Zombiebox
 
-A single-player isometric action-adventure and zombie survival sandbox built for Android. The local app plays in landscape with twin-stick controls across a dusk-lit, destructible, multi-level Birch Street residential block: scavenge tools, firearms, and medkits across three two-story houses and surrounding yards, smash windows or breach walls, and clear sight- and sound-reactive infected threats. The legacy browser playtest remains available, and an iOS app is a future platform target.
+A single-player isometric action-adventure and zombie survival sandbox built for Android. The local app plays in landscape with twin-stick controls across a dusk-lit, destructible, multi-level Birch Street residential block: scavenge tools, firearms, and medkits across three two-story houses and surrounding yards, smash windows or breach walls, and clear sight- and sound-reactive infected threats. The County field atlas lets you survey and walk a seeded county on Android and in the browser. The legacy browser playtest remains available, and an iOS app is a future platform target.
 
 ## Run the browser playtest
 
@@ -11,6 +11,12 @@ cargo run --locked -p zombiebox-web
 ```
 
 Open `http://127.0.0.1:8765`. Follow the lit doorway and stand on the marked crate to scavenge. **Fire** highlights when the pistol has a clear shot. Use the on-screen controls or move with **WASD** or the **arrow keys**, scavenge with **L**, fire with **Space**, and pause with **Escape**.
+
+### Explore a procedural county
+
+Choose **Open the county field atlas** on the browser opening screen or **County atlas** in the Android app. For the reference county, open [seed 42](http://127.0.0.1:8765/county?seed=42) with the browser host running. To replay another county, enter its unsigned decimal seed and choose **Survey**.
+
+Select a landmark to inspect its approach, floor plans, supply caches, and infected placements. **Start walk** puts you on the residential street. Move with WASD, arrows, or the touch pad. On stairs, use **[** and **]** or the minus/plus buttons to change floors. **Overview** returns to the county map. The atlas surveys the generated baseline. Birch Street remains the real-time combat and destruction encounter.
 
 ### Install the Android app
 

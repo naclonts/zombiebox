@@ -1,5 +1,6 @@
 package game.zombiebox.mobile
 
+import android.content.Intent
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.annotations.ReactModule
@@ -65,6 +66,10 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
     @ReactProp(name = "aimLookAhead", defaultBoolean = true)
     override fun setAimLookAhead(view: ZombieboxSurfaceView, aimLookAhead: Boolean) {
         view.aimLookAhead = aimLookAhead
+    }
+
+    override fun openCounty(view: ZombieboxSurfaceView) {
+        view.context.startActivity(Intent(view.context, CountyActivity::class.java))
     }
 
     override fun requestInteract(view: ZombieboxSurfaceView) = view.requestInteract()

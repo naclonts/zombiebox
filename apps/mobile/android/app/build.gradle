@@ -12,6 +12,12 @@ def rustLibraries = layout.buildDirectory.dir('generated/zombiebox/jniLibs')
 def rustScript = rootProject.layout.projectDirectory.file('build-rust.sh')
 def jniSource = rootProject.layout.projectDirectory.file('zombiebox_jni.c')
 
+// The offline atlas and browser use the same renderer and controls.
+def surveyAssets = tasks.register('copyCountyAssets', Sync) {
+    from(rustSources.dir('apps/web')) { include 'county.html', 'county.css', 'county.js', 'county-map.js' }
+    into(layout.buildDirectory.dir('generated/zombiebox/surveyAssets'))
+}
+
 android {
     namespace 'game.zombiebox.mobile'
     ndkVersion rootProject.ext.ndkVersion
@@ -26,6 +32,7 @@ android {
         versionName '0.1.0'
     }
 
+    sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/zombiebox/surveyAssets').get().asFile)
     sourceSets.main.jniLibs.srcDir(rustLibraries.get().asFile)
 
     buildTypes {
@@ -49,7 +56,7 @@ def buildZombieboxRust = tasks.register('buildZombieboxRust', Exec) {
     }
 }
 
-tasks.named('preBuild') { dependsOn(buildZombieboxRust) }
+tasks.named('preBuild') { dependsOn(buildZombieboxRust, surveyAssets) }
 
 dependencies {
     implementation('com.facebook.react:react-android')

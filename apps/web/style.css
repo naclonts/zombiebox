@@ -406,6 +406,17 @@ button:focus-visible {
   letter-spacing:.15em;
   text-align:left
 }
+.county-link {
+  display:block;
+  margin:0 auto 12px;
+  color:#c4cbb7;
+  font-size:9px;
+  font-weight:800;
+  letter-spacing:.12em;
+  text-align:center;
+  text-decoration:none
+}
+.county-link:hover,.county-link:focus-visible { color:#efb86d; text-decoration:underline }
 .primary span {
   float:right;
   font-size:15px;

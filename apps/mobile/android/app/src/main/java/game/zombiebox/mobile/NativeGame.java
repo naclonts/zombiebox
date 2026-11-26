@@ -9,6 +9,8 @@ final class NativeGame {
 
     private NativeGame() {}
 
+    static native byte[] countySurvey(long seed);
+
     static native long create(long seed);
     static native void destroy(long handle);
     static native void resetClock(long handle);

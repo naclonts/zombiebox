@@ -92,7 +92,7 @@ pub struct ActionGame {
 
 impl ActionGame {
     pub fn residential(seed: u64) -> Self {
-        let world = World::new(seed);
+        let world = World::birch_street(seed);
         let mut block = ResidentialBlock::new(&world, seed);
         let spawn = block.player_spawn();
         let player = Pose {

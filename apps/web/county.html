@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#101916" />
+    <title>County Field Atlas — Zombiebox</title>
+    <link rel="stylesheet" href="county.css" />
+  </head>
+  <body>
+    <main class="atlas-shell">
+      <header class="masthead">
+        <a
+          class="brand"
+          href="/"
+          aria-label="Return to Zombiebox opening screen"
+          ><span class="brand-mark">Z<span>✳</span></span
+          ><span><b>ZOMBIEBOX</b></span></a
+        >
+        <a class="back-link" href="/">← BACK TO THE BLOCK</a>
+      </header>
+      <section class="atlas-heading">
+        <div><h1>County field atlas</h1></div>
+        <form id="seed-form" class="seed-form">
+          <label for="seed-input">WORLD SEED</label>
+          <div>
+            <input
+              id="seed-input"
+              inputmode="numeric"
+              autocomplete="off"
+              aria-label="Decimal world seed"
+              placeholder="Enter decimal seed"
+            /><button type="submit">SURVEY ↗</button>
+          </div>
+          <small id="seed-note">Replay a county with its seed.</small>
+        </form>
+      </section>
+      <section class="atlas-layout" aria-label="County map and local survey">
+        <div class="map-column">
+          <div class="map-frame">
+            <div class="map-topline">
+              <span><b>COUNTY SHEET</b><span id="map-seed">SEED —</span></span>
+              <div class="map-tools">
+                <span id="map-status">REQUESTING SURVEY…</span
+                ><button id="overview" type="button">OVERVIEW</button
+                ><button id="walk-toggle" aria-pressed="false">
+                  START WALK</button
+                ><small>WASD / ARROWS · TOUCH PAD · E STAIRS</small>
+              </div>
+            </div>
+            <div class="canvas-wrap">
+              <canvas
+                id="county-map"
+                tabindex="0"
+                aria-label="County map. Click or tap to inspect; use arrow keys to move the selection."
+              ></canvas>
+              <div class="map-coords" id="coords">— / —</div>
+              <div class="walk-pad" id="walk-pad" aria-label="Walk controls">
+                <button data-step="0,-1" aria-label="Walk north">↑</button>
+                <div>
+                  <button data-step="-1,0" aria-label="Walk west">←</button
+                  ><button data-step="0,1" aria-label="Walk south">↓</button
+                  ><button data-step="1,0" aria-label="Walk east">→</button>
+                </div>
+                <div class="level-controls">
+                  <button data-floor="-1" aria-label="Walk down stairs">
+                    −</button
+                  ><button data-use aria-label="Use stairs">E</button
+                  ><button data-floor="1" aria-label="Walk up stairs">+</button>
+                </div>
+              </div>
+            </div>
+            <div class="map-footer">
+              <span><i class="north">↑</i> N</span
+              ><span>512 × 512 FIELD TILES</span
+              ><span>CLICK · DRAG · SCROLL TO ZOOM</span>
+            </div>
+          </div>
+          <div class="legend" id="legend">
+            <span class="legend-title">GROUND KEY</span
+            ><span><i class="swatch s-grass"></i>Grass</span
+            ><span><i class="swatch s-field"></i>Field</span
+            ><span><i class="swatch s-forest"></i>Forest</span
+            ><span><i class="swatch s-mountain"></i>Mountain</span
+            ><span><i class="swatch s-water"></i>Water</span
+            ><span><i class="swatch s-road"></i>Road network</span>
+          </div>
+        </div>
+        <aside class="detail-panel" aria-label="Selected location detail">
+          <div class="panel-cap">
+            <span>FIELD NOTE <b id="district-code">—</b></span
+            ><span id="tile-elevation">ELEV —</span>
+          </div>
+          <div class="place-heading">
+            <span class="place-icon" id="place-icon">⌖</span>
+            <div>
+              <p class="kicker" id="place-type">AWAITING SELECTION</p>
+              <h2 id="place-name">County overview</h2>
+            </div>
+          </div>
+          <p class="place-copy" id="place-copy">
+            Choose a location on the sheet. District and site information will
+            appear here.
+          </p>
+          <div class="stats-row">
+            <div><span>STRUCTURES</span><b id="building-count">—</b></div>
+            <div><span>LANDMARKS</span><b id="landmark-count">—</b></div>
+            <div><span>THREATS</span><b id="infected-count">—</b></div>
+          </div>
+          <div class="site-list">
+            <div class="section-title">
+              <b id="site-title">LANDMARKS</b
+              ><span id="site-radius">FIELD RADIUS 12</span>
+            </div>
+            <ul id="site-list">
+              <li class="empty">No selected location.</li>
+            </ul>
+          </div>
+          <div class="floor-card">
+            <div class="section-title">
+              <b>LOCAL STRUCTURE CUTAWAY</b
+              ><span id="floor-count">NO STRUCTURE</span>
+            </div>
+            <label class="floor-label" for="floor-picker">FLOOR / LEVEL</label
+            ><select id="floor-picker" disabled>
+              <option value="0">Ground exterior</option></select
+            ><canvas
+              class="floor-map"
+              id="floor-map"
+              aria-label="Selected structure floor plan. Gold marks supplies, red marks infected."
+            ></canvas>
+            <div class="feature-key">
+              <span><i class="key-wall"></i>wall</span
+              ><span><i class="key-window"></i>window</span
+              ><span><i class="key-door"></i>door</span
+              ><span><i class="key-stair"></i>stairs</span
+              ><span><i class="key-loot"></i>supplies</span
+              ><span><i class="key-infected"></i>infected</span>
+            </div>
+          </div>
+          <div class="ecology-card">
+            <div class="section-title">
+              <b>GROUND & ECOLOGY</b><span>POINT SURVEY</span>
+            </div>
+            <div class="ecology-grid">
+              <div><span>GROUND</span><b id="ground-label">—</b></div>
+              <div><span>FEATURES</span><b id="feature-label">—</b></div>
+              <div><span>SUPPLIES</span><b id="loot-label">—</b></div>
+              <div><span>INFECTED</span><b id="threat-label">—</b></div>
+            </div>
+          </div>
+          <footer class="panel-footer">
+            <span>COUNTY DATA / <b id="version">—</b></span>
+          </footer>
+        </aside>
+      </section>
+      <footer class="page-footer">
+        <a href="/">← RETURN TO THE OPENING SCREEN</a>
+      </footer>
+    </main>
+    <script src="county-map.js"></script>
+    <script src="county.js"></script>
+  </body>
+</html>

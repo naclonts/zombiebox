@@ -602,7 +602,7 @@ fn draw_county_fallback_tile(
 ) {
     let h = hash2(x, y);
     let base = match ground {
-        Ground::Road => [
+        Ground::Road | Ground::Street => [
             52 + (h % 5) as u8,
             62 + (h % 5) as u8,
             72 + (h % 5) as u8,
@@ -612,6 +612,11 @@ fn draw_county_fallback_tile(
         Ground::Gravel => [78, 86, 76, 255],
         Ground::Pavement => [102, 106, 100, 255],
         Ground::Field => [78, 84, 60, 255],
+        Ground::Bridge => [146, 123, 86, 255],
+        Ground::Forest => [36, 65, 50, 255],
+        Ground::Mountain => [119, 116, 121, 255],
+        Ground::River | Ground::Lake => [51, 95, 113, 255],
+        Ground::Trail => [119, 103, 75, 255],
     };
     c.diamond(sx, sy, TILE_W * 0.5, TILE_H * 0.5, tint(base, light));
 }

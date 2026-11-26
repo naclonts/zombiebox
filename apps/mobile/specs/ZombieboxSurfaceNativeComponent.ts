@@ -48,6 +48,7 @@ export interface NativeProps extends ViewProps {
 }
 
 interface NativeCommands {
+  openCounty: (viewRef: React.ComponentRef<HostComponent<NativeProps>>) => void;
   requestInteract: (
     viewRef: React.ComponentRef<HostComponent<NativeProps>>,
   ) => void;
@@ -68,6 +69,7 @@ interface NativeCommands {
 
 export const Commands: NativeCommands = codegenNativeCommands<NativeCommands>({
   supportedCommands: [
+    'openCounty',
     'requestInteract',
     'selectWeapon',
     'requestReload',

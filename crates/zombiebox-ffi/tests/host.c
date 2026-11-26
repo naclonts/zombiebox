@@ -123,6 +123,12 @@ static void check_action_v2_frame(void) {
 }
 
 int main(void) {
+    char *atlas = zb_survey_v1_generate(UINT64_MAX);
+    assert(atlas && strstr(atlas, "\"seed\":\"18446744073709551615\""));
+    assert(strstr(atlas, "\"landmarks\":[{"));
+    zb_survey_v1_free(atlas);
+    zb_survey_v1_free(NULL);
+
     ZbGame *run = zb_v1_create(42);
     ZbHud spawn, current;
     assert(run && zb_v1_ticks_per_second() == 20);

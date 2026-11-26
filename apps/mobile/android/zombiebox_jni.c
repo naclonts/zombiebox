@@ -1,6 +1,7 @@
 #include <android/bitmap.h>
 #include <jni.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "zombiebox.h"
 
@@ -135,4 +136,17 @@ JNIEXPORT jboolean JNICALL Java_game_zombiebox_mobile_NativeGame_frameV2(
 
     (*env)->SetIntArrayRegion(env, out_state, 0, 12, packed);
     return JNI_TRUE;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_game_zombiebox_mobile_NativeGame_countySurvey(
+    JNIEnv *env, jclass type, jlong seed) {
+    (void)type;
+    char *json = zb_survey_v1_generate((uint64_t)seed);
+    jsize length = (jsize)strlen(json);
+    jbyteArray bytes = (*env)->NewByteArray(env, length);
+    if (bytes != NULL) {
+        (*env)->SetByteArrayRegion(env, bytes, 0, length, (const jbyte *)json);
+    }
+    zb_survey_v1_free(json);
+    return bytes;
 }
