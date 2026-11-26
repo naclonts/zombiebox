@@ -10,7 +10,10 @@ pub mod query;
 pub mod support;
 pub mod terrain;
 
-pub use action_adapter::{ActionSpatialView, WorldSpatialView};
+pub use action_adapter::{
+    ActionSpatialView, WorldSpatialView, resolve_actor_support, resolve_tile_support,
+    semantic_floor_for_body,
+};
 pub use collision::{raycast_world, sphere_cast_world};
 pub use kinematics::{
     MoveParams, MoveResult, move_kinematic_with_horizontal_vel, step_kinematic_body,

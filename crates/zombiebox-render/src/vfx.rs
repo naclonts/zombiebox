@@ -1,8 +1,8 @@
 //! Combat, destruction, and readability VFX with fixed-capacity zero-alloc pools.
 
 use zombiebox_core::{
-    ActionEvent, Floor, Material, MaterialCategory, MonsterKind, MonsterView, PlayerRenderState,
-    ProjectileKind, ProjectileView, TileVisibility, Vec2, Weapon,
+    ActionEvent, FLOOR_H, Floor, Material, MaterialCategory, MonsterKind, MonsterView,
+    PlayerRenderState, ProjectileKind, ProjectileView, TileVisibility, Vec2, Weapon,
 };
 
 use crate::lighting::{DynamicLight, LightGrid};
@@ -287,7 +287,7 @@ impl VfxState {
                 self.swings[idx] = MeleeSwing {
                     active: true,
                     is_axe: false,
-                    from,
+                    from: from.xy(),
                     floor,
                     facing,
                     hit_flesh: false,
@@ -307,7 +307,7 @@ impl VfxState {
                 self.swings[idx] = MeleeSwing {
                     active: true,
                     is_axe: true,
-                    from,
+                    from: from.xy(),
                     floor,
                     facing,
                     hit_flesh,
@@ -321,12 +321,14 @@ impl VfxState {
                 from,
                 floor,
                 facing,
+                ..
             } => {
+                let from_xy = from.xy();
                 let idx = self.muzzle_cursor;
                 self.muzzles[idx] = MuzzleFlash {
                     active: true,
                     weapon,
-                    from,
+                    from: from_xy,
                     floor,
                     facing,
                     started_ms: now_ms,
@@ -347,7 +349,7 @@ impl VfxState {
                         let life_ms = 260.0 + self.rand_f32() * 140.0;
                         self.spawn_particle(Particle {
                             active: true,
-                            pos: from + facing * 0.35,
+                            pos: from_xy + facing * 0.35,
                             floor_z: floor as f32,
                             z_px,
                             vel: dir * speed,
@@ -365,30 +367,30 @@ impl VfxState {
             ActionEvent::BulletTrace {
                 weapon,
                 from,
-                from_z,
                 to,
-                to_z,
                 hit_material,
+                ..
             } => {
                 let idx = self.tracer_cursor;
                 self.tracers[idx] = BulletTracer {
                     active: true,
                     weapon,
-                    from,
-                    from_z,
-                    to,
-                    to_z,
+                    from: from.xy(),
+                    from_z: from.z / FLOOR_H,
+                    to: to.xy(),
+                    to_z: to.z / FLOOR_H,
                     hit_material,
                     started_ms: now_ms,
                 };
                 self.tracer_cursor = (idx + 1) % TRACER_CAP;
             }
             ActionEvent::RocketBlast { at, floor, radius } => {
+                let at_xy = at.xy();
                 let idx = self.blast_cursor;
                 self.blasts[idx] = BlastRing {
                     active: true,
                     kind: BlastKind::Rocket,
-                    at,
+                    at: at_xy,
                     floor,
                     radius,
                     started_ms: now_ms,
@@ -399,7 +401,7 @@ impl VfxState {
                 self.decals[didx] = GroundDecal {
                     active: true,
                     kind: DecalKind::Scorch,
-                    at,
+                    at: at_xy,
                     floor,
                     radius: radius * 0.62,
                     seed: self.next_u32(),
@@ -432,7 +434,7 @@ impl VfxState {
                     };
                     self.spawn_particle(Particle {
                         active: true,
-                        pos: at + Vec2::new(c_ang, s) * offset,
+                        pos: at_xy + Vec2::new(c_ang, s) * offset,
                         floor_z: floor as f32,
                         z_px,
                         vel: Vec2::new(c_ang * spd, s * spd),
@@ -453,11 +455,12 @@ impl VfxState {
             ActionEvent::BloaterBurst {
                 at, floor, radius, ..
             } => {
+                let at_xy = at.xy();
                 let idx = self.blast_cursor;
                 self.blasts[idx] = BlastRing {
                     active: true,
                     kind: BlastKind::BloaterCaustic,
-                    at,
+                    at: at_xy,
                     floor,
                     radius,
                     started_ms: now_ms,
@@ -468,7 +471,7 @@ impl VfxState {
                 self.decals[didx] = GroundDecal {
                     active: true,
                     kind: DecalKind::Caustic,
-                    at,
+                    at: at_xy,
                     floor,
                     radius: radius * 0.58,
                     seed: self.next_u32(),
@@ -491,7 +494,7 @@ impl VfxState {
                     let life_ms = 300.0 + self.rand_f32() * 200.0;
                     self.spawn_particle(Particle {
                         active: true,
-                        pos: at,
+                        pos: at_xy,
                         floor_z: floor as f32,
                         z_px,
                         vel: Vec2::new(c_ang * spd, s * spd),
@@ -512,9 +515,9 @@ impl VfxState {
                 destroyed,
                 ..
             } => {
-                self.spawn_material_burst(hit_pos, at.floor, material, destroyed);
+                self.spawn_material_burst(hit_pos.xy(), at.floor, material, destroyed);
             }
-            ActionEvent::StructuralCollapse { at } => {
+            ActionEvent::StructuralCollapse { at, .. } => {
                 for i in 0..14_u32 {
                     let ang = self.rand_f32() * std::f32::consts::TAU;
                     let spd = 0.8 + self.rand_f32() * 2.6;
@@ -557,6 +560,7 @@ impl VfxState {
                 ..
             } => {
                 let is_bloater = kind == MonsterKind::Bloater;
+                let at_xy = at.xy();
                 for i in 0..6_u32 {
                     let base_dir = if knockback_dir.length_squared() > 0.01 {
                         knockback_dir
@@ -581,7 +585,7 @@ impl VfxState {
                     let life_ms = 240.0 + self.rand_f32() * 140.0;
                     self.spawn_particle(Particle {
                         active: true,
-                        pos: at,
+                        pos: at_xy,
                         floor_z: floor as f32,
                         z_px,
                         vel: dir * spd,
@@ -604,6 +608,7 @@ impl VfxState {
             } => {
                 let count = if overkill { 12_u32 } else { 6_u32 };
                 let is_bloater = kind == MonsterKind::Bloater;
+                let at_xy = at.xy();
                 for i in 0..count {
                     let ang = self.rand_f32() * std::f32::consts::TAU;
                     let (s, c_ang) = ang.sin_cos();
@@ -620,7 +625,7 @@ impl VfxState {
                     let life_ms = 260.0 + self.rand_f32() * 160.0;
                     self.spawn_particle(Particle {
                         active: true,
-                        pos: at,
+                        pos: at_xy,
                         floor_z: floor as f32,
                         z_px,
                         vel: Vec2::new(c_ang * spd, s * spd),
@@ -635,6 +640,7 @@ impl VfxState {
                 }
             }
             ActionEvent::Healed { at, floor, .. } => {
+                let at_xy = at.xy();
                 for i in 0..6 {
                     let ox = self.rand_signed() * 0.45;
                     let oy = self.rand_signed() * 0.45;
@@ -644,7 +650,7 @@ impl VfxState {
                     let life_ms = 520.0 + self.rand_f32() * 220.0;
                     self.spawn_particle(Particle {
                         active: true,
-                        pos: at + Vec2::new(ox, oy),
+                        pos: at_xy + Vec2::new(ox, oy),
                         floor_z: floor as f32,
                         z_px: 6.0 + (i as f32) * 3.0,
                         vel: Vec2::new(vx, vy),
@@ -830,7 +836,7 @@ impl VfxState {
                     self.spawn_particle(Particle {
                         active: true,
                         pos: proj.pos - proj.dir * 0.22 + Vec2::new(jx, jy),
-                        floor_z: proj.z,
+                        floor_z: proj.z / FLOOR_H,
                         z_px: 13.0,
                         vel: Vec2::new(vx, vy),
                         vz_px,
@@ -1355,7 +1361,7 @@ impl VfxState {
 
         // 4. Active projectiles (Rocket darts & Shooter bolts).
         for p in projectiles {
-            let (sx, mut sy) = proj.project_z(p.pos.x, p.pos.y, p.z);
+            let (sx, mut sy) = proj.project_z(p.pos.x, p.pos.y, p.floor as f32);
             sy -= 14.0;
             let dir_s = screen_direction(p.dir);
             match p.kind {
@@ -1566,7 +1572,7 @@ impl VfxState {
             None => 1.05,
         };
         let aim = state.pose.position + state.pose.facing * dist;
-        let (x, y) = proj.project_z(aim.x, aim.y, state.elevation);
+        let (x, y) = proj.project_z(aim.x, aim.y, state.pose.floor as f32);
         let x = x.round();
         let y = (y - 13.0).round();
 

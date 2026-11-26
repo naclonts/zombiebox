@@ -3,13 +3,21 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
+use crate::spatial::action_adapter::{
+    SpatialStageSource, resolve_tile_support, stage_colliders_in, stage_supports_at,
+    stage_surface_quads_in,
+};
+use crate::spatial::{
+    Aabb3, Collider, SpatialWorld, SupportSurface, SurfaceQuad, TerrainSample, Vec3,
+};
 use crate::{CHUNK_SIZE, House, Position, World};
 
 use super::types::{
     BLOCK_HEIGHT, BLOCK_WIDTH, BuildingId, BuildingInfo, BuildingStyle, CacheId, CacheKind,
-    CacheLoot, CacheView, CombatWorld, DamageKind, Floor, LightKind, LightSourceView, Material,
-    MonsterKind, NUM_FLOORS, PropKind, Surface, Tile3D, TileDamageResult, TileKind,
-    TileObstruction, TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, mix64,
+    CacheLoot, CacheView, CombatWorld, DamageKind, DynamicFlashView, Floor, LightKind,
+    LightSourceView, Material, MonsterKind, NUM_FLOORS, PropKind, SpatialCell, Surface, Tile3D,
+    TileDamageResult, TileKind, TileObstruction, TileRenderInfo, TileVisibility, Vec2,
+    WallOrientation, Weapon, mix64,
 };
 
 pub(super) const OUTDOOR_AMBIENT: f32 = 92.0;
@@ -378,7 +386,7 @@ struct StaticLight {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DynamicFlash {
-    pub(super) pos: Vec2,
+    pub(super) pos: Vec3,
     pub(super) floor: Floor,
     pub(super) radius: f32,
     pub(super) intensity: u8,
@@ -392,6 +400,7 @@ struct StaticLightCache {
 }
 
 pub struct ResidentialBlock {
+    world: World,
     origin: Position,
     cells: Vec<Cell>,
     buildings: Vec<BuildingInfo>,
@@ -413,6 +422,7 @@ impl ResidentialBlock {
 
         let total_cells = NUM_FLOORS * BLOCK_HEIGHT * BLOCK_WIDTH;
         let mut block = Self {
+            world: world.clone(),
             origin,
             cells: vec![Cell::air(); total_cells],
             buildings: Vec::with_capacity(HOUSE_BLUEPRINTS.len()),
@@ -512,15 +522,19 @@ impl ResidentialBlock {
     ) -> Vec<CacheView> {
         self.caches
             .iter()
-            .map(|c| CacheView {
-                id: c.id,
-                pos: c.pos,
-                kind: c.kind,
-                loot: c.loot,
-                opened: c.opened,
-                nearby: !c.opened
-                    && c.pos.floor == player_floor
-                    && c.pos.center().distance(player_pos) <= interact_radius,
+            .map(|c| {
+                let (z, _, _) = resolve_tile_support(self, c.pos);
+                CacheView {
+                    id: c.id,
+                    pos: c.pos,
+                    world_pos: c.pos.center().extend(z),
+                    kind: c.kind,
+                    loot: c.loot,
+                    opened: c.opened,
+                    nearby: !c.opened
+                        && c.pos.floor == player_floor
+                        && c.pos.center().distance(player_pos) <= interact_radius,
+                }
             })
             .collect()
     }
@@ -554,8 +568,15 @@ impl ResidentialBlock {
         let mut views = Vec::with_capacity(self.static_lights.len() + self.caches.len());
         for light in &self.static_lights {
             let world_tile = self.local_to_world(light.lx, light.ly, light.floor);
+            let (surface_z, _, _) = resolve_tile_support(self, world_tile);
+            let bulb_offset = match light.kind {
+                LightKind::Streetlight => 1.65,
+                LightKind::Porch => 1.10,
+                LightKind::Cache => 0.35,
+            };
             views.push(LightSourceView {
                 pos: world_tile.center(),
+                position: world_tile.center().extend(surface_z + bulb_offset),
                 floor: light.floor,
                 radius: light.radius,
                 intensity: light.intensity,
@@ -564,8 +585,10 @@ impl ResidentialBlock {
             });
         }
         for cache in &self.caches {
+            let (surface_z, _, _) = resolve_tile_support(self, cache.pos);
             views.push(LightSourceView {
                 pos: cache.pos.center(),
+                position: cache.pos.center().extend(surface_z + 0.35),
                 floor: cache.pos.floor,
                 radius: 1.8,
                 intensity: 48,
@@ -574,6 +597,19 @@ impl ResidentialBlock {
             });
         }
         views
+    }
+
+    pub fn dynamic_flashes(&self) -> Vec<DynamicFlashView> {
+        self.flashes
+            .iter()
+            .map(|f| DynamicFlashView {
+                position: f.pos,
+                floor: f.floor,
+                radius: f.radius,
+                intensity: f.intensity,
+                ttl_ticks: f.ttl_ticks,
+            })
+            .collect()
     }
 
     pub fn effective_light_u8(&self, tile: Tile3D) -> u8 {
@@ -592,7 +628,7 @@ impl ResidentialBlock {
                 continue;
             }
             let floor_scale = if flash.floor == tile.floor { 1.0 } else { 0.25 };
-            let dist = center.distance(flash.pos);
+            let dist = center.distance(flash.pos.xy());
             if dist < flash.radius {
                 let att = (1.0 - dist / flash.radius) * floor_scale;
                 extra += flash.intensity as f32 * att;
@@ -1654,6 +1690,50 @@ impl ResidentialBlock {
     }
 }
 
+impl SpatialStageSource for ResidentialBlock {
+    fn world(&self) -> &World {
+        &self.world
+    }
+
+    fn is_county(&self) -> bool {
+        false
+    }
+
+    fn max_floors(&self) -> Floor {
+        NUM_FLOORS as Floor
+    }
+
+    fn playable_bounds(&self) -> (Position, Position) {
+        self.playable_bounds()
+    }
+
+    fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
+        self.spatial_cell(tile)
+    }
+
+    fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
+        self.building_by_id(id)
+    }
+}
+
+impl SpatialWorld for ResidentialBlock {
+    fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        self.world.terrain_at(xy)
+    }
+
+    fn supports_at(&self, xy: Vec2, out: &mut Vec<SupportSurface>) {
+        stage_supports_at(self, xy, out);
+    }
+
+    fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+        stage_colliders_in(self, bounds, out);
+    }
+
+    fn surface_quads_in(&self, min_tile: Position, max_tile: Position, out: &mut Vec<SurfaceQuad>) {
+        stage_surface_quads_in(self, min_tile, max_tile, out);
+    }
+}
+
 impl CombatWorld for ResidentialBlock {
     fn bounds(&self) -> (Position, Position, u8) {
         (
@@ -1891,7 +1971,7 @@ impl CombatWorld for ResidentialBlock {
 
     fn register_dynamic_flash(
         &mut self,
-        pos: Vec2,
+        pos: Vec3,
         floor: Floor,
         radius: f32,
         intensity: u8,
@@ -2739,7 +2819,7 @@ mod tests {
         // Dynamic flashes brighten nearby tiles and expire after TTL ticks.
         let sample = block.local_to_world(10, 21, 0);
         let base_light = block.effective_light_u8(sample);
-        block.register_dynamic_flash(sample.center(), 0, 4.0, 120, 2);
+        block.register_dynamic_flash(sample.center().extend(0.0), 0, 4.0, 120, 2);
         assert!(block.effective_light_u8(sample) > base_light);
         block.tick_flashes();
         assert!(block.effective_light_u8(sample) > base_light);

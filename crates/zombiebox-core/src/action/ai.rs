@@ -4,7 +4,13 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::Position;
+use crate::spatial::{
+    BodyShape, BodyState, FLOOR_H, MotionState, MoveParams, QueryFilter, Ray3, SpatialWorld,
+    SupportId, Vec3, move_kinematic_with_horizontal_vel, resolve_actor_support,
+    resolve_tile_support, semantic_floor_for_body,
+};
 
+use super::PLAYER_SHAPE;
 use super::types::{
     ActionEvent, AwarenessIcon, CombatWorld, DT, DamageKind, Floor, MonsterId, MonsterKind,
     MonsterView, NoiseEvent, NoiseKind, Pose, ProjectileId, ProjectileKind, Tile3D,
@@ -12,7 +18,7 @@ use super::types::{
 };
 use super::weapons::{
     PLAYER_HURT_IFRAMES, Projectile, SHOOTER_BOLT_RADIUS, SHOOTER_BOLT_RANGE, SHOOTER_BOLT_SPEED,
-    emit_tile_damage_effects,
+    SHOOTER_MUZZLE_HEIGHT, WEAPON_MUZZLE_HEIGHT, emit_tile_damage_effects, is_blast_occluded_3d,
 };
 
 pub const BLOATER_SLAM_RANGE: f32 = 1.18;
@@ -52,6 +58,7 @@ pub struct MonsterSpec {
     pub kind: MonsterKind,
     pub max_hp: u8,
     pub radius: f32,
+    pub height: f32,
     pub wander_speed: f32,
     pub investigate_speed: f32,
     pub chase_speed: f32,
@@ -66,12 +73,20 @@ pub struct MonsterSpec {
     pub can_vault_f0: bool,
 }
 
+impl MonsterSpec {
+    #[inline]
+    pub const fn body_shape(&self) -> BodyShape {
+        BodyShape::new(self.radius, self.height)
+    }
+}
+
 pub const MONSTER_SPECS: [MonsterSpec; 4] = [
     // Shambler = 0
     MonsterSpec {
         kind: MonsterKind::Shambler,
         max_hp: 2,
         radius: 0.25,
+        height: 1.02,
         wander_speed: 0.75,
         investigate_speed: 1.35,
         chase_speed: 2.15,
@@ -90,6 +105,7 @@ pub const MONSTER_SPECS: [MonsterSpec; 4] = [
         kind: MonsterKind::Brisk,
         max_hp: 3,
         radius: 0.24,
+        height: 1.00,
         wander_speed: 0.95,
         investigate_speed: 1.85,
         chase_speed: 3.15,
@@ -108,6 +124,7 @@ pub const MONSTER_SPECS: [MonsterSpec; 4] = [
         kind: MonsterKind::Bloater,
         max_hp: 8,
         radius: 0.36,
+        height: 1.12,
         wander_speed: 0.55,
         investigate_speed: 1.00,
         chase_speed: 1.45,
@@ -126,6 +143,7 @@ pub const MONSTER_SPECS: [MonsterSpec; 4] = [
         kind: MonsterKind::Shooter,
         max_hp: 3,
         radius: 0.25,
+        height: 1.04,
         wander_speed: 0.85,
         investigate_speed: 1.65,
         chase_speed: 2.45,
@@ -170,6 +188,7 @@ pub enum AwarenessState {
     Attack {
         phase: AttackPhase,
         aim_dir: Vec2,
+        aim_dir3: Vec3,
         target_floor: Floor,
         ticks_left: u16,
         total_ticks: u16,
@@ -187,6 +206,8 @@ pub struct Monster {
     pub pos: Vec2,
     pub facing: Vec2,
     pub floor: Floor,
+    pub body: BodyState,
+    body_synced: bool,
     pub home: Tile3D,
     pub hp: u8,
     pub alive: bool,
@@ -209,6 +230,13 @@ impl Monster {
         let facing = Vec2::new(1.0, 0.0)
             .rotate(angle_idx * std::f32::consts::FRAC_PI_4)
             .normalized();
+        let sup = if spawn.floor == 0 {
+            SupportId::Terrain
+        } else {
+            SupportId::Floor(spawn)
+        };
+        let body =
+            BodyState::from_pose_2d(spawn.center(), facing, spawn.floor as f32 * FLOOR_H, sup);
         Self {
             id,
             kind,
@@ -216,6 +244,8 @@ impl Monster {
             pos: spawn.center(),
             facing,
             floor: spawn.floor,
+            body,
+            body_synced: false,
             home: spawn,
             hp: spec.max_hp,
             alive: true,
@@ -233,6 +263,64 @@ impl Monster {
             path: Vec::new(),
             has_los: false,
         }
+    }
+
+    pub fn new_in_world(
+        id: MonsterId,
+        kind: MonsterKind,
+        variant: u8,
+        spawn: Tile3D,
+        world: &dyn SpatialWorld,
+    ) -> Self {
+        let mut m = Self::new(id, kind, variant, spawn);
+        let (z, sup, _) = resolve_tile_support(world, spawn);
+        m.body = BodyState::from_pose_2d(spawn.center(), m.facing, z, sup);
+        m.body_synced = true;
+        m
+    }
+
+    #[inline]
+    fn needs_body_sync(&self) -> bool {
+        if !self.body_synced || (self.body.position.xy() - self.pos).length_squared() > 1e-7 {
+            return true;
+        }
+        match self.body.motion {
+            MotionState::Grounded(SupportId::Terrain | SupportId::Bridge(_)) => self.floor != 0,
+            MotionState::Grounded(SupportId::Floor(t)) => t.floor != self.floor,
+            MotionState::Grounded(SupportId::Stair(st)) => {
+                self.floor != st.floor && self.floor != st.floor + 1
+            }
+            MotionState::Airborne => false,
+        }
+    }
+
+    pub(crate) fn ensure_body_synced(&mut self, world: &dyn SpatialWorld) {
+        if self.needs_body_sync() {
+            let (z, sup, _) = resolve_actor_support(world, self.pos, self.floor);
+            self.body = BodyState::from_pose_2d(self.pos, self.facing, z, sup);
+            self.body_synced = true;
+        }
+    }
+
+    pub(crate) fn resolved_body(&self, world: &dyn SpatialWorld) -> BodyState {
+        if !self.needs_body_sync() {
+            self.body
+        } else {
+            let (z, sup, _) = resolve_actor_support(world, self.pos, self.floor);
+            BodyState::from_pose_2d(self.pos, self.facing, z, sup)
+        }
+    }
+
+    #[inline]
+    pub(crate) fn eye_pos(&self) -> Vec3 {
+        self.spec().body_shape().eye_at(self.body.position)
+    }
+
+    #[inline]
+    pub(crate) fn muzzle_pos(&self) -> Vec3 {
+        self.body
+            .position
+            .with_z(self.body.position.z + SHOOTER_MUZZLE_HEIGHT)
     }
 
     #[inline]
@@ -311,7 +399,7 @@ impl Monster {
             events.push(ActionEvent::MonsterAlerted {
                 id: self.id,
                 kind: self.kind,
-                at: self.pos,
+                at: self.body.position,
                 floor: self.floor,
                 by_sight: false,
             });
@@ -319,6 +407,13 @@ impl Monster {
     }
 
     pub fn to_view(&self, world: &dyn CombatWorld) -> MonsterView {
+        let body = self.resolved_body(world);
+        let elevation = body.position.z;
+        let eye_pos = self.spec().body_shape().eye_at(body.position);
+        let telegraph_origin = body
+            .position
+            .with_z(body.position.z + SHOOTER_MUZZLE_HEIGHT);
+
         let awareness = match self.state {
             AwarenessState::Wander { .. } => AwarenessIcon::Unaware,
             AwarenessState::Investigate { .. } => AwarenessIcon::Investigating,
@@ -327,34 +422,55 @@ impl Monster {
             | AwarenessState::DyingSwell { .. } => AwarenessIcon::Alert,
         };
 
-        let (telegraph_progress, telegraph_dir, telegraph_target) = match self.state {
+        let (
+            telegraph_progress,
+            telegraph_dir,
+            telegraph_target,
+            telegraph_dir3,
+            telegraph_target3,
+        ) = match self.state {
             AwarenessState::Attack {
                 phase: AttackPhase::Windup,
                 aim_dir,
-                target_floor,
+                aim_dir3,
                 ticks_left,
                 total_ticks,
+                ..
             } => {
                 let progress = if total_ticks > 0 {
                     1.0 - (ticks_left as f32 / total_ticks as f32)
                 } else {
                     1.0
                 };
-                let target = if self.kind == MonsterKind::Shooter {
-                    Some(clip_shooter_telegraph(
-                        world,
-                        self.pos,
-                        self.floor,
+                if self.kind == MonsterKind::Shooter {
+                    let ray = Ray3::new(telegraph_origin, aim_dir3);
+                    let end3 = world
+                        .raycast_filtered(ray, SHOOTER_BOLT_RANGE, QueryFilter::LINE_OF_SIGHT)
+                        .map_or(telegraph_origin + aim_dir3 * SHOOTER_BOLT_RANGE, |h| {
+                            h.point
+                        });
+                    let max_fl = world.bounds().2.saturating_sub(1);
+                    let gz = world.terrain_at(end3.xy()).map_or(0.0, |t| t.z);
+                    let end_fl =
+                        ((end3.z - gz) / FLOOR_H).round().clamp(0.0, max_fl as f32) as Floor;
+                    (
+                        Some(progress.clamp(0.0, 1.0)),
                         aim_dir,
-                        target_floor,
-                        SHOOTER_BOLT_RANGE,
-                    ))
+                        Some((end3.xy(), end_fl)),
+                        aim_dir3,
+                        Some(end3),
+                    )
                 } else {
-                    None
-                };
-                (Some(progress.clamp(0.0, 1.0)), aim_dir, target)
+                    (
+                        Some(progress.clamp(0.0, 1.0)),
+                        aim_dir,
+                        None,
+                        aim_dir3,
+                        None,
+                    )
+                }
             }
-            _ => (None, self.facing, None),
+            _ => (None, self.facing, None, self.facing.extend(0.0), None),
         };
 
         MonsterView {
@@ -364,13 +480,18 @@ impl Monster {
             pos: self.pos,
             facing: self.facing,
             floor: self.floor,
-            elevation: self.floor as f32,
+            body,
+            elevation,
+            eye_pos,
             hp: self.hp,
             max_hp: self.spec().max_hp,
             awareness,
             telegraph_progress,
             telegraph_dir,
             telegraph_target,
+            telegraph_origin,
+            telegraph_dir3,
+            telegraph_target3,
             hitstun: self.hitstun_ticks > 0,
             swelling: self.is_swelling(),
         }
@@ -430,10 +551,12 @@ pub fn damage_monster(
 
     let prev_hp = monster.hp;
     monster.hp = prev_hp.saturating_sub(damage);
+    let m_pos3 = monster.body.position;
     events.push(ActionEvent::MonsterHit {
         id: monster.id,
         kind: monster.kind,
-        at: monster.pos,
+        at: m_pos3,
+        hit_pos: m_pos3.with_z(m_pos3.z + WEAPON_MUZZLE_HEIGHT),
         floor: monster.floor,
         damage,
         remaining_hp: monster.hp,
@@ -462,7 +585,7 @@ pub fn damage_monster(
             events.push(ActionEvent::MonsterAlerted {
                 id: monster.id,
                 kind: monster.kind,
-                at: monster.pos,
+                at: m_pos3,
                 floor: monster.floor,
                 by_sight: false,
             });
@@ -480,7 +603,7 @@ pub fn damage_monster(
         monster.invalidate_path();
         events.push(ActionEvent::BloaterSwell {
             id: monster.id,
-            at: monster.pos,
+            at: m_pos3,
             floor: monster.floor,
             fuse_ticks: BLOATER_SWELL_FUSE_TICKS,
         });
@@ -493,8 +616,9 @@ pub fn damage_monster(
     events.push(ActionEvent::MonsterDown {
         id: monster.id,
         kind: monster.kind,
-        at: monster.pos,
+        at: m_pos3,
         floor: monster.floor,
+        facing: monster.facing,
         overkill,
     });
     false
@@ -502,11 +626,43 @@ pub fn damage_monster(
 
 /// Detonate a Bloater (and iteratively resolve any chained Bloater bursts).
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn detonate_bloater(
     world: &mut dyn CombatWorld,
     monsters: &mut [Monster],
     initial_index: usize,
     player_pose: Pose,
+    player_health: &mut u8,
+    player_iframes: &mut u8,
+    player_knockback: &mut Vec2,
+    events: &mut Vec<ActionEvent>,
+    noises: &mut Vec<NoiseEvent>,
+    overkill_initial: bool,
+) {
+    let (pz, _, _) = resolve_actor_support(world, player_pose.position, player_pose.floor);
+    let player_foot = player_pose.position.extend(pz);
+    detonate_bloater_3d(
+        world,
+        monsters,
+        initial_index,
+        player_pose,
+        player_foot,
+        player_health,
+        player_iframes,
+        player_knockback,
+        events,
+        noises,
+        overkill_initial,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn detonate_bloater_3d(
+    world: &mut dyn CombatWorld,
+    monsters: &mut [Monster],
+    initial_index: usize,
+    player_pose: Pose,
+    player_foot: Vec3,
     player_health: &mut u8,
     player_iframes: &mut u8,
     player_knockback: &mut Vec2,
@@ -520,8 +676,12 @@ pub fn detonate_bloater(
         if idx >= monsters.len() || !monsters[idx].alive {
             continue;
         }
+        monsters[idx].ensure_body_synced(world);
         let id = monsters[idx].id;
         let pos = monsters[idx].pos;
+        let pos3 = monsters[idx].body.position;
+        let center3 = pos3.with_z(pos3.z + 0.55);
+        let facing = monsters[idx].facing;
         let floor = monsters[idx].floor;
 
         monsters[idx].alive = false;
@@ -530,19 +690,21 @@ pub fn detonate_bloater(
 
         events.push(ActionEvent::BloaterBurst {
             id,
-            at: pos,
+            at: pos3,
             floor,
             radius: BLOATER_BURST_RADIUS,
         });
         events.push(ActionEvent::MonsterDown {
             id,
             kind: MonsterKind::Bloater,
-            at: pos,
+            at: pos3,
             floor,
+            facing,
             overkill,
         });
         noises.push(NoiseEvent {
             origin: pos,
+            origin_z: pos3.z,
             floor,
             radius: BLOATER_BURST_NOISE_RADIUS,
             priority: 5,
@@ -564,32 +726,50 @@ pub fn detonate_bloater(
                 if matches!(
                     world.obstruction(tile),
                     TileObstruction::IntactWindow | TileObstruction::LowProp(_)
-                ) {
-                    if let Some(res) = world.damage_tile(tile, DamageKind::CausticBurst) {
-                        if res.damaged {
-                            emit_tile_damage_effects(tile, tile.center(), res, events, noises);
-                        }
-                    }
+                ) && let Some(res) = world.damage_tile(tile, DamageKind::CausticBurst)
+                    && res.damaged
+                {
+                    let (tz, _, _) = resolve_tile_support(world, tile);
+                    emit_tile_damage_effects(
+                        tile,
+                        tile.center().extend(tz + 0.5),
+                        Vec3::Z,
+                        res,
+                        events,
+                        noises,
+                    );
                 }
             }
         }
 
-        // Splash damage to nearby monsters (can chain-trigger other Bloaters!).
-        for (j, target) in monsters.iter_mut().enumerate() {
-            if j == idx || !target.alive || target.floor != floor {
+        // Splash damage to nearby monsters (3D distance + 3D occlusion; chain-triggers Bloaters).
+        for (j, monster_j) in monsters.iter_mut().enumerate() {
+            if j == idx || !monster_j.alive {
                 continue;
             }
-            let dist = target.pos.distance(pos);
-            if dist > BLOATER_BURST_RADIUS + target.radius() {
+            monster_j.ensure_body_synced(world);
+            let target_foot = monster_j.body.position;
+            let target_h = monster_j.spec().height;
+            let closest_z = center3
+                .z
+                .clamp(target_foot.z + 0.15, target_foot.z + target_h - 0.15);
+            let target_pt = target_foot.with_z(closest_z);
+            let dist3 = center3.distance(target_pt);
+            if dist3 > BLOATER_BURST_RADIUS + monster_j.radius() {
                 continue;
             }
-            let dir = if dist > 0.001 {
-                (target.pos - pos) * (1.0 / dist)
+            if is_blast_occluded_3d(world, center3, target_pt) {
+                continue;
+            }
+            let diff_xy = monster_j.pos - pos;
+            let dist_xy = diff_xy.length();
+            let dir = if dist_xy > 0.001 {
+                diff_xy * (1.0 / dist_xy)
             } else {
                 Vec2::new(1.0, 0.0)
             };
             if damage_monster(
-                target,
+                monster_j,
                 BLOATER_BURST_MONSTER_DAMAGE,
                 dir * 0.20,
                 14,
@@ -600,32 +780,37 @@ pub fn detonate_bloater(
             }
         }
 
-        // Damage & knockback player if caught in the caustic burst.
-        if player_pose.floor == floor {
-            let dist = player_pose.position.distance(pos);
-            if dist <= BLOATER_BURST_RADIUS {
-                let (dmg, kb_mag) = if dist <= BLOATER_BURST_CORE_RADIUS {
-                    (2, 0.22)
-                } else {
-                    (1, 0.12)
-                };
-                let dir = if dist > 0.001 {
-                    (player_pose.position - pos) * (1.0 / dist)
-                } else {
-                    Vec2::new(1.0, 0.0)
-                };
-                *player_knockback += dir * kb_mag;
-                if *player_iframes == 0 {
-                    *player_health = player_health.saturating_sub(dmg);
-                    *player_iframes = PLAYER_HURT_IFRAMES;
-                    events.push(ActionEvent::PlayerHurt {
-                        at: player_pose.position,
-                        floor: player_pose.floor,
-                        damage: dmg,
-                        remaining_hp: *player_health,
-                        from: pos,
-                    });
-                }
+        // Damage & knockback player if caught in the 3D unoccluded caustic burst.
+        let p_closest_z = center3.z.clamp(
+            player_foot.z + 0.15,
+            player_foot.z + PLAYER_SHAPE.height - 0.15,
+        );
+        let player_pt = player_foot.with_z(p_closest_z);
+        let dist3 = center3.distance(player_pt);
+        if dist3 <= BLOATER_BURST_RADIUS && !is_blast_occluded_3d(world, center3, player_pt) {
+            let (dmg, kb_mag) = if dist3 <= BLOATER_BURST_CORE_RADIUS {
+                (2, 0.22)
+            } else {
+                (1, 0.12)
+            };
+            let diff_xy = player_pose.position - pos;
+            let dist_xy = diff_xy.length();
+            let dir = if dist_xy > 0.001 {
+                diff_xy * (1.0 / dist_xy)
+            } else {
+                Vec2::new(1.0, 0.0)
+            };
+            *player_knockback += dir * kb_mag;
+            if *player_iframes == 0 {
+                *player_health = player_health.saturating_sub(dmg);
+                *player_iframes = PLAYER_HURT_IFRAMES;
+                events.push(ActionEvent::PlayerHurt {
+                    at: player_foot,
+                    floor: player_pose.floor,
+                    damage: dmg,
+                    remaining_hp: *player_health,
+                    from: pos3,
+                });
             }
         }
     }
@@ -644,19 +829,21 @@ pub fn propagate_noise(
 
     for noise in noises {
         let target_tile = Tile3D::from_vec2(noise.origin, noise.floor);
+        let noise_pt3 = noise.origin.extend(noise.origin_z + 0.68);
         for m in monsters.iter_mut() {
             if !m.is_targetable() {
                 continue;
             }
+            m.ensure_body_synced(world);
             let dx = m.pos.x - noise.origin.x;
             let dy = m.pos.y - noise.origin.y;
-            let dz = (m.floor as f32 - noise.floor as f32) * 2.0;
-            let dist_3d = (dx * dx + dy * dy + dz * dz).sqrt();
+            let dz_eff = (m.body.position.z - noise.origin_z) * 1.44;
+            let dist_3d = (dx * dx + dy * dy + dz_eff * dz_eff).sqrt();
             if dist_3d > noise.radius {
                 continue;
             }
 
-            let barriers = count_solid_barriers(world, noise.origin, noise.floor, m.pos, m.floor);
+            let barriers = count_solid_barriers_3d(world, noise_pt3, m.eye_pos());
             let effective_dist = dist_3d + barriers as f32 * NOISE_BARRIER_PENALTY;
             if effective_dist > noise.radius {
                 continue;
@@ -673,7 +860,7 @@ pub fn propagate_noise(
                     events.push(ActionEvent::MonsterAlerted {
                         id: m.id,
                         kind: m.kind,
-                        at: m.pos,
+                        at: m.body.position,
                         floor: m.floor,
                         by_sight: false,
                     });
@@ -712,196 +899,151 @@ pub fn propagate_noise(
     }
 }
 
-/// Evaluate whether `monster` currently sees `player`, factoring in FOV cone, proximity sense,
-/// light level, quiet walking, walls/closed doors, windows/low props, and cross-floor stairs/windows.
+/// Evaluate whether `monster` currently sees `player`, factoring in 3D eye-to-eye raycasts,
+/// FOV cone, proximity sense, light level, quiet walking, and connected staircases.
+#[allow(dead_code)]
 pub fn can_see_player(
     world: &dyn CombatWorld,
     monster: &Monster,
     player: Pose,
     player_quiet_walking: bool,
 ) -> bool {
+    let (pz, _, _) = resolve_actor_support(world, player.position, player.floor);
+    can_see_player_3d(
+        world,
+        monster,
+        player,
+        player.position.extend(pz),
+        player_quiet_walking,
+    )
+}
+
+pub(crate) fn can_see_player_3d(
+    world: &dyn CombatWorld,
+    monster: &Monster,
+    player: Pose,
+    player_foot: Vec3,
+    player_quiet_walking: bool,
+) -> bool {
     if !monster.is_targetable() {
         return false;
     }
+    let monster_foot = monster.resolved_body(world).position;
+    let monster_eye = monster.spec().body_shape().eye_at(monster_foot);
+    let player_eye = PLAYER_SHAPE.eye_at(player_foot);
+
     let player_tile = Tile3D::from_vec2(player.position, player.floor);
     let light_scale = 0.42 + 0.58 * world.light_level(player_tile).clamp(0.0, 1.0);
     let quiet_scale = if player_quiet_walking { 0.85 } else { 1.0 };
     let max_range = monster.spec().sight_range * light_scale * quiet_scale;
 
-    let to_player = player.position - monster.pos;
-    let dist = to_player.length();
-    if dist > max_range {
+    let delta3 = player_eye - monster_eye;
+    let dist3 = delta3.length();
+    if dist3 > max_range {
         return false;
     }
 
-    let in_fov = if dist <= PROXIMITY_SENSE_RADIUS {
-        true
-    } else {
-        let dir = to_player * (1.0 / dist);
-        let facing = monster.facing.normalized();
-        let fov_cos = match monster.state {
-            AwarenessState::Wander { .. } => WANDER_FOV_COS,
-            _ => ALERT_FOV_COS,
+    let in_fov =
+        if dist3 <= PROXIMITY_SENSE_RADIUS && (player_foot.z - monster_foot.z).abs() <= 0.85 {
+            true
+        } else {
+            let horiz_len = delta3.xy().length();
+            let vert_slope_ok = delta3.z.abs() / horiz_len.max(0.25) <= 1.85;
+            let horiz_dir = if horiz_len > 1e-5 {
+                delta3.xy() * (1.0 / horiz_len)
+            } else {
+                monster.facing
+            };
+            let facing = monster.facing.normalized();
+            let fov_cos = match monster.state {
+                AwarenessState::Wander { .. } => WANDER_FOV_COS,
+                _ => ALERT_FOV_COS,
+            };
+            vert_slope_ok && (facing.length_squared() < 0.01 || horiz_dir.dot(facing) >= fov_cos)
         };
-        facing.length_squared() < 0.01 || dir.dot(facing) >= fov_cos
-    };
     if !in_fov {
         return false;
     }
 
-    if monster.floor == player.floor {
-        return !segment_blocked_by_solid(world, monster.pos, player.position, monster.floor);
+    let clear_3d = match Ray3::from_points(monster_eye, player_eye) {
+        None => true,
+        Some((ray, d)) => world
+            .raycast_filtered(ray, (d - 0.04).max(0.0), QueryFilter::LINE_OF_SIGHT)
+            .is_none(),
+    };
+    if clear_3d {
+        return true;
     }
 
-    can_see_cross_floor(world, monster, player, max_range)
+    if monster.floor != player.floor && dist3 <= max_range * 0.75 {
+        return can_see_via_stair_glimpse(world, monster, monster_eye, player, player_eye);
+    }
+
+    false
 }
 
-fn can_see_cross_floor(
+fn can_see_via_stair_glimpse(
     world: &dyn CombatWorld,
     monster: &Monster,
+    monster_eye: Vec3,
     player: Pose,
-    max_range: f32,
+    player_eye: Vec3,
 ) -> bool {
-    let dist = monster.pos.distance(player.position);
-
-    // 1. Cross-floor sight near connected staircases.
-    if dist <= max_range * 0.75 {
-        let m_tile = Tile3D::from_vec2(monster.pos, monster.floor);
-        for dy in -2..=2 {
-            for dx in -2..=2 {
-                let candidate = Tile3D::new(m_tile.x + dx, m_tile.y + dy, monster.floor);
-                let (links, count) = world.stair_links(candidate);
-                for (paired, _) in links.into_iter().take(count).flatten() {
-                    if paired.floor == player.floor
-                        && (monster.pos.distance(candidate.center()) <= 2.2
-                            || player.position.distance(paired.center()) <= 2.2)
-                        && !segment_blocked_by_solid(
-                            world,
-                            monster.pos,
-                            candidate.center(),
-                            monster.floor,
-                        )
-                        && !segment_blocked_by_solid(
-                            world,
-                            paired.center(),
-                            player.position,
-                            player.floor,
-                        )
-                    {
-                        return true;
-                    }
-                }
-            }
+    let eye_off = PLAYER_SHAPE.height * 0.85;
+    let los_clear = |a: Vec3, b: Vec3| -> bool {
+        match Ray3::from_points(a, b) {
+            None => true,
+            Some((ray, d)) => world
+                .raycast_filtered(ray, (d - 0.04).max(0.0), QueryFilter::LINE_OF_SIGHT)
+                .is_none(),
         }
-        let p_tile = Tile3D::from_vec2(player.position, player.floor);
-        for dy in -2..=2 {
-            for dx in -2..=2 {
-                let candidate = Tile3D::new(p_tile.x + dx, p_tile.y + dy, player.floor);
-                let (links, count) = world.stair_links(candidate);
-                for (paired, _) in links.into_iter().take(count).flatten() {
-                    if paired.floor == monster.floor
-                        && (player.position.distance(candidate.center()) <= 2.2
-                            || monster.pos.distance(paired.center()) <= 2.2)
-                        && !segment_blocked_by_solid(
-                            world,
-                            player.position,
-                            candidate.center(),
-                            player.floor,
-                        )
-                        && !segment_blocked_by_solid(
-                            world,
-                            paired.center(),
-                            monster.pos,
-                            monster.floor,
-                        )
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    // 2. Cross-floor sight through an upper-story window or open edge overlooking an outdoor F0 actor.
-    let (upper_pos, upper_floor, lower_pos) = if monster.floor > 0 && player.floor == 0 {
-        (monster.pos, monster.floor, player.position)
-    } else if player.floor > 0 && monster.floor == 0 {
-        (player.position, player.floor, monster.pos)
-    } else {
-        return false;
     };
 
-    if world.has_floor(Tile3D::from_vec2(lower_pos, upper_floor)) {
-        return false;
-    }
-
-    has_window_cross_floor_los(world, upper_pos, upper_floor, lower_pos)
-}
-
-fn has_window_cross_floor_los(
-    world: &dyn CombatWorld,
-    upper_pos: Vec2,
-    upper_floor: Floor,
-    lower_pos: Vec2,
-) -> bool {
-    let delta = lower_pos - upper_pos;
-    let total_dist = delta.length();
-    if total_dist < 0.05 {
-        return false;
-    }
-    let dir = delta * (1.0 / total_dist);
-    let start_tile = Tile3D::from_vec2(upper_pos, upper_floor);
-    let end_tile = Tile3D::from_vec2(lower_pos, 0);
-
-    let steps = (total_dist / 0.12).ceil() as usize;
-    let mut in_upper = true;
-    let mut crossed_outside = false;
-    let mut prev_xy = (start_tile.x, start_tile.y);
-
-    for i in 1..=steps {
-        let t = (i as f32 * 0.12).min(total_dist);
-        let p = upper_pos + dir * t;
-        let tx = p.x.round() as i32;
-        let ty = p.y.round() as i32;
-        if (tx, ty) == prev_xy {
-            continue;
-        }
-        prev_xy = (tx, ty);
-
-        if in_upper {
-            let f_upper = Tile3D::new(tx, ty, upper_floor);
-            if !world.has_floor(f_upper) {
-                in_upper = false;
-                crossed_outside = true;
-                let f0 = Tile3D::new(tx, ty, 0);
-                if f0 != end_tile
-                    && matches!(
-                        world.obstruction(f0),
-                        TileObstruction::Wall(_) | TileObstruction::DoorClosed
-                    )
+    let m_tile = Tile3D::from_vec2(monster.pos, monster.floor);
+    for dy in -2..=2 {
+        for dx in -2..=2 {
+            let candidate = Tile3D::new(m_tile.x + dx, m_tile.y + dy, monster.floor);
+            let (links, count) = world.stair_links(candidate);
+            for (paired, _) in links.into_iter().take(count).flatten() {
+                if paired.floor == player.floor
+                    && (monster.pos.distance(candidate.center()) <= 2.2
+                        || player.position.distance(paired.center()) <= 2.2)
                 {
-                    return false;
+                    let (cz, _, _) = resolve_tile_support(world, candidate);
+                    let (pz, _, _) = resolve_tile_support(world, paired);
+                    if los_clear(monster_eye, candidate.center().extend(cz + eye_off))
+                        && los_clear(paired.center().extend(pz + eye_off), player_eye)
+                    {
+                        return true;
+                    }
                 }
-            } else if matches!(
-                world.obstruction(f_upper),
-                TileObstruction::Wall(_) | TileObstruction::DoorClosed
-            ) {
-                return false;
-            }
-        } else {
-            let f0 = Tile3D::new(tx, ty, 0);
-            if f0 != end_tile
-                && matches!(
-                    world.obstruction(f0),
-                    TileObstruction::Wall(_) | TileObstruction::DoorClosed
-                )
-            {
-                return false;
             }
         }
     }
 
-    crossed_outside
+    let p_tile = Tile3D::from_vec2(player.position, player.floor);
+    for dy in -2..=2 {
+        for dx in -2..=2 {
+            let candidate = Tile3D::new(p_tile.x + dx, p_tile.y + dy, player.floor);
+            let (links, count) = world.stair_links(candidate);
+            for (paired, _) in links.into_iter().take(count).flatten() {
+                if paired.floor == monster.floor
+                    && (player.position.distance(candidate.center()) <= 2.2
+                        || monster.pos.distance(paired.center()) <= 2.2)
+                {
+                    let (cz, _, _) = resolve_tile_support(world, candidate);
+                    let (pz, _, _) = resolve_tile_support(world, paired);
+                    if los_clear(player_eye, candidate.center().extend(cz + eye_off))
+                        && los_clear(paired.center().extend(pz + eye_off), monster_eye)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 /// Zero-allocation generation-stamped 3D A* pathfinder (reuses buffers across calls).
@@ -1111,7 +1253,7 @@ impl Pathfinder {
                     }
                 }
 
-                let step_cost = match world.obstruction(next_tile) {
+                let mut step_cost = match world.obstruction(next_tile) {
                     TileObstruction::Open => {
                         if !world.is_walkable(next_tile, false) {
                             continue;
@@ -1142,6 +1284,26 @@ impl Pathfinder {
                     | TileObstruction::LowProp(_)
                     | TileObstruction::Wall(_) => continue,
                 };
+
+                // Slope-aware outdoor 3D terrain grade cost & steep cliff rejection.
+                if cur_tile.floor == 0
+                    && next_tile.floor == 0
+                    && world.stair_links(cur_tile).1 == 0
+                    && world.stair_links(next_tile).1 == 0
+                {
+                    let (z_cur, _, _) = resolve_tile_support(world, cur_tile);
+                    let (z_next, _, _) = resolve_tile_support(world, next_tile);
+                    let step_horiz = if diagonal {
+                        std::f32::consts::SQRT_2
+                    } else {
+                        1.0
+                    };
+                    if ((z_next - z_cur).abs() / step_horiz) > 0.85 {
+                        continue;
+                    }
+                    let uphill = ((z_next - z_cur).max(0.0) * 12.0).round() as u16;
+                    step_cost = step_cost.saturating_add(uphill);
+                }
 
                 let tentative_g = cur_g.saturating_add(step_cost);
                 if self.visited_gen[next_idx as usize] != cur_gen
@@ -1217,6 +1379,7 @@ impl AiSystem {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     pub fn step_monsters(
         &mut self,
         world: &mut dyn CombatWorld,
@@ -1234,7 +1397,54 @@ impl AiSystem {
         events: &mut Vec<ActionEvent>,
         noises: &mut Vec<NoiseEvent>,
     ) {
+        let (pz, psup, _) = resolve_actor_support(world, player.position, player.floor);
+        let player_body = BodyState::from_pose_2d(player.position, player.facing, pz, psup);
+        self.step_monsters_3d(
+            world,
+            monsters,
+            player,
+            player_body,
+            player_radius,
+            player_quiet_walking,
+            player_health,
+            player_iframes,
+            player_knockback,
+            projectiles,
+            next_proj_id,
+            seed,
+            tick,
+            events,
+            noises,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn step_monsters_3d(
+        &mut self,
+        world: &mut dyn CombatWorld,
+        monsters: &mut [Monster],
+        player: Pose,
+        player_body: BodyState,
+        player_radius: f32,
+        player_quiet_walking: bool,
+        player_health: &mut u8,
+        player_iframes: &mut u8,
+        player_knockback: &mut Vec2,
+        projectiles: &mut Vec<Projectile>,
+        next_proj_id: &mut u32,
+        seed: u64,
+        tick: u64,
+        events: &mut Vec<ActionEvent>,
+        noises: &mut Vec<NoiseEvent>,
+    ) {
         let noise_start_len = noises.len();
+        let player_foot = player_body.position;
+
+        for m in monsters.iter_mut() {
+            if m.alive {
+                m.ensure_body_synced(world);
+            }
+        }
 
         // Detect terrain changes (wall breach, door opened/closed, broken window) -> burst repath!
         let cur_terrain_ver = world.terrain_version();
@@ -1255,7 +1465,7 @@ impl AiSystem {
             MAX_REPATHS_PER_TICK
         };
 
-        // Snapshot positions for same-floor local separation steering.
+        // Snapshot positions for same-elevation-band local separation steering.
         let mut sep_vectors: Vec<Vec2> = vec![Vec2::ZERO; monsters.len()];
         compute_separation(monsters, &mut sep_vectors);
 
@@ -1268,7 +1478,7 @@ impl AiSystem {
                 continue;
             }
 
-            // Drop monsters standing over collapsed upper-story floors cleanly onto the highest solid floor below.
+            // Drop monsters standing over collapsed upper-story floors onto the floor below via gravity.
             if monsters[i].floor > 0
                 && !world.has_floor(Tile3D::from_vec2(monsters[i].pos, monsters[i].floor))
             {
@@ -1277,6 +1487,7 @@ impl AiSystem {
                 while target_floor > 0 && !world.has_floor(Tile3D::from_pos(m_pos, target_floor)) {
                     target_floor -= 1;
                 }
+                monsters[i].body.motion = MotionState::Airborne;
                 monsters[i].floor = target_floor;
                 monsters[i].invalidate_path();
             }
@@ -1296,22 +1507,27 @@ impl AiSystem {
             monsters[i].bash_cooldown = monsters[i].bash_cooldown.saturating_sub(1);
             monsters[i].repath_cooldown = monsters[i].repath_cooldown.saturating_sub(1);
 
-            // Apply residual knockback smoothly with wall collision.
+            // Apply residual knockback (or airborne gravity) smoothly with 3D kinematics.
             if monsters[i].knockback.length_squared() > 0.0001 {
                 let step = monsters[i].knockback * 0.38;
-                let can_vault = monsters[i].spec().can_vault_f0 && monsters[i].floor == 0;
-                let radius = monsters[i].radius();
-                let floor = monsters[i].floor;
-                move_circle(world, &mut monsters[i].pos, floor, step, radius, can_vault);
+                step_monster_kinematic(world, &mut monsters[i], step * (1.0 / DT));
                 monsters[i].knockback -= step;
                 if monsters[i].knockback.length_squared() < 0.0001 {
                     monsters[i].knockback = Vec2::ZERO;
                 }
+            } else if !monsters[i].body.motion.is_grounded() {
+                step_monster_kinematic(world, &mut monsters[i], Vec2::ZERO);
             }
 
-            // Staggered 15 Hz vision check `(tick + id) % 4 == 0` (also check immediately if Alert).
+            // Staggered 15 Hz vision check `(tick + id) % 4 == 0`.
             if (tick + monsters[i].id.0 as u64).is_multiple_of(4) {
-                let sees = can_see_player(world, &monsters[i], player, player_quiet_walking);
+                let sees = can_see_player_3d(
+                    world,
+                    &monsters[i],
+                    player,
+                    player_foot,
+                    player_quiet_walking,
+                );
                 monsters[i].has_los = sees;
                 if sees {
                     match monsters[i].state {
@@ -1324,7 +1540,7 @@ impl AiSystem {
                             events.push(ActionEvent::MonsterAlerted {
                                 id: monsters[i].id,
                                 kind: monsters[i].kind,
-                                at: monsters[i].pos,
+                                at: monsters[i].body.position,
                                 floor: monsters[i].floor,
                                 by_sight: true,
                             });
@@ -1362,6 +1578,7 @@ impl AiSystem {
                     world,
                     &mut monsters[i],
                     player,
+                    player_foot,
                     player_health,
                     player_iframes,
                     player_knockback,
@@ -1397,7 +1614,14 @@ impl AiSystem {
                 }
 
                 // Check whether to initiate an attack.
-                if try_start_attack(world, &mut monsters[i], player, player_radius, events) {
+                if try_start_attack(
+                    world,
+                    &mut monsters[i],
+                    player,
+                    player_foot,
+                    player_radius,
+                    events,
+                ) {
                     continue;
                 }
             }
@@ -1408,6 +1632,7 @@ impl AiSystem {
                 world,
                 &mut monsters[i],
                 player,
+                player_foot,
                 sep,
                 seed,
                 tick,
@@ -1419,11 +1644,12 @@ impl AiSystem {
 
         // Resolve any Bloaters whose swell fuse completed this tick.
         for bloater_idx in pending_bloater_bursts {
-            detonate_bloater(
+            detonate_bloater_3d(
                 world,
                 monsters,
                 bloater_idx,
                 player,
+                player_foot,
                 player_health,
                 player_iframes,
                 player_knockback,
@@ -1446,6 +1672,7 @@ impl AiSystem {
         world: &mut dyn CombatWorld,
         monster: &mut Monster,
         player: Pose,
+        player_foot: Vec3,
         separation: Vec2,
         seed: u64,
         tick: u64,
@@ -1459,7 +1686,7 @@ impl AiSystem {
         if monster.kind == MonsterKind::Shooter
             && matches!(monster.state, AwarenessState::Alert { .. })
             && monster.has_los
-            && monster.floor == player.floor
+            && (monster.body.position.z - player_foot.z).abs() <= 0.95
         {
             let to_player = player.position - monster.pos;
             let dist = to_player.length();
@@ -1488,15 +1715,7 @@ impl AiSystem {
                     } else {
                         spec.chase_speed
                     };
-                    let can_vault = spec.can_vault_f0 && monster.floor == 0;
-                    move_circle(
-                        world,
-                        &mut monster.pos,
-                        monster.floor,
-                        move_dir * (speed * DT),
-                        spec.radius,
-                        can_vault,
-                    );
+                    step_monster_kinematic(world, monster, move_dir * speed);
                 }
                 return;
             }
@@ -1551,6 +1770,7 @@ impl AiSystem {
                     // Arrived at sound source: look around briefly before settling back to Wander.
                     *linger_ticks = (*linger_ticks).min(90);
                     monster.facing = monster.facing.rotate(0.045).normalized();
+                    monster.body.heading = monster.facing.y.atan2(monster.facing.x);
                     monster.path.clear();
                     return;
                 }
@@ -1583,15 +1803,7 @@ impl AiSystem {
             if desired.length_squared() > 0.01 {
                 monster.facing = desired;
             }
-            let can_vault = spec.can_vault_f0 && monster.floor == 0;
-            move_circle(
-                world,
-                &mut monster.pos,
-                monster.floor,
-                blended * (speed * DT),
-                spec.radius,
-                can_vault,
-            );
+            step_monster_kinematic(world, monster, blended * speed);
             return;
         }
 
@@ -1628,6 +1840,15 @@ impl AiSystem {
             return;
         };
 
+        // Pop waypoint if 3D stair kinematics already brought monster onto next_wp's floor.
+        if next_wp.floor == monster.floor
+            && monster.pos.distance(next_wp.center()) <= 0.55
+            && monster.path.len() > 1
+        {
+            monster.path.pop();
+            return;
+        }
+
         // Stair floor transition: only cross stairs when the next waypoint is on the other floor
         // AND stair_cooldown == 0 (guarantees zero oscillation!).
         if next_wp.floor != monster.floor {
@@ -1640,16 +1861,24 @@ impl AiSystem {
                 .find(|(paired, _)| *paired == next_wp)
             {
                 if monster.stair_cooldown == 0 {
+                    let exit_dir = pick_stair_exit_dir(world, paired, landing_dir);
                     monster.floor = paired.floor;
                     let nudged = paired.center()
-                        + Vec2::new(landing_dir.0 as f32 * 0.22, landing_dir.1 as f32 * 0.22);
+                        + Vec2::new(exit_dir.0 as f32 * 0.72, exit_dir.1 as f32 * 0.72);
+                    let exit_tile = Tile3D::new(
+                        paired.x + exit_dir.0 as i32,
+                        paired.y + exit_dir.1 as i32,
+                        paired.floor,
+                    );
                     let can_vault = spec.can_vault_f0 && monster.floor == 0;
-                    monster.pos =
-                        if circle_walkable(world, nudged, monster.floor, spec.radius, can_vault) {
-                            nudged
-                        } else {
-                            paired.center()
-                        };
+                    monster.pos = if world.is_walkable(exit_tile, can_vault) {
+                        nudged
+                    } else {
+                        paired.center()
+                    };
+                    let (z, sup, _) = resolve_actor_support(world, monster.pos, monster.floor);
+                    monster.body = BodyState::from_pose_2d(monster.pos, monster.facing, z, sup);
+                    monster.body_synced = true;
                     monster.stair_cooldown = STAIR_COOLDOWN_TICKS;
                     monster.path.pop();
                 }
@@ -1666,15 +1895,7 @@ impl AiSystem {
                 let to_stair = (paired_origin.center() - monster.pos).normalized();
                 if to_stair.length_squared() > 0.01 {
                     monster.facing = to_stair;
-                    let can_vault = spec.can_vault_f0 && monster.floor == 0;
-                    move_circle(
-                        world,
-                        &mut monster.pos,
-                        monster.floor,
-                        to_stair * (speed * DT),
-                        spec.radius,
-                        can_vault,
-                    );
+                    step_monster_kinematic(world, monster, to_stair * speed);
                 }
                 return;
             }
@@ -1692,29 +1913,23 @@ impl AiSystem {
             if dist <= 0.95 {
                 if monster.bash_cooldown == 0 {
                     monster.bash_cooldown = (360 / spec.bash_power.max(1) as u16).max(12) as u8;
-                    if let Some(res) = world.damage_tile(next_wp, DamageKind::MonsterMelee) {
-                        if res.damaged {
-                            emit_tile_damage_effects(
-                                next_wp,
-                                next_wp.center(),
-                                res,
-                                events,
-                                noises,
-                            );
-                        }
+                    if let Some(res) = world.damage_tile(next_wp, DamageKind::MonsterMelee)
+                        && res.damaged
+                    {
+                        let (tz, _, _) = resolve_tile_support(world, next_wp);
+                        emit_tile_damage_effects(
+                            next_wp,
+                            next_wp.center().extend(tz + 0.5),
+                            Vec3::Z,
+                            res,
+                            events,
+                            noises,
+                        );
                     }
                 }
             } else {
                 let dir = to_door * (1.0 / dist);
-                let can_vault = spec.can_vault_f0 && monster.floor == 0;
-                move_circle(
-                    world,
-                    &mut monster.pos,
-                    monster.floor,
-                    dir * (speed * DT),
-                    spec.radius,
-                    can_vault,
-                );
+                step_monster_kinematic(world, monster, dir * speed);
             }
             return;
         }
@@ -1745,40 +1960,101 @@ impl AiSystem {
             0.55
         };
         let blended = (desired + separation * sep_weight).normalized();
-        let can_vault = spec.can_vault_f0 && monster.floor == 0;
-        move_circle(
-            world,
-            &mut monster.pos,
-            monster.floor,
-            blended * (speed * speed_mult * DT),
-            spec.radius,
-            can_vault,
-        );
+        step_monster_kinematic(world, monster, blended * (speed * speed_mult));
     }
+}
+
+fn pick_stair_exit_dir(world: &dyn CombatWorld, paired: Tile3D, landing_dir: (i8, i8)) -> (i8, i8) {
+    let (pz, _, _) = resolve_tile_support(world, paired);
+    let origin = paired.center().extend(pz + 0.30);
+    let is_clear = |d: (i8, i8)| -> bool {
+        if d == (0, 0) {
+            return false;
+        }
+        let target_tile = Tile3D::new(paired.x + d.0 as i32, paired.y + d.1 as i32, paired.floor);
+        if !world.is_walkable(target_tile, false) {
+            return false;
+        }
+        let ray = Ray3::new(origin, Vec3::new(d.0 as f32, d.1 as f32, 0.0));
+        world
+            .raycast_filtered(ray, 0.85, QueryFilter::LINE_OF_SIGHT)
+            .is_none()
+    };
+
+    if is_clear(landing_dir) {
+        return landing_dir;
+    }
+    let ortho_a = (landing_dir.1, -landing_dir.0);
+    let ortho_b = (-landing_dir.1, landing_dir.0);
+    let (first, second) = if ortho_b.1 < ortho_a.1 {
+        (ortho_b, ortho_a)
+    } else {
+        (ortho_a, ortho_b)
+    };
+    let opp = (-landing_dir.0, -landing_dir.1);
+    for d in [first, second, opp] {
+        if is_clear(d) {
+            return d;
+        }
+    }
+    landing_dir
+}
+
+fn step_monster_kinematic(world: &dyn CombatWorld, monster: &mut Monster, vel_xy: Vec2) {
+    monster.ensure_body_synced(world);
+    let spec = monster.spec();
+    let params = MoveParams {
+        can_vault_broken_windows: spec.can_vault_f0 && monster.floor == 0,
+        avoid_water: true,
+        doorway_assist: true,
+        ..MoveParams::default()
+    };
+    let res = move_kinematic_with_horizontal_vel(
+        world,
+        spec.body_shape(),
+        monster.body,
+        vel_xy,
+        DT,
+        &params,
+    );
+    monster.body = res.state;
+    monster.pos = monster.body.position.xy();
+    if monster.facing.length_squared() > 1e-6 {
+        monster.body.heading = monster.facing.y.atan2(monster.facing.x);
+    }
+    monster.floor = semantic_floor_for_body(world, monster.body, monster.floor);
 }
 
 fn try_start_attack(
     world: &dyn CombatWorld,
     monster: &mut Monster,
     player: Pose,
+    player_foot: Vec3,
     player_radius: f32,
     events: &mut Vec<ActionEvent>,
 ) -> bool {
     let spec = monster.spec();
-    let dist = monster.pos.distance(player.position);
+    let monster_foot = monster.body.position;
 
     if monster.kind == MonsterKind::Shooter {
-        if monster.ranged_cooldown > 0 || !monster.has_los || dist > spec.attack_range {
+        let shooter_muzzle3 = monster.muzzle_pos();
+        let player_chest3 = player_foot.with_z(player_foot.z + WEAPON_MUZZLE_HEIGHT);
+        let delta3 = player_chest3 - shooter_muzzle3;
+        let dist3 = delta3.length();
+        if monster.ranged_cooldown > 0 || !monster.has_los || dist3 > spec.attack_range {
             return false;
         }
-        let aim_dir = (player.position - monster.pos).normalized();
+        let aim_dir3 = delta3.normalized();
+        let aim_dir = aim_dir3.xy().normalized();
         if aim_dir.length_squared() < 0.01 {
             return false;
         }
         monster.facing = aim_dir;
+        monster.body.heading = aim_dir.y.atan2(aim_dir.x);
         monster.state = AwarenessState::Attack {
             phase: AttackPhase::Windup,
             aim_dir,
+            aim_dir3,
             target_floor: player.floor,
             ticks_left: spec.windup_ticks,
             total_ticks: spec.windup_ticks,
@@ -1786,34 +2062,50 @@ fn try_start_attack(
         events.push(ActionEvent::MonsterTelegraph {
             id: monster.id,
             kind: monster.kind,
-            at: monster.pos,
+            at: monster_foot,
             floor: monster.floor,
             dir: aim_dir,
+            dir3: aim_dir3,
             duration_ticks: spec.windup_ticks,
         });
         return true;
     }
 
-    // Melee monsters require same floor, within attack range, and unobstructed by solid wall/door.
-    if monster.floor != player.floor {
+    // Melee monsters require vertical band overlap, attack range, and unobstructed 3D chest LOS.
+    if (monster_foot.z - player_foot.z).abs() > 0.78 {
         return false;
     }
-    if dist > spec.attack_range + player_radius * 0.25 {
+    let dist_xy = monster.pos.distance(player.position);
+    if dist_xy > spec.attack_range + player_radius * 0.25 {
         return false;
     }
-    if segment_blocked_by_solid(world, monster.pos, player.position, monster.floor) {
+    let m_chest = monster_foot.with_z(monster_foot.z + WEAPON_MUZZLE_HEIGHT);
+    let p_chest = player_foot.with_z(player_foot.z + WEAPON_MUZZLE_HEIGHT);
+    if let Some((ray, d)) = Ray3::from_points(m_chest, p_chest)
+        && world
+            .raycast_filtered(ray, (d - 0.05).max(0.0), QueryFilter::LINE_OF_SIGHT)
+            .is_some()
+    {
         return false;
     }
 
-    let aim_dir = if dist > 0.001 {
-        (player.position - monster.pos) * (1.0 / dist)
+    let aim_dir = if dist_xy > 0.001 {
+        (player.position - monster.pos) * (1.0 / dist_xy)
     } else {
         monster.facing
     };
+    let aim_dir3 = (p_chest - m_chest).normalized();
+    let aim_dir3 = if aim_dir3 == Vec3::ZERO {
+        aim_dir.extend(0.0)
+    } else {
+        aim_dir3
+    };
     monster.facing = aim_dir;
+    monster.body.heading = aim_dir.y.atan2(aim_dir.x);
     monster.state = AwarenessState::Attack {
         phase: AttackPhase::Windup,
         aim_dir,
+        aim_dir3,
         target_floor: player.floor,
         ticks_left: spec.windup_ticks,
         total_ticks: spec.windup_ticks,
@@ -1821,9 +2113,10 @@ fn try_start_attack(
     events.push(ActionEvent::MonsterTelegraph {
         id: monster.id,
         kind: monster.kind,
-        at: monster.pos,
+        at: monster_foot,
         floor: monster.floor,
         dir: aim_dir,
+        dir3: aim_dir3,
         duration_ticks: spec.windup_ticks,
     });
     true
@@ -1831,9 +2124,10 @@ fn try_start_attack(
 
 #[allow(clippy::too_many_arguments)]
 fn step_monster_attack(
-    world: &dyn CombatWorld,
+    world: &mut dyn CombatWorld,
     monster: &mut Monster,
     player: Pose,
+    player_foot: Vec3,
     player_health: &mut u8,
     player_iframes: &mut u8,
     player_knockback: &mut Vec2,
@@ -1846,6 +2140,7 @@ fn step_monster_attack(
     let AwarenessState::Attack {
         phase,
         mut aim_dir,
+        mut aim_dir3,
         mut target_floor,
         mut ticks_left,
         total_ticks,
@@ -1854,26 +2149,35 @@ fn step_monster_attack(
         return;
     };
 
+    let monster_foot = monster.body.position;
+
     match phase {
         AttackPhase::Windup => {
             // Shooter tracks player for first 22 ticks (`ticks_left > 11`), then locks aim for final 11 ticks!
             if monster.kind == MonsterKind::Shooter && ticks_left > SHOOTER_WINDUP_LOCK_TICKS {
-                if can_see_player(world, monster, player, false) {
-                    let to_player = (player.position - monster.pos).normalized();
-                    if to_player.length_squared() > 0.01 {
-                        aim_dir = to_player;
+                if can_see_player_3d(world, monster, player, player_foot, false) {
+                    let shooter_muzzle3 = monster.muzzle_pos();
+                    let player_chest3 = player_foot.with_z(player_foot.z + WEAPON_MUZZLE_HEIGHT);
+                    let new_dir3 = (player_chest3 - shooter_muzzle3).normalized();
+                    let new_dir2 = new_dir3.xy().normalized();
+                    if new_dir2.length_squared() > 0.01 {
+                        aim_dir = new_dir2;
+                        aim_dir3 = new_dir3;
                         target_floor = player.floor;
                         monster.facing = aim_dir;
+                        monster.body.heading = aim_dir.y.atan2(aim_dir.x);
                     }
                 }
             } else if monster.kind != MonsterKind::Shooter
                 && ticks_left > total_ticks / 2
-                && monster.floor == player.floor
+                && (monster_foot.z - player_foot.z).abs() <= 0.78
             {
                 let to_player = (player.position - monster.pos).normalized();
                 if to_player.length_squared() > 0.01 {
                     aim_dir = to_player;
+                    aim_dir3 = to_player.extend(0.0);
                     monster.facing = aim_dir;
+                    monster.body.heading = aim_dir.y.atan2(aim_dir.x);
                 }
             }
 
@@ -1882,6 +2186,7 @@ fn step_monster_attack(
                 monster.state = AwarenessState::Attack {
                     phase: AttackPhase::Windup,
                     aim_dir,
+                    aim_dir3,
                     target_floor,
                     ticks_left,
                     total_ticks,
@@ -1892,39 +2197,31 @@ fn step_monster_attack(
             // Windup complete -> execute strike or spawn ShooterBolt!
             match monster.kind {
                 MonsterKind::Shooter => {
-                    let proj_dist = (player.position - monster.pos)
-                        .dot(aim_dir)
-                        .clamp(2.0, SHOOTER_BOLT_RANGE);
-                    let vz = if target_floor != monster.floor {
-                        let flight_t = proj_dist / SHOOTER_BOLT_SPEED;
-                        (target_floor as f32 - monster.floor as f32) / flight_t
-                    } else {
-                        0.0
-                    };
+                    let shooter_muzzle3 = monster.muzzle_pos();
+                    let velocity = aim_dir3 * SHOOTER_BOLT_SPEED;
                     let id = ProjectileId(*next_proj_id);
                     *next_proj_id = next_proj_id.wrapping_add(1);
                     projectiles.push(Projectile {
                         id,
                         kind: ProjectileKind::ShooterBolt,
                         owner_is_player: false,
-                        pos: monster.pos,
-                        dir: aim_dir,
+                        position: shooter_muzzle3,
+                        velocity,
                         floor: monster.floor,
-                        z: monster.floor as f32,
-                        vz,
-                        speed: SHOOTER_BOLT_SPEED,
                         radius: SHOOTER_BOLT_RADIUS,
                         remaining_range: SHOOTER_BOLT_RANGE,
                     });
                     events.push(ActionEvent::ProjectileLaunched {
                         id,
                         kind: ProjectileKind::ShooterBolt,
-                        from: monster.pos,
+                        from: shooter_muzzle3,
                         floor: monster.floor,
                         dir: aim_dir,
+                        velocity,
                     });
                     noises.push(NoiseEvent {
                         origin: monster.pos,
+                        origin_z: monster_foot.z,
                         floor: monster.floor,
                         radius: SHOOTER_SHOT_NOISE_RADIUS,
                         priority: 3,
@@ -1934,14 +2231,16 @@ fn step_monster_attack(
                 }
                 MonsterKind::Bloater => {
                     let dist = monster.pos.distance(player.position);
-                    if monster.floor == player.floor
+                    let m_chest = monster_foot.with_z(monster_foot.z + WEAPON_MUZZLE_HEIGHT);
+                    let p_chest = player_foot.with_z(player_foot.z + WEAPON_MUZZLE_HEIGHT);
+                    let blocked = Ray3::from_points(m_chest, p_chest).is_some_and(|(ray, d)| {
+                        world
+                            .raycast_filtered(ray, (d - 0.05).max(0.0), QueryFilter::LINE_OF_SIGHT)
+                            .is_some()
+                    });
+                    if (monster_foot.z - player_foot.z).abs() <= 0.78
                         && dist <= BLOATER_SLAM_RANGE
-                        && !segment_blocked_by_solid(
-                            world,
-                            monster.pos,
-                            player.position,
-                            monster.floor,
-                        )
+                        && !blocked
                     {
                         let kb_dir = if dist > 0.001 {
                             (player.position - monster.pos) * (1.0 / dist)
@@ -1953,11 +2252,11 @@ fn step_monster_attack(
                             *player_health = player_health.saturating_sub(spec.attack_damage);
                             *player_iframes = PLAYER_HURT_IFRAMES;
                             events.push(ActionEvent::PlayerHurt {
-                                at: player.position,
+                                at: player_foot,
                                 floor: player.floor,
                                 damage: spec.attack_damage,
                                 remaining_hp: *player_health,
-                                from: monster.pos,
+                                from: monster_foot,
                             });
                         }
                     }
@@ -1969,26 +2268,28 @@ fn step_monster_attack(
                     } else {
                         aim_dir
                     };
-                    if monster.floor == player.floor
+                    let m_chest = monster_foot.with_z(monster_foot.z + WEAPON_MUZZLE_HEIGHT);
+                    let p_chest = player_foot.with_z(player_foot.z + WEAPON_MUZZLE_HEIGHT);
+                    let blocked = Ray3::from_points(m_chest, p_chest).is_some_and(|(ray, d)| {
+                        world
+                            .raycast_filtered(ray, (d - 0.05).max(0.0), QueryFilter::LINE_OF_SIGHT)
+                            .is_some()
+                    });
+                    if (monster_foot.z - player_foot.z).abs() <= 0.78
                         && dist <= spec.attack_range + 0.18
                         && (dist <= 0.55 || to_player.dot(aim_dir) >= 0.0)
-                        && !segment_blocked_by_solid(
-                            world,
-                            monster.pos,
-                            player.position,
-                            monster.floor,
-                        )
+                        && !blocked
                     {
                         *player_knockback += to_player * spec.attack_knockback;
                         if *player_iframes == 0 {
                             *player_health = player_health.saturating_sub(spec.attack_damage);
                             *player_iframes = PLAYER_HURT_IFRAMES;
                             events.push(ActionEvent::PlayerHurt {
-                                at: player.position,
+                                at: player_foot,
                                 floor: player.floor,
                                 damage: spec.attack_damage,
                                 remaining_hp: *player_health,
-                                from: monster.pos,
+                                from: monster_foot,
                             });
                         }
                     }
@@ -1998,6 +2299,7 @@ fn step_monster_attack(
             monster.state = AwarenessState::Attack {
                 phase: AttackPhase::Recovery,
                 aim_dir,
+                aim_dir3,
                 target_floor,
                 ticks_left: spec.recovery_ticks,
                 total_ticks: spec.recovery_ticks,
@@ -2008,6 +2310,7 @@ fn step_monster_attack(
                 monster.state = AwarenessState::Attack {
                     phase: AttackPhase::Recovery,
                     aim_dir,
+                    aim_dir3,
                     target_floor,
                     ticks_left: ticks_left - 1,
                     total_ticks,
@@ -2055,7 +2358,10 @@ fn compute_separation(monsters: &[Monster], out: &mut [Vec2]) {
         let mut push = Vec2::ZERO;
         let r_i = monsters[i].radius();
         for j in 0..monsters.len() {
-            if i == j || !monsters[j].is_targetable() || monsters[i].floor != monsters[j].floor {
+            if i == j
+                || !monsters[j].is_targetable()
+                || (monsters[i].body.position.z - monsters[j].body.position.z).abs() > 0.95
+            {
                 continue;
             }
             let min_sep = r_i + monsters[j].radius() + 0.18;
@@ -2092,9 +2398,15 @@ fn is_corridor_clear(
     let dir = delta * (1.0 / dist);
     let perp = Vec2::new(-dir.y, dir.x) * half_width;
     let samples = (dist / 0.25).ceil() as usize;
+    let mut prev_z = resolve_actor_support(world, from, floor).0;
 
     for i in 1..=samples {
         let t = (i as f32 * 0.25).min(dist);
+        let step_dist = if i == samples {
+            (dist - (i - 1) as f32 * 0.25).max(0.05)
+        } else {
+            0.25
+        };
         let center = from + dir * t;
         for offset in [Vec2::ZERO, perp, Vec2::new(-perp.x, -perp.y)] {
             let p = center + offset;
@@ -2106,224 +2418,52 @@ fn is_corridor_clear(
                 return false;
             }
         }
+        let (cur_z, _, _) = resolve_actor_support(world, center, floor);
+        if (cur_z - prev_z).abs() > 0.35 * step_dist.max(0.25) {
+            return false;
+        }
+        prev_z = cur_z;
     }
     true
 }
 
-fn move_circle(
-    world: &dyn CombatWorld,
-    pos: &mut Vec2,
-    floor: Floor,
-    delta: Vec2,
-    radius: f32,
-    can_vault: bool,
-) {
-    let steps = ((delta.length() / 0.08).ceil() as usize).max(1);
-    let part = delta * (1.0 / steps as f32);
-    for _ in 0..steps {
-        let cand_x = Vec2::new(pos.x + part.x, pos.y);
-        if circle_walkable(world, cand_x, floor, radius, can_vault) {
-            pos.x = cand_x.x;
-        }
-        let cand_y = Vec2::new(pos.x, pos.y + part.y);
-        if circle_walkable(world, cand_y, floor, radius, can_vault) {
-            pos.y = cand_y.y;
-        }
-    }
-}
-
-fn circle_walkable(
-    world: &dyn CombatWorld,
-    center: Vec2,
-    floor: Floor,
-    radius: f32,
-    can_vault: bool,
-) -> bool {
-    let min_x = (center.x - radius - 0.5).ceil() as i32;
-    let max_x = (center.x + radius + 0.5).floor() as i32;
-    let min_y = (center.y - radius - 0.5).ceil() as i32;
-    let max_y = (center.y + radius + 0.5).floor() as i32;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let tile = Tile3D::new(x, y, floor);
-            if in_world_bounds(world, tile) && world.is_walkable(tile, can_vault) {
-                continue;
-            }
-            let nearest_x = center.x.clamp(x as f32 - 0.5, x as f32 + 0.5);
-            let nearest_y = center.y.clamp(y as f32 - 0.5, y as f32 + 0.5);
-            let dx = center.x - nearest_x;
-            let dy = center.y - nearest_y;
-            if dx * dx + dy * dy < radius * radius {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Corner-safe DDA line check returning `true` if any `Wall` or `DoorClosed` blocks `from..to`.
-pub(crate) fn segment_blocked_by_solid(
-    world: &dyn CombatWorld,
-    from: Vec2,
-    to: Vec2,
-    floor: Floor,
-) -> bool {
-    let delta = to - from;
-    let total_dist = delta.length();
-    if total_dist < 0.01 {
-        return false;
-    }
-    let dir = delta * (1.0 / total_dist);
-
-    let sx = from.x + 0.5;
-    let sy = from.y + 0.5;
-    let mut tx = sx.floor() as i32;
-    let mut ty = sy.floor() as i32;
-    let end_tx = (to.x + 0.5).floor() as i32;
-    let end_ty = (to.y + 0.5).floor() as i32;
-
-    let (step_x, mut t_max_x, t_delta_x) = if dir.x > 1e-6 {
-        (1, ((tx + 1) as f32 - sx) / dir.x, 1.0 / dir.x)
-    } else if dir.x < -1e-6 {
-        (-1, (sx - tx as f32) / -dir.x, 1.0 / -dir.x)
-    } else {
-        (0, f32::INFINITY, f32::INFINITY)
-    };
-
-    let (step_y, mut t_max_y, t_delta_y) = if dir.y > 1e-6 {
-        (1, ((ty + 1) as f32 - sy) / dir.y, 1.0 / dir.y)
-    } else if dir.y < -1e-6 {
-        (-1, (sy - ty as f32) / -dir.y, 1.0 / -dir.y)
-    } else {
-        (0, f32::INFINITY, f32::INFINITY)
-    };
-
-    for _ in 0..128 {
-        if tx == end_tx && ty == end_ty {
-            return false;
-        }
-        let next_t = t_max_x.min(t_max_y);
-        if next_t >= total_dist {
-            return false;
-        }
-
-        if (t_max_x - t_max_y).abs() < 1e-5 && step_x != 0 && step_y != 0 {
-            let side_a = Tile3D::new(tx + step_x, ty, floor);
-            let side_b = Tile3D::new(tx, ty + step_y, floor);
-            if is_solid_sight_blocker(world, side_a) || is_solid_sight_blocker(world, side_b) {
-                return true;
-            }
-            tx += step_x;
-            ty += step_y;
-            t_max_x += t_delta_x;
-            t_max_y += t_delta_y;
-        } else if t_max_x < t_max_y {
-            tx += step_x;
-            t_max_x += t_delta_x;
-        } else {
-            ty += step_y;
-            t_max_y += t_delta_y;
-        }
-
-        if tx == end_tx && ty == end_ty {
-            return false;
-        }
-        if is_solid_sight_blocker(world, Tile3D::new(tx, ty, floor)) {
-            return true;
-        }
-    }
-
-    false
-}
-
-#[inline]
-fn is_solid_sight_blocker(world: &dyn CombatWorld, tile: Tile3D) -> bool {
-    !in_world_bounds(world, tile)
-        || matches!(
-            world.obstruction(tile),
-            TileObstruction::Wall(_) | TileObstruction::DoorClosed
-        )
-}
-
-fn count_solid_barriers(
-    world: &dyn CombatWorld,
-    from: Vec2,
-    from_floor: Floor,
-    to: Vec2,
-    to_floor: Floor,
-) -> u32 {
-    let delta = to - from;
-    let total_dist = delta.length();
-    if total_dist < 0.05 {
+fn count_solid_barriers_3d(world: &dyn CombatWorld, from: Vec3, to: Vec3) -> u32 {
+    let Some((ray, total_dist)) = Ray3::from_points(from, to) else {
         return 0;
-    }
-    let dir = delta * (1.0 / total_dist);
-    let steps = (total_dist / 0.25).ceil() as usize;
-    let start_xy = (from.x.round() as i32, from.y.round() as i32);
-    let end_xy = (to.x.round() as i32, to.y.round() as i32);
-    let mut prev_xy = start_xy;
+    };
+    let mut t_cursor = 0.0_f32;
     let mut count = 0u32;
+    let mut last_tile: Option<Tile3D> = None;
 
-    for i in 1..=steps {
-        let frac = (i as f32 / steps as f32).min(1.0);
-        let p = from + dir * (total_dist * frac);
-        let xy = (p.x.round() as i32, p.y.round() as i32);
-        if xy == prev_xy || xy == end_xy {
-            continue;
+    for _ in 0..8 {
+        if t_cursor >= total_dist - 0.05 {
+            break;
         }
-        prev_xy = xy;
-        let floor = if frac < 0.5 { from_floor } else { to_floor };
-        let tile = Tile3D::new(xy.0, xy.1, floor);
-        if in_world_bounds(world, tile)
-            && matches!(
-                world.obstruction(tile),
-                TileObstruction::Wall(_) | TileObstruction::DoorClosed
-            )
-        {
+        let seg_ray = Ray3 {
+            origin: ray.at(t_cursor),
+            dir: ray.dir,
+        };
+        let Some(hit) = world.raycast_filtered(
+            seg_ray,
+            total_dist - t_cursor - 0.04,
+            QueryFilter::LINE_OF_SIGHT,
+        ) else {
+            break;
+        };
+        let hit_tile = match hit.surface {
+            crate::spatial::HitSurface::Collider(
+                crate::spatial::ColliderKind::Wall { tile }
+                | crate::spatial::ColliderKind::ClosedDoor { tile },
+            ) => Some(tile),
+            _ => None,
+        };
+        if hit_tile.is_none() || hit_tile != last_tile {
             count += 1;
+            last_tile = hit_tile;
         }
+        t_cursor += hit.distance + 0.20;
     }
     count
-}
-
-fn clip_shooter_telegraph(
-    world: &dyn CombatWorld,
-    from: Vec2,
-    from_floor: Floor,
-    dir: Vec2,
-    target_floor: Floor,
-    max_range: f32,
-) -> (Vec2, Floor) {
-    let dir = dir.normalized();
-    if dir.length_squared() < 0.01 {
-        return (from, from_floor);
-    }
-    let start_tile = Tile3D::from_vec2(from, from_floor);
-    let mut cur_floor = from_floor;
-    let steps = (max_range / 0.12).ceil() as usize;
-
-    for i in 1..=steps {
-        let t = (i as f32 * 0.12).min(max_range);
-        let p = from + dir * t;
-        let mut tile = Tile3D::from_vec2(p, cur_floor);
-        if tile == start_tile {
-            continue;
-        }
-        if !in_world_bounds(world, tile) {
-            return (p, cur_floor);
-        }
-        if cur_floor > 0 && target_floor == 0 && !world.has_floor(tile) {
-            cur_floor = 0;
-            tile = Tile3D::from_vec2(p, 0);
-        }
-        if matches!(
-            world.obstruction(tile),
-            TileObstruction::Wall(_) | TileObstruction::DoorClosed | TileObstruction::LowProp(_)
-        ) {
-            return (p, cur_floor);
-        }
-    }
-    (from + dir * max_range, cur_floor)
 }
 
 #[inline]
@@ -2335,7 +2475,13 @@ fn in_world_bounds(world: &dyn CombatWorld, tile: Tile3D) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Surface;
     use crate::action::types::{BuildingId, Material, TileDamageResult, TileKind};
+    use crate::spatial::{
+        Aabb3, Collider, ColliderKind, HitSurface, SLAB_THICKNESS, StairGeometry, SupportSurface,
+        SurfaceQuad, TerrainSample, TerrainTriangle, WALL_HALF_THICKNESS, WALL_HEIGHT,
+        WINDOW_LINTEL_Z, WINDOW_SILL_HEIGHT, world_to_tile_coord,
+    };
     use std::collections::HashMap;
 
     struct TestWorld {
@@ -2382,6 +2528,303 @@ mod tests {
         ) {
             self.stairs.insert(bottom, (top, up_dir));
             self.stairs.insert(top, (bottom, down_dir));
+        }
+
+        fn is_wall_like(&self, tile: Tile3D) -> bool {
+            matches!(
+                self.obstruction(tile),
+                TileObstruction::Wall(_)
+                    | TileObstruction::DoorClosed
+                    | TileObstruction::IntactWindow
+                    | TileObstruction::BrokenWindow
+            )
+        }
+    }
+
+    impl SpatialWorld for TestWorld {
+        fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+            let tx = world_to_tile_coord(xy.x);
+            let ty = world_to_tile_coord(xy.y);
+            if tx < 0 || tx >= self.width || ty < 0 || ty >= self.height {
+                return None;
+            }
+            Some(TerrainSample {
+                z: 0.0,
+                normal: Vec3::Z,
+                tile: Position::new(tx, ty),
+                water_z: None,
+                triangle: TerrainTriangle::LowerRight,
+            })
+        }
+
+        fn supports_at(&self, xy: Vec2, out: &mut Vec<SupportSurface>) {
+            out.clear();
+            let Some(terrain) = self.terrain_at(xy) else {
+                return;
+            };
+            let p = terrain.tile;
+            let t0 = Tile3D::from_pos(p, 0);
+            if let Some(&(paired, up_dir)) = self.stairs.get(&t0)
+                && paired.floor == 1
+            {
+                let down_dir = self
+                    .stairs
+                    .get(&paired)
+                    .map_or((-up_dir.0, -up_dir.1), |&(_, d)| d);
+                let geom = StairGeometry::new(t0, 0.0, down_dir, up_dir);
+                let (z, normal) = geom.sample(xy);
+                out.push(SupportSurface {
+                    id: SupportId::Stair(t0),
+                    z,
+                    normal,
+                    walkable: true,
+                    is_stair: true,
+                    floor: 0,
+                    surface: Surface::WoodFloor,
+                    water_z: None,
+                });
+            } else {
+                out.push(SupportSurface {
+                    id: SupportId::Terrain,
+                    z: 0.0,
+                    normal: Vec3::Z,
+                    walkable: true,
+                    is_stair: false,
+                    floor: 0,
+                    surface: Surface::Grass,
+                    water_z: None,
+                });
+            }
+
+            for fl in 1..self.floors {
+                let t = Tile3D::from_pos(p, fl);
+                if self.stairs.contains_key(&t) {
+                    continue;
+                }
+                out.push(SupportSurface {
+                    id: SupportId::Floor(t),
+                    z: fl as f32 * FLOOR_H,
+                    normal: Vec3::Z,
+                    walkable: true,
+                    is_stair: false,
+                    floor: fl,
+                    surface: Surface::WoodFloor,
+                    water_z: None,
+                });
+            }
+        }
+
+        fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+            out.clear();
+            let (min_tile, max_tile) = bounds.tile_bounds();
+            let push_if = |out: &mut Vec<Collider>, c: Collider| {
+                if c.bounds.intersects(bounds) {
+                    out.push(c);
+                }
+            };
+            for ty in min_tile.y..=max_tile.y {
+                for tx in min_tile.x..=max_tile.x {
+                    if tx < 0 || tx >= self.width || ty < 0 || ty >= self.height {
+                        push_if(
+                            out,
+                            Collider {
+                                bounds: Aabb3::new(
+                                    Vec3::new(tx as f32 - 0.5, ty as f32 - 0.5, -10.0),
+                                    Vec3::new(tx as f32 + 0.5, ty as f32 + 0.5, 20.0),
+                                ),
+                                kind: ColliderKind::Wall {
+                                    tile: Tile3D::new(tx, ty, 0),
+                                },
+                                material: Material::BrickMasonry,
+                            },
+                        );
+                        continue;
+                    }
+                    let fx = tx as f32;
+                    let fy = ty as f32;
+                    for fl in 0..self.floors {
+                        let tile = Tile3D::new(tx, ty, fl);
+                        let z_base = fl as f32 * FLOOR_H;
+                        let z_top = z_base
+                            + if fl + 1 < self.floors {
+                                WALL_HEIGHT
+                            } else {
+                                FLOOR_H
+                            };
+                        match self.obstruction(tile) {
+                            TileObstruction::Wall(mat) => {
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(fx - 0.5, fy - 0.5, z_base),
+                                            Vec3::new(fx + 0.5, fy + 0.5, z_top),
+                                        ),
+                                        kind: ColliderKind::Wall { tile },
+                                        material: mat,
+                                    },
+                                );
+                            }
+                            TileObstruction::DoorClosed => {
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(fx - 0.5, fy - 0.5, z_base),
+                                            Vec3::new(fx + 0.5, fy + 0.5, z_top),
+                                        ),
+                                        kind: ColliderKind::ClosedDoor { tile },
+                                        material: Material::WoodDoor,
+                                    },
+                                );
+                            }
+                            TileObstruction::IntactWindow | TileObstruction::BrokenWindow => {
+                                let broken =
+                                    self.obstruction(tile) == TileObstruction::BrokenWindow;
+                                let has_x = self.is_wall_like(Tile3D::new(tx - 1, ty, fl))
+                                    || self.is_wall_like(Tile3D::new(tx + 1, ty, fl));
+                                let has_y = self.is_wall_like(Tile3D::new(tx, ty - 1, fl))
+                                    || self.is_wall_like(Tile3D::new(tx, ty + 1, fl));
+                                let along_y = has_y || !has_x;
+                                let (x0, x1, y0, y1) = if along_y {
+                                    (
+                                        fx - WALL_HALF_THICKNESS,
+                                        fx + WALL_HALF_THICKNESS,
+                                        fy - 0.5,
+                                        fy + 0.5,
+                                    )
+                                } else {
+                                    (
+                                        fx - 0.5,
+                                        fx + 0.5,
+                                        fy - WALL_HALF_THICKNESS,
+                                        fy + WALL_HALF_THICKNESS,
+                                    )
+                                };
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(x0, y0, z_base),
+                                            Vec3::new(x1, y1, z_base + WINDOW_SILL_HEIGHT),
+                                        ),
+                                        kind: ColliderKind::WindowSill { tile, broken },
+                                        material: Material::WoodSiding,
+                                    },
+                                );
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(x0, y0, z_base + WINDOW_LINTEL_Z),
+                                            Vec3::new(x1, y1, z_top),
+                                        ),
+                                        kind: ColliderKind::Wall { tile },
+                                        material: Material::WoodSiding,
+                                    },
+                                );
+                                if !broken {
+                                    push_if(
+                                        out,
+                                        Collider {
+                                            bounds: Aabb3::new(
+                                                Vec3::new(x0, y0, z_base + WINDOW_SILL_HEIGHT),
+                                                Vec3::new(x1, y1, z_base + WINDOW_LINTEL_Z),
+                                            ),
+                                            kind: ColliderKind::WindowGlass { tile },
+                                            material: Material::Glass,
+                                        },
+                                    );
+                                }
+                            }
+                            TileObstruction::LowProp(mat) => {
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(fx - 0.38, fy - 0.38, z_base),
+                                            Vec3::new(fx + 0.38, fy + 0.38, z_base + 0.78),
+                                        ),
+                                        kind: ColliderKind::Prop { tile, prop: None },
+                                        material: mat,
+                                    },
+                                );
+                            }
+                            TileObstruction::Open => {}
+                        }
+                        if fl >= 1 && !self.stairs.contains_key(&tile) {
+                            let (mut rx0, mut rx1, mut ry0, mut ry1) =
+                                (fx - 0.5, fx + 0.5, fy - 0.5, fy + 0.5);
+                            for (dx, dy) in [(-1_i32, 0_i32), (1, 0), (0, -1), (0, 1)] {
+                                let adj_stair = Tile3D::new(tx + dx, ty + dy, fl);
+                                if self.stairs.contains_key(&adj_stair) {
+                                    if dx < 0 {
+                                        rx0 = rx0.max(fx - 0.5 + 0.28);
+                                    } else if dx > 0 {
+                                        rx1 = rx1.min(fx + 0.5 - 0.28);
+                                    } else if dy < 0 {
+                                        ry0 = ry0.max(fy - 0.5 + 0.28);
+                                    } else {
+                                        ry1 = ry1.min(fy + 0.5 - 0.28);
+                                    }
+                                }
+                            }
+                            push_if(
+                                out,
+                                Collider {
+                                    bounds: Aabb3::new(
+                                        Vec3::new(rx0, ry0, z_base - SLAB_THICKNESS),
+                                        Vec3::new(rx1, ry1, z_base),
+                                    ),
+                                    kind: ColliderKind::BuildingSlab {
+                                        building_id: 1,
+                                        floor: fl,
+                                        is_roof: false,
+                                    },
+                                    material: Material::WoodLight,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        fn surface_quads_in(
+            &self,
+            min_tile: Position,
+            max_tile: Position,
+            out: &mut Vec<SurfaceQuad>,
+        ) {
+            out.clear();
+            for ty in min_tile.y..=max_tile.y {
+                for tx in min_tile.x..=max_tile.x {
+                    if tx < 0 || tx >= self.width || ty < 0 || ty >= self.height {
+                        continue;
+                    }
+                    let p = Position::new(tx, ty);
+                    out.push(SurfaceQuad {
+                        surface: HitSurface::Terrain { tile: p },
+                        x0: tx as f32 - 0.5,
+                        y0: ty as f32 - 0.5,
+                        x1: tx as f32 + 0.5,
+                        y1: ty as f32 + 0.5,
+                        corners: [0.0; 4],
+                        material: Material::None,
+                    });
+                    let t0 = Tile3D::from_pos(p, 0);
+                    if let Some(&(paired, up_dir)) = self.stairs.get(&t0)
+                        && paired.floor == 1
+                    {
+                        let down_dir = self
+                            .stairs
+                            .get(&paired)
+                            .map_or((-up_dir.0, -up_dir.1), |&(_, d)| d);
+                        StairGeometry::new(t0, 0.0, down_dir, up_dir)
+                            .push_quads(Material::WoodLight, out);
+                    }
+                }
+            }
         }
     }
 
@@ -2471,7 +2914,7 @@ mod tests {
 
         fn register_dynamic_flash(
             &mut self,
-            _pos: Vec2,
+            _pos: Vec3,
             _floor: Floor,
             _radius: f32,
             _intensity: u8,
@@ -2504,6 +2947,7 @@ mod tests {
             &mut monsters,
             &[NoiseEvent {
                 origin: Vec2::new(2.0, 5.0),
+                origin_z: 0.0,
                 floor: 0,
                 radius: 2.0,
                 priority: 1,
@@ -2520,6 +2964,7 @@ mod tests {
             &mut monsters,
             &[NoiseEvent {
                 origin: Vec2::new(2.0, 5.0),
+                origin_z: 0.0,
                 floor: 0,
                 radius: 12.0,
                 priority: 4,
@@ -2708,15 +3153,17 @@ mod tests {
         assert_eq!(projectiles.len(), 1, "Shooter spawned ShooterBolt");
         assert_eq!(projectiles[0].kind, ProjectileKind::ShooterBolt);
         assert!(
-            projectiles[0].dir.y.abs() < 0.05 && projectiles[0].dir.x > 0.99,
+            projectiles[0].velocity.y.abs() < 0.5
+                && projectiles[0].velocity.x > SHOOTER_BOLT_SPEED * 0.99,
             "Bolt fires along locked aim_dir so player sidestep dodges it (got {:?})",
-            projectiles[0].dir
+            projectiles[0].velocity
         );
 
         // Test hitstun interruption (>= 8 ticks cancels Windup!).
         monsters[0].state = AwarenessState::Attack {
             phase: AttackPhase::Windup,
             aim_dir: Vec2::new(1.0, 0.0),
+            aim_dir3: Vec3::X,
             target_floor: 0,
             ticks_left: 20,
             total_ticks: 33,
@@ -3033,6 +3480,7 @@ mod tests {
             &mut monsters,
             &[NoiseEvent {
                 origin: Vec2::new(8.0, 5.0),
+                origin_z: 0.0,
                 floor: 0,
                 radius: 12.0,
                 priority: 4,

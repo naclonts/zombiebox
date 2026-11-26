@@ -8,14 +8,15 @@ mod world;
 
 pub use action::{
     ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionHud, ActionInput, ActionMode,
-    ActionOutcome, AwarenessIcon, BLOCK_HEIGHT, BLOCK_WIDTH, BuildingId, BuildingInfo,
-    BuildingStyle, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot, CacheView, CombatWorld, DT,
-    DamageKind, Floor, FloorTransition, InteractPrompt, Inventory, LightKind, LightSourceView,
-    Material, MaterialCategory, MonsterId, MonsterKind, MonsterView, NUM_FLOORS, NoiseEvent,
-    NoiseKind, ObjectiveKind, PLAYER_MAX_HEALTH, PlayerRenderState, Pose, ProjectileId,
+    ActionOutcome, AwarenessIcon, BLOCK_HEIGHT, BLOCK_WIDTH, BlastKind, BlastView, BuildingId,
+    BuildingInfo, BuildingStyle, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot, CacheView,
+    CombatWorld, DT, DamageKind, DynamicFlashView, Floor, FloorTransition, InteractPrompt,
+    Inventory, LightKind, LightSourceView, Material, MaterialCategory, MonsterId, MonsterKind,
+    MonsterSpec, MonsterView, NUM_FLOORS, NoiseEvent, NoiseKind, ObjectiveKind, PLAYER_HEIGHT,
+    PLAYER_MAX_HEALTH, PLAYER_RADIUS, PLAYER_SHAPE, PlayerRenderState, Pose, ProjectileId,
     ProjectileKind, ProjectileView, PropKind, ReloadMode, Surface, Tile3D, TileDamageResult,
-    TileKind, TileObstruction, TileRenderInfo, TileVisibility, WallOrientation, Weapon, WeaponSpec,
-    mix64, weapon_spec,
+    TileKind, TileObstruction, TileRenderInfo, TileVisibility, WEAPON_MUZZLE_HEIGHT,
+    WallOrientation, Weapon, WeaponSpec, mix64, monster_spec, weapon_spec,
 };
 pub use spatial::{
     Aabb3, ActionSpatialView, AirborneSupportHit, BRIDGE_PARAPET_HEIGHT, BRIDGE_SLAB_THICKNESS,
@@ -25,8 +26,9 @@ pub use spatial::{
     SurfaceQuad, TERRAIN_GRID_SIDE, TerrainGrid, TerrainSample, TerrainTriangle, Vec2, Vec3,
     WALL_HALF_THICKNESS, WALL_HEIGHT, WALL_THICKNESS, WATER_SURFACE_Z, WINDOW_LINTEL_Z,
     WINDOW_SILL_HEIGHT, WorldSpatialView, floor_elevation, move_kinematic_with_horizontal_vel,
-    raycast_world, sample_quad_00_11, select_grounded_support, sphere_cast_world,
-    step_kinematic_body, sweep_airborne_support, world_to_tile_coord,
+    raycast_world, resolve_actor_support, resolve_tile_support, sample_quad_00_11,
+    select_grounded_support, semantic_floor_for_body, sphere_cast_world, step_kinematic_body,
+    sweep_airborne_support, world_to_tile_coord,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};

@@ -1153,6 +1153,7 @@ fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
             ActionEvent::StructuralCollapse { .. } => mask |= ZB_SFX_STRUCTURAL_BREACH,
             ActionEvent::DoorToggled { .. } => mask |= ZB_SFX_DOOR_TOGGLE,
             ActionEvent::WindowClimbed { .. } => mask |= ZB_SFX_WINDOW_CLIMB,
+            ActionEvent::Footstep { .. } | ActionEvent::ActorLanded { .. } => {}
             ActionEvent::WeaponSwitched { .. } => mask |= ZB_SFX_WEAPON_SWITCH,
             ActionEvent::ReloadStarted { .. } => mask |= ZB_SFX_RELOAD_START,
             ActionEvent::ReloadCompleted { .. } => mask |= ZB_SFX_RELOAD_FINISH,

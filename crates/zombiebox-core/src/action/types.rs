@@ -1,6 +1,6 @@
 //! Shared 2.5D types, world trait, input/HUD contracts, and gameplay events for `ActionGame`.
 
-pub use crate::spatial::Vec2;
+pub use crate::spatial::{BodyState, SpatialWorld, Vec2, Vec3};
 use crate::{District, Position};
 
 pub const ACTION_TICKS_PER_SECOND: u32 = 60;
@@ -261,11 +261,40 @@ pub enum LightKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightSourceView {
     pub pos: Vec2,
+    /// Exact 3D emitter bulb position (`+1.65` streetlight, `+1.10` porch, `+0.35` cache above surface `z`).
+    pub position: Vec3,
     pub floor: Floor,
     pub radius: f32,
     pub intensity: u8,
     pub active: bool,
     pub kind: LightKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DynamicFlashView {
+    pub position: Vec3,
+    pub floor: Floor,
+    pub radius: f32,
+    pub intensity: u8,
+    pub ttl_ticks: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlastKind {
+    Rocket,
+    BloaterCaustic,
+}
+
+/// Short-lived active explosion volume exposed via `ActionGame::blasts()` for snapshot/single-frame rendering.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlastView {
+    pub id: u32,
+    pub kind: BlastKind,
+    pub position: Vec3,
+    pub floor: Floor,
+    pub radius: f32,
+    /// Normalized blast lifecycle in `0.0..=1.0` (`0.0` at detonation -> `1.0` at expiry).
+    pub progress: f32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -301,8 +330,8 @@ pub struct TileDamageResult {
     pub collapsed_cells: u8,
 }
 
-/// Environment interface shared between `block.rs`, `weapons.rs`, and `ai.rs`.
-pub trait CombatWorld {
+/// Environment interface shared between `block.rs`, `county.rs`, `weapons.rs`, and `ai.rs`.
+pub trait CombatWorld: SpatialWorld {
     /// Inclusive world XY bounds and number of floors.
     fn bounds(&self) -> (Position, Position, u8);
     /// Monotonic counter incremented whenever doors, windows, props, walls, or lights change.
@@ -337,7 +366,7 @@ pub trait CombatWorld {
     /// Add a short-lived flash light (muzzle flash, rocket blast) without dirtying static light.
     fn register_dynamic_flash(
         &mut self,
-        pos: Vec2,
+        pos: Vec3,
         floor: Floor,
         radius: f32,
         intensity: u8,
@@ -395,10 +424,12 @@ pub struct CacheLoot {
     pub medkits: u8,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CacheView {
     pub id: CacheId,
     pub pos: Tile3D,
+    /// Exact 3D ground/floor support position `(pos.x as f32, pos.y as f32, support_z)`.
+    pub world_pos: Vec3,
     pub kind: CacheKind,
     pub loot: CacheLoot,
     pub opened: bool,
@@ -443,9 +474,17 @@ pub enum ProjectileKind {
 pub struct ProjectileView {
     pub id: ProjectileId,
     pub kind: ProjectileKind,
+    /// Authoritative 3D center position (`+z` up).
+    pub position: Vec3,
+    /// Authoritative 3D velocity vector (`+z` up).
+    pub velocity: Vec3,
+    pub radius: f32,
+    /// Horizontal XY projection (`== position.xy()`).
     pub pos: Vec2,
+    /// Horizontal unit direction (`== velocity.xy().normalized()`).
     pub dir: Vec2,
     pub floor: Floor,
+    /// World-space Z coordinate (`== position.z`).
     pub z: f32,
 }
 
@@ -474,16 +513,26 @@ pub struct MonsterView {
     pub id: MonsterId,
     pub kind: MonsterKind,
     pub variant: u8,
+    /// Horizontal foot position (`== body.position.xy()`).
     pub pos: Vec2,
     pub facing: Vec2,
     pub floor: Floor,
+    /// Authoritative 3D kinematic body state (`position` is foot contact in `+z` up world space).
+    pub body: BodyState,
+    /// Authoritative world-space foot elevation (`== body.position.z`).
     pub elevation: f32,
+    /// World-space eye position (`+z` up).
+    pub eye_pos: Vec3,
     pub hp: u8,
     pub max_hp: u8,
     pub awareness: AwarenessIcon,
     pub telegraph_progress: Option<f32>,
     pub telegraph_dir: Vec2,
     pub telegraph_target: Option<(Vec2, Floor)>,
+    /// World-space 3D Shooter aim origin, unit 3D direction, and world-clipped 3D laser endpoint.
+    pub telegraph_origin: Vec3,
+    pub telegraph_dir3: Vec3,
+    pub telegraph_target3: Option<Vec3>,
     pub hitstun: bool,
     pub swelling: bool,
 }
@@ -510,6 +559,7 @@ pub enum NoiseKind {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NoiseEvent {
     pub origin: Vec2,
+    pub origin_z: f32,
     pub floor: Floor,
     pub radius: f32,
     pub priority: u8,
@@ -549,12 +599,12 @@ pub enum FloorTransition {
 pub enum ActionEvent {
     // Weapons & projectiles
     UnarmedShove {
-        from: Vec2,
+        from: Vec3,
         floor: Floor,
         facing: Vec2,
     },
     AxeSwing {
-        from: Vec2,
+        from: Vec3,
         floor: Floor,
         facing: Vec2,
         hit_flesh: bool,
@@ -562,27 +612,29 @@ pub enum ActionEvent {
     },
     ShotFired {
         weapon: Weapon,
-        from: Vec2,
+        from: Vec3,
+        muzzle: Vec3,
         floor: Floor,
         facing: Vec2,
+        dir: Vec3,
     },
     BulletTrace {
         weapon: Weapon,
-        from: Vec2,
-        from_z: f32,
-        to: Vec2,
-        to_z: f32,
+        from: Vec3,
+        to: Vec3,
+        hit_normal: Vec3,
         hit_material: MaterialCategory,
     },
     ProjectileLaunched {
         id: ProjectileId,
         kind: ProjectileKind,
-        from: Vec2,
+        from: Vec3,
         floor: Floor,
         dir: Vec2,
+        velocity: Vec3,
     },
     RocketBlast {
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         radius: f32,
     },
@@ -590,23 +642,40 @@ pub enum ActionEvent {
         weapon: Weapon,
     },
 
-    // Environment & destruction
+    // Environment, movement & destruction
     MaterialHit {
         at: Tile3D,
-        hit_pos: Vec2,
+        hit_pos: Vec3,
+        hit_normal: Vec3,
         material: Material,
         destroyed: bool,
         light_changed: bool,
     },
     StructuralCollapse {
         at: Tile3D,
+        pos: Vec3,
     },
     DoorToggled {
         at: Tile3D,
+        pos: Vec3,
         opened: bool,
     },
     WindowClimbed {
         at: Tile3D,
+        from: Vec3,
+        to: Vec3,
+    },
+    Footstep {
+        at: Vec3,
+        floor: Floor,
+        surface: Surface,
+        quiet: bool,
+    },
+    ActorLanded {
+        at: Vec3,
+        floor: Floor,
+        impact_speed: f32,
+        damage: u8,
     },
 
     // Inventory, reload & healing
@@ -623,10 +692,11 @@ pub enum ActionEvent {
     },
     Looted {
         at: Tile3D,
+        pos: Vec3,
         loot: CacheLoot,
     },
     Healed {
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         amount: u8,
         new_health: u8,
@@ -636,22 +706,24 @@ pub enum ActionEvent {
     MonsterAlerted {
         id: MonsterId,
         kind: MonsterKind,
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         by_sight: bool,
     },
     MonsterTelegraph {
         id: MonsterId,
         kind: MonsterKind,
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         dir: Vec2,
+        dir3: Vec3,
         duration_ticks: u16,
     },
     MonsterHit {
         id: MonsterId,
         kind: MonsterKind,
-        at: Vec2,
+        at: Vec3,
+        hit_pos: Vec3,
         floor: Floor,
         damage: u8,
         remaining_hp: u8,
@@ -660,35 +732,37 @@ pub enum ActionEvent {
     MonsterDown {
         id: MonsterId,
         kind: MonsterKind,
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
+        facing: Vec2,
         overkill: bool,
     },
     BloaterSwell {
         id: MonsterId,
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         fuse_ticks: u16,
     },
     BloaterBurst {
         id: MonsterId,
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         radius: f32,
     },
 
     // Player & run state
     PlayerHurt {
-        at: Vec2,
+        at: Vec3,
         floor: Floor,
         damage: u8,
         remaining_hp: u8,
-        from: Vec2,
+        from: Vec3,
     },
     FloorChanged {
         from_floor: Floor,
         to_floor: Floor,
         at: Tile3D,
+        pos: Vec3,
         via: FloorTransition,
     },
     Died,
@@ -736,8 +810,16 @@ pub struct ActionHud {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerRenderState {
+    /// Legacy 2D pose (`position == body.position.xy()`, `floor == semantic floor`).
     pub pose: Pose,
+    /// Authoritative 3D kinematic body state (`position` is foot contact in `+z` up world space).
+    pub body: BodyState,
+    /// Authoritative world-space foot elevation (`== body.position.z`).
     pub elevation: f32,
+    /// Unit 3D aim direction vector in `+z` up simulation space.
+    pub aim_dir: Vec3,
+    /// World-space firearm muzzle / melee origin (`+z` up).
+    pub muzzle_pos: Vec3,
     pub equipped: Option<Weapon>,
     pub ammo_in_equipped: u16,
     pub health: u8,

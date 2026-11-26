@@ -285,7 +285,7 @@ impl Renderer {
                         self.fallen.remove(0);
                     }
                     self.fallen.push(Fallen {
-                        at,
+                        at: at.xy(),
                         floor,
                         kind,
                         variant: (id.0 % 3) as u8,
@@ -355,7 +355,7 @@ impl Renderer {
             Vec2::ZERO
         };
 
-        let target_floor = player_state.elevation;
+        let target_floor = player.floor as f32;
         let should_snap = !self.cam_initialized
             || self.cam_anchor.distance(player.position) > 6.0
             || (target_floor - self.cam_floor).abs() > 1.5;
@@ -689,7 +689,7 @@ impl Renderer {
                 depth: player.position.x + player.position.y,
                 bias: 3,
                 kind: DrawItemKind::Survivor {
-                    z: player_state.elevation,
+                    z: player.floor as f32,
                 },
             });
 
@@ -715,7 +715,7 @@ impl Renderer {
                     bias: 3,
                     kind: DrawItemKind::Monster {
                         idx,
-                        z: m.elevation,
+                        z: m.floor as f32,
                         lower_dim: false,
                     },
                 });
@@ -1040,7 +1040,7 @@ impl Renderer {
                 depth: player.position.x + player.position.y,
                 bias: 3,
                 kind: DrawItemKind::Survivor {
-                    z: player_state.elevation,
+                    z: player.floor as f32,
                 },
             });
             for (idx, m) in monsters.iter().enumerate() {
@@ -1055,7 +1055,7 @@ impl Renderer {
                     bias: 3,
                     kind: DrawItemKind::Monster {
                         idx,
-                        z: m.elevation,
+                        z: m.floor as f32,
                         lower_dim: false,
                     },
                 });

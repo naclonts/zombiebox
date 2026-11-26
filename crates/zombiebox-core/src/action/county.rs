@@ -3,6 +3,13 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 
+use crate::spatial::action_adapter::{
+    SpatialStageSource, resolve_tile_support, stage_colliders_in, stage_supports_at,
+    stage_surface_quads_in,
+};
+use crate::spatial::{
+    Aabb3, Collider, SpatialWorld, SupportSurface, SurfaceQuad, TerrainSample, Vec3,
+};
 use crate::{
     Building, BuildingKind, CHUNK_SIZE, CHUNKS_PER_SIDE, District, Feature, Ground, MonsterId,
     Position, RoomKind, WORLD_SIZE, World,
@@ -17,9 +24,9 @@ use super::block::{
 };
 use super::types::{
     BuildingId, BuildingInfo, BuildingStyle, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot,
-    CacheView, CombatWorld, DamageKind, Floor, LightKind, LightSourceView, Material, PropKind,
-    Surface, Tile3D, TileDamageResult, TileKind, TileObstruction, TileRenderInfo, TileVisibility,
-    Vec2, WallOrientation, Weapon, mix64,
+    CacheView, CombatWorld, DamageKind, DynamicFlashView, Floor, LightKind, LightSourceView,
+    Material, PropKind, SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction,
+    TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, mix64,
 };
 
 pub const ACTIVE_CHUNK_RADIUS: i32 = 3;
@@ -67,6 +74,7 @@ enum BuildingReg {
 
 pub struct CountyStage {
     seed: u64,
+    world: World,
     wake: Position,
     chunks: Vec<Option<Box<CountyChunk>>>,
     hibernated_monsters: Vec<Vec<Monster>>,
@@ -101,6 +109,7 @@ impl CountyStage {
 
         let mut stage = Self {
             seed,
+            world: world.clone(),
             wake,
             chunks,
             hibernated_monsters,
@@ -849,7 +858,8 @@ impl CountyStage {
             );
             let variant = (h % 4) as u8;
             let spawn = Tile3D::from_pos(site.position, site.floor);
-            self.hibernated_monsters[cidx].push(Monster::new(id, site.kind, variant, spawn));
+            let monster = Monster::new_in_world(id, site.kind, variant, spawn, self);
+            self.hibernated_monsters[cidx].push(monster);
             self.total_monsters_spawned += 1;
         }
     }
@@ -1137,16 +1147,12 @@ impl CountyStage {
         )
     }
 
-    pub(crate) fn spatial_cell(
-        &self,
-        tile: Tile3D,
-        world: &World,
-    ) -> Option<super::types::SpatialCell> {
+    pub(crate) fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
         if !Self::in_world(tile.pos()) || (tile.floor as usize) >= COUNTY_FLOORS {
             return None;
         }
         if let Some(cell) = self.cell_at_world(tile) {
-            return Some(super::types::SpatialCell {
+            return Some(SpatialCell {
                 surface: cell.surface,
                 kind: cell.kind,
                 material: cell.material,
@@ -1156,7 +1162,7 @@ impl CountyStage {
             });
         }
         if tile.floor == 0 {
-            let wt = world.tile_at(tile.pos())?;
+            let wt = self.world.tile_at(tile.pos())?;
             let surface = match wt.ground {
                 Ground::Bridge => Surface::Bridge,
                 Ground::River | Ground::Lake => Surface::Water,
@@ -1182,7 +1188,7 @@ impl CountyStage {
             let (material, _) = super::block::tile_spec(kind, Material::None);
             let orientation = if kind == TileKind::Prop(PropKind::Fence) {
                 let is_fence = |nx: i32, ny: i32| -> bool {
-                    world
+                    self.world
                         .tile_at(Position::new(nx, ny))
                         .is_some_and(|nt| nt.feature == Feature::Fence)
                 };
@@ -1196,7 +1202,7 @@ impl CountyStage {
             } else {
                 WallOrientation::AlongX
             };
-            return Some(super::types::SpatialCell {
+            return Some(SpatialCell {
                 surface,
                 kind,
                 material,
@@ -1230,15 +1236,19 @@ impl CountyStage {
         self.caches
             .iter()
             .filter(|c| self.in_window(c.pos.pos()))
-            .map(|c| CacheView {
-                id: c.id,
-                pos: c.pos,
-                kind: c.kind,
-                loot: c.loot,
-                opened: c.opened,
-                nearby: !c.opened
-                    && c.pos.floor == player_floor
-                    && c.pos.center().distance(player_pos) <= interact_radius,
+            .map(|c| {
+                let (z, _, _) = resolve_tile_support(self, c.pos);
+                CacheView {
+                    id: c.id,
+                    pos: c.pos,
+                    world_pos: c.pos.center().extend(z),
+                    kind: c.kind,
+                    loot: c.loot,
+                    opened: c.opened,
+                    nearby: !c.opened
+                        && c.pos.floor == player_floor
+                        && c.pos.center().distance(player_pos) <= interact_radius,
+                }
             })
             .collect()
     }
@@ -1274,8 +1284,16 @@ impl CountyStage {
             {
                 if let Some(chunk) = &self.chunks[Self::chunk_idx(cx, cy)] {
                     for light in &chunk.lights {
+                        let tile = Tile3D::new(light.wx, light.wy, light.floor);
+                        let (surface_z, _, _) = resolve_tile_support(self, tile);
+                        let bulb_offset = match light.kind {
+                            LightKind::Streetlight => 1.65,
+                            LightKind::Porch => 1.10,
+                            LightKind::Cache => 0.35,
+                        };
                         views.push(LightSourceView {
                             pos: Vec2::new(light.wx as f32, light.wy as f32),
+                            position: tile.center().extend(surface_z + bulb_offset),
                             floor: light.floor,
                             radius: light.radius,
                             intensity: light.intensity,
@@ -1288,8 +1306,10 @@ impl CountyStage {
         }
         for cache in &self.caches {
             if self.in_window(cache.pos.pos()) {
+                let (surface_z, _, _) = resolve_tile_support(self, cache.pos);
                 views.push(LightSourceView {
                     pos: cache.pos.center(),
+                    position: cache.pos.center().extend(surface_z + 0.35),
                     floor: cache.pos.floor,
                     radius: 1.8,
                     intensity: 48,
@@ -1299,6 +1319,19 @@ impl CountyStage {
             }
         }
         views
+    }
+
+    pub fn dynamic_flashes(&self) -> Vec<DynamicFlashView> {
+        self.flashes
+            .iter()
+            .map(|f| DynamicFlashView {
+                position: f.pos,
+                floor: f.floor,
+                radius: f.radius,
+                intensity: f.intensity,
+                ttl_ticks: f.ttl_ticks,
+            })
+            .collect()
     }
 
     pub fn is_indoor(&self, tile: Tile3D) -> bool {
@@ -1331,6 +1364,7 @@ impl CountyStage {
         circle_walkable_world(self, center, floor, radius, can_vault_window)
     }
 
+    #[allow(dead_code)]
     pub fn move_body(
         &self,
         position: &mut Vec2,
@@ -1367,7 +1401,7 @@ impl CountyStage {
                 continue;
             }
             let floor_scale = if flash.floor == tile.floor { 1.0 } else { 0.25 };
-            let dist = center.distance(flash.pos);
+            let dist = center.distance(flash.pos.xy());
             if dist < flash.radius {
                 let att = (1.0 - dist / flash.radius) * floor_scale;
                 extra += flash.intensity as f32 * att;
@@ -2028,6 +2062,50 @@ impl CountyStage {
     }
 }
 
+impl SpatialStageSource for CountyStage {
+    fn world(&self) -> &World {
+        &self.world
+    }
+
+    fn is_county(&self) -> bool {
+        true
+    }
+
+    fn max_floors(&self) -> Floor {
+        COUNTY_FLOORS as Floor
+    }
+
+    fn playable_bounds(&self) -> (Position, Position) {
+        self.playable_bounds()
+    }
+
+    fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
+        self.spatial_cell(tile)
+    }
+
+    fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
+        self.building_by_id(id)
+    }
+}
+
+impl SpatialWorld for CountyStage {
+    fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        self.world.terrain_at(xy)
+    }
+
+    fn supports_at(&self, xy: Vec2, out: &mut Vec<SupportSurface>) {
+        stage_supports_at(self, xy, out);
+    }
+
+    fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+        stage_colliders_in(self, bounds, out);
+    }
+
+    fn surface_quads_in(&self, min_tile: Position, max_tile: Position, out: &mut Vec<SurfaceQuad>) {
+        stage_surface_quads_in(self, min_tile, max_tile, out);
+    }
+}
+
 impl CombatWorld for CountyStage {
     fn bounds(&self) -> (Position, Position, u8) {
         (
@@ -2329,7 +2407,7 @@ impl CombatWorld for CountyStage {
 
     fn register_dynamic_flash(
         &mut self,
-        pos: Vec2,
+        pos: Vec3,
         floor: Floor,
         radius: f32,
         intensity: u8,

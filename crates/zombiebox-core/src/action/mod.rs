@@ -7,19 +7,31 @@ pub mod county;
 pub mod types;
 pub mod weapons;
 
+pub use ai::{MonsterSpec, monster_spec};
 pub use types::*;
-pub use weapons::{Inventory, Projectile, ReloadMode, WeaponSpec, weapon_spec};
+pub use weapons::{
+    Inventory, Projectile, ReloadMode, WEAPON_MUZZLE_HEIGHT, WeaponSpec, weapon_spec,
+};
 
+use crate::spatial::{
+    Aabb3, BodyShape, Collider, FLOOR_H, MotionState, MoveParams, QueryFilter, Ray3, SurfaceQuad,
+    TerrainSample, move_kinematic_with_horizontal_vel, resolve_actor_support, resolve_tile_support,
+    select_grounded_support, semantic_floor_for_body,
+};
 use crate::{District, House, Position, World};
 use ai::{AiSystem, Monster, damage_monster, propagate_noise};
 use block::{ResidentialBlock, SupplyCache};
 use county::CountyStage;
-use weapons::{is_rocket_danger_close, step_projectiles, try_fire_or_swing};
+use weapons::{
+    compute_player_aim_3d, is_rocket_danger_close_3d, step_projectiles_3d, try_fire_or_swing_3d,
+};
 
 pub const PLAYER_MAX_SPEED: f32 = 5.2;
 pub const PLAYER_QUIET_STICK_THRESHOLD: f32 = 0.52;
 pub const PLAYER_DEADZONE: f32 = 0.08;
 pub const PLAYER_RADIUS: f32 = 0.23;
+pub const PLAYER_HEIGHT: f32 = 1.05;
+pub const PLAYER_SHAPE: BodyShape = BodyShape::new(PLAYER_RADIUS, PLAYER_HEIGHT);
 pub const PLAYER_HURT_IFRAMES: u8 = 24;
 const FOOTSTEP_INTERVAL_TICKS: u8 = 18;
 const KNOCKBACK_DECAY: f32 = 0.82;
@@ -93,35 +105,6 @@ impl Stage {
         match self {
             Self::Residential(b) => Some(b),
             Self::County(_) => None,
-        }
-    }
-
-    fn move_body(
-        &self,
-        position: &mut Vec2,
-        floor: Floor,
-        delta: Vec2,
-        radius: f32,
-        can_vault_window: bool,
-        doorway_assist: bool,
-    ) {
-        match self {
-            Self::Residential(b) => b.move_body(
-                position,
-                floor,
-                delta,
-                radius,
-                can_vault_window,
-                doorway_assist,
-            ),
-            Self::County(c) => c.move_body(
-                position,
-                floor,
-                delta,
-                radius,
-                can_vault_window,
-                doorway_assist,
-            ),
         }
     }
 
@@ -213,6 +196,13 @@ impl Stage {
         }
     }
 
+    fn dynamic_flashes(&self) -> Vec<DynamicFlashView> {
+        match self {
+            Self::Residential(b) => b.dynamic_flashes(),
+            Self::County(c) => c.dynamic_flashes(),
+        }
+    }
+
     fn take_collapsed_tiles(&mut self) -> Vec<Tile3D> {
         match self {
             Self::Residential(b) => b.take_collapsed_tiles(),
@@ -220,10 +210,10 @@ impl Stage {
         }
     }
 
-    fn spatial_cell(&self, tile: Tile3D, world: &World) -> Option<SpatialCell> {
+    fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
         match self {
             Self::Residential(b) => b.spatial_cell(tile),
-            Self::County(c) => c.spatial_cell(tile, world),
+            Self::County(c) => c.spatial_cell(tile),
         }
     }
 
@@ -343,7 +333,7 @@ impl CombatWorld for Stage {
 
     fn register_dynamic_flash(
         &mut self,
-        pos: Vec2,
+        pos: Vec3,
         floor: Floor,
         radius: f32,
         intensity: u8,
@@ -358,12 +348,54 @@ impl CombatWorld for Stage {
     }
 }
 
+impl SpatialWorld for Stage {
+    fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        match self {
+            Self::Residential(b) => b.terrain_at(xy),
+            Self::County(c) => c.terrain_at(xy),
+        }
+    }
+
+    fn supports_at(&self, xy: Vec2, out: &mut Vec<crate::spatial::SupportSurface>) {
+        match self {
+            Self::Residential(b) => b.supports_at(xy, out),
+            Self::County(c) => c.supports_at(xy, out),
+        }
+    }
+
+    fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+        match self {
+            Self::Residential(b) => b.colliders_in(bounds, out),
+            Self::County(c) => c.colliders_in(bounds, out),
+        }
+    }
+
+    fn surface_quads_in(&self, min_tile: Position, max_tile: Position, out: &mut Vec<SurfaceQuad>) {
+        match self {
+            Self::Residential(b) => b.surface_quads_in(min_tile, max_tile, out),
+            Self::County(c) => c.surface_quads_in(min_tile, max_tile, out),
+        }
+    }
+}
+
+struct ActiveBlast {
+    id: u32,
+    kind: BlastKind,
+    position: Vec3,
+    floor: Floor,
+    radius: f32,
+    age_ticks: u8,
+    total_ticks: u8,
+}
+
 pub struct ActionGame {
     seed: u64,
     world: World,
     stage: Stage,
     tick: u64,
     player: Pose,
+    player_body: BodyState,
+    fall_peak_z: Option<f32>,
     player_knockback: Vec2,
     health: u8,
     max_health: u8,
@@ -381,6 +413,8 @@ pub struct ActionGame {
     next_monster_id: u32,
     projectiles: Vec<Projectile>,
     next_proj_id: u32,
+    active_blasts: Vec<ActiveBlast>,
+    next_blast_id: u32,
     ai: AiSystem,
     events: Vec<ActionEvent>,
     noises: Vec<NoiseEvent>,
@@ -404,6 +438,8 @@ impl ActionGame {
             facing: Vec2::new(0.0, -1.0),
             floor: spawn.floor,
         };
+        let (pz, psup, _) = resolve_tile_support(&county, spawn);
+        let player_body = BodyState::from_pose_2d(player.position, player.facing, pz, psup);
         let zombies_total = county.total_monsters_spawned();
         county.update_visibility(player.position, player.floor);
 
@@ -413,6 +449,8 @@ impl ActionGame {
             stage: Stage::County(Box::new(county)),
             tick: 0,
             player,
+            player_body,
+            fall_peak_z: None,
             player_knockback: Vec2::ZERO,
             health: PLAYER_MAX_HEALTH,
             max_health: PLAYER_MAX_HEALTH,
@@ -430,6 +468,8 @@ impl ActionGame {
             next_monster_id: 1,
             projectiles: Vec::new(),
             next_proj_id: 1,
+            active_blasts: Vec::new(),
+            next_blast_id: 1,
             ai: AiSystem::new(),
             events: Vec::new(),
             noises: Vec::new(),
@@ -446,6 +486,8 @@ impl ActionGame {
             facing: Vec2::new(0.0, -1.0),
             floor: spawn.floor,
         };
+        let (pz, psup, _) = resolve_tile_support(&block, spawn);
+        let player_body = BodyState::from_pose_2d(player.position, player.facing, pz, psup);
 
         let mut next_monster_id = 1u32;
         let monsters: Vec<Monster> = block
@@ -454,7 +496,7 @@ impl ActionGame {
             .map(|sp| {
                 let id = MonsterId(next_monster_id);
                 next_monster_id += 1;
-                Monster::new(id, sp.kind, sp.variant, sp.pos)
+                Monster::new_in_world(id, sp.kind, sp.variant, sp.pos, &block)
             })
             .collect();
         let zombies_total = monsters.len();
@@ -467,6 +509,8 @@ impl ActionGame {
             stage: Stage::Residential(Box::new(block)),
             tick: 0,
             player,
+            player_body,
+            fall_peak_z: None,
             player_knockback: Vec2::ZERO,
             health: PLAYER_MAX_HEALTH,
             max_health: PLAYER_MAX_HEALTH,
@@ -484,6 +528,8 @@ impl ActionGame {
             next_monster_id,
             projectiles: Vec::new(),
             next_proj_id: 1,
+            active_blasts: Vec::new(),
+            next_blast_id: 1,
             ai: AiSystem::new(),
             events: Vec::new(),
             noises: Vec::new(),
@@ -546,8 +592,12 @@ impl ActionGame {
         };
 
         county.sync_active_window(&self.world, dest.pos(), &mut self.monsters);
+        let (dz, dsup, _) = resolve_tile_support(county.as_ref(), dest);
         self.player.position = dest.center();
         self.player.floor = dest.floor;
+        self.player_body =
+            BodyState::from_pose_2d(self.player.position, self.player.facing, dz, dsup);
+        self.fall_peak_z = None;
         self.player_knockback = Vec2::ZERO;
         self.drop_recovery_ticks = 0;
         self.stair_cooldown = STAIR_COOLDOWN_TICKS;
@@ -564,7 +614,11 @@ impl ActionGame {
         }
         self.tick += 1;
 
-        // 1. Tick timers & dynamic light flashes.
+        // 1. Tick timers, active blasts & dynamic light flashes.
+        for b in &mut self.active_blasts {
+            b.age_ticks = b.age_ticks.saturating_add(1);
+        }
+        self.active_blasts.retain(|b| b.age_ticks < b.total_ticks);
         self.stage.tick_flashes();
         self.inventory.tick_timers(&mut self.events);
         self.hurt_iframes = self.hurt_iframes.saturating_sub(1);
@@ -579,10 +633,10 @@ impl ActionGame {
             self.inventory.cycle_weapon(&mut self.events);
         }
         if input.use_medkit {
-            self.inventory.try_use_medkit(
+            self.inventory.try_use_medkit_3d(
                 &mut self.health,
                 self.max_health,
-                self.player.position,
+                self.player_body.position,
                 self.player.floor,
                 &mut self.events,
                 &mut self.noises,
@@ -604,12 +658,14 @@ impl ActionGame {
             let aim = aim.normalized();
             if aim.length_squared() > 0.01 {
                 self.player.facing = aim;
+                self.player_body.heading = aim.y.atan2(aim.x);
                 self.aim_explicit = true;
             }
         } else if !self.aim_explicit {
             let mv = input.movement.normalized();
             if mv.length_squared() > 0.01 {
                 self.player.facing = mv;
+                self.player_body.heading = mv.y.atan2(mv.x);
             }
         }
 
@@ -618,12 +674,15 @@ impl ActionGame {
             self.resolve_interact();
         }
 
+        let ev_combat_start = self.events.len();
+
         // 6. Firing / melee swing.
         if input.fire {
-            try_fire_or_swing(
+            try_fire_or_swing_3d(
                 &mut self.stage,
                 &mut self.inventory,
                 self.player,
+                self.player_body,
                 &mut self.monsters,
                 &mut self.projectiles,
                 &mut self.next_proj_id,
@@ -635,10 +694,11 @@ impl ActionGame {
         }
 
         // 7. Advance active rockets and shooter bolts.
-        step_projectiles(
+        step_projectiles_3d(
             &mut self.stage,
             &mut self.projectiles,
             self.player,
+            self.player_body,
             PLAYER_RADIUS,
             &mut self.health,
             &mut self.hurt_iframes,
@@ -660,10 +720,11 @@ impl ActionGame {
         );
 
         // 10. Advance sight/sound-reactive AI, 3D pathfinding, and monster attacks.
-        self.ai.step_monsters(
+        self.ai.step_monsters_3d(
             &mut self.stage,
             &mut self.monsters,
             self.player,
+            self.player_body,
             PLAYER_RADIUS,
             self.quiet_walking,
             &mut self.health,
@@ -679,6 +740,41 @@ impl ActionGame {
 
         // Any collapses from monster/bloater destruction.
         self.process_collapses();
+
+        // Record any newly detonated blasts for 3D renderers.
+        for ev in &self.events[ev_combat_start..] {
+            match *ev {
+                ActionEvent::RocketBlast { at, floor, radius } => {
+                    let id = self.next_blast_id;
+                    self.next_blast_id = self.next_blast_id.wrapping_add(1);
+                    self.active_blasts.push(ActiveBlast {
+                        id,
+                        kind: BlastKind::Rocket,
+                        position: at,
+                        floor,
+                        radius,
+                        age_ticks: 0,
+                        total_ticks: 23,
+                    });
+                }
+                ActionEvent::BloaterBurst {
+                    at, floor, radius, ..
+                } => {
+                    let id = self.next_blast_id;
+                    self.next_blast_id = self.next_blast_id.wrapping_add(1);
+                    self.active_blasts.push(ActiveBlast {
+                        id,
+                        kind: BlastKind::BloaterCaustic,
+                        position: at,
+                        floor,
+                        radius,
+                        age_ticks: 0,
+                        total_ticks: 20,
+                    });
+                }
+                _ => {}
+            }
+        }
 
         // 11. Compact dead (non-swelling) monsters and check outcome.
         self.monsters.retain(|m| m.is_alive() || m.is_swelling());
@@ -696,7 +792,59 @@ impl ActionGame {
             .update_visibility(self.player.position, self.player.floor);
     }
 
+    fn sync_player_if_overridden(&mut self) {
+        let xy_changed =
+            (self.player.position - self.player_body.position.xy()).length_squared() > 1e-7;
+        let semantic_fl = semantic_floor_for_body(&self.stage, self.player_body, self.player.floor);
+        let floor_changed =
+            self.player_body.motion.is_grounded() && self.player.floor != semantic_fl;
+        if xy_changed || floor_changed {
+            let mut sups = Vec::with_capacity(4);
+            self.stage.supports_at(self.player.position, &mut sups);
+            let gz = self
+                .stage
+                .terrain_at(self.player.position)
+                .map_or(0.0, |t| t.z);
+            let desired_z = gz + self.player.floor as f32 * FLOOR_H;
+            let (z, sup) = if let Some(s) =
+                select_grounded_support(&sups, desired_z, None, 0.22, 0.30, 0.85, true)
+                && (self.player.floor == 0 || s.floor == self.player.floor)
+            {
+                (s.z, s.id)
+            } else {
+                let tile = Tile3D::from_vec2(self.player.position, self.player.floor);
+                let (rz, rsup, _) = resolve_tile_support(&self.stage, tile);
+                (rz, rsup)
+            };
+            self.player_body =
+                BodyState::from_pose_2d(self.player.position, self.player.facing, z, sup);
+            self.fall_peak_z = None;
+        } else if self.player.facing.length_squared() > 1e-6 {
+            self.player_body.heading = self.player.facing.y.atan2(self.player.facing.x);
+        }
+    }
+
+    fn compute_fall_damage(drop_h: f32) -> (u8, u8) {
+        if drop_h <= FLOOR_H * 1.35 {
+            let rec = if drop_h >= 0.90 {
+                DROP_RECOVERY_TICKS
+            } else {
+                0
+            };
+            (0, rec)
+        } else if drop_h <= FLOOR_H * 2.45 {
+            (1, 16)
+        } else if drop_h <= FLOOR_H * 3.60 {
+            (2, 22)
+        } else {
+            let dmg = (3 + ((drop_h - 5.0).max(0.0) * 0.5).floor() as u8).min(PLAYER_MAX_HEALTH);
+            (dmg, 26)
+        }
+    }
+
     fn step_player_movement(&mut self, input: ActionInput) {
+        self.sync_player_if_overridden();
+
         let raw_len = input.movement.length();
         let mut mag = if raw_len <= PLAYER_DEADZONE {
             0.0
@@ -723,72 +871,200 @@ impl ActionGame {
             speed_mult *= DROP_RECOVERY_SPEED_MULT;
         }
 
-        let move_delta = dir * (mag * PLAYER_MAX_SPEED * speed_mult * DT) + self.player_knockback;
-        if move_delta.length_squared() > 1e-8 {
-            self.stage.move_body(
-                &mut self.player.position,
-                self.player.floor,
-                move_delta,
-                PLAYER_RADIUS,
-                self.player.floor == 0,
-                true,
+        let horiz_vel =
+            dir * (mag * PLAYER_MAX_SPEED * speed_mult) + self.player_knockback * (1.0 / DT);
+        let params = MoveParams {
+            can_vault_broken_windows: self.player.floor == 0,
+            avoid_water: true,
+            doorway_assist: true,
+            ..MoveParams::default()
+        };
+
+        let prev_pos = self.player_body.position;
+        let prev_motion = self.player_body.motion;
+        let prev_floor = self.player.floor;
+        let prev_tile = Tile3D::from_vec2(prev_pos.xy(), prev_floor);
+
+        let (landed_impact_speed, ground_surface) = if horiz_vel.length_squared() > 1e-8
+            || !self.player_body.motion.is_grounded()
+            || !self.stage.has_floor(prev_tile)
+        {
+            let move_res = move_kinematic_with_horizontal_vel(
+                &self.stage,
+                PLAYER_SHAPE,
+                self.player_body,
+                horiz_vel,
+                DT,
+                &params,
             );
-        }
+            self.player_body = move_res.state;
+            self.player.position = self.player_body.position.xy();
+            (
+                move_res.landed_impact_speed,
+                resolve_actor_support(
+                    &self.stage,
+                    self.player.position,
+                    semantic_floor_for_body(&self.stage, self.player_body, prev_floor),
+                )
+                .2,
+            )
+        } else {
+            let (_, _, surf) = resolve_actor_support(&self.stage, self.player.position, prev_floor);
+            (0.0_f32, surf)
+        };
 
         self.player_knockback *= KNOCKBACK_DECAY;
         if self.player_knockback.length_squared() < 1e-6 {
             self.player_knockback = Vec2::ZERO;
         }
 
-        // Footstep noise only when moving briskly above quiet-walk threshold.
-        if mag > PLAYER_QUIET_STICK_THRESHOLD && self.footstep_timer == 0 {
-            self.footstep_timer = FOOTSTEP_INTERVAL_TICKS;
-            let radius = 2.2
-                + 1.2
-                    * ((mag - PLAYER_QUIET_STICK_THRESHOLD) / (1.0 - PLAYER_QUIET_STICK_THRESHOLD));
-            self.noises.push(NoiseEvent {
-                origin: self.player.position,
-                floor: self.player.floor,
-                radius,
-                priority: 1,
-                kind: NoiseKind::Footstep,
-            });
-        }
-
-        // Safety drop if standing on an upper-floor tile that lacks flooring (e.g. collapsed).
-        let now_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
-        if self.player.floor > 0 && !self.stage.has_floor(now_tile) {
-            let from_floor = self.player.floor;
-            let mut target_floor = from_floor - 1;
-            while target_floor > 0
-                && !self
-                    .stage
-                    .has_floor(Tile3D::new(now_tile.x, now_tile.y, target_floor))
-            {
-                target_floor -= 1;
+        // 7. Airborne peak tracking, landing & fall injury curve.
+        if !self.player_body.motion.is_grounded() {
+            let cur_max = prev_pos.z.max(self.player_body.position.z);
+            self.fall_peak_z = Some(self.fall_peak_z.map_or(cur_max, |p| p.max(cur_max)));
+        } else if !prev_motion.is_grounded() {
+            let peak_z = self.fall_peak_z.take().unwrap_or(prev_pos.z);
+            let drop_h = (peak_z - self.player_body.position.z).max(0.0);
+            let landed_floor = semantic_floor_for_body(&self.stage, self.player_body, prev_floor);
+            if landed_floor != prev_floor {
+                self.player.floor = landed_floor;
+                self.events.push(ActionEvent::FloorChanged {
+                    from_floor: prev_floor,
+                    to_floor: landed_floor,
+                    at: Tile3D::from_vec2(self.player.position, landed_floor),
+                    pos: self.player_body.position,
+                    via: FloorTransition::WindowDrop,
+                });
             }
-            self.player.floor = target_floor;
-            self.events.push(ActionEvent::FloorChanged {
-                from_floor,
-                to_floor: target_floor,
-                at: Tile3D::new(now_tile.x, now_tile.y, target_floor),
-                via: FloorTransition::Collapse,
-            });
+            let (dmg, rec) = Self::compute_fall_damage(drop_h);
+            if rec > 0 {
+                self.drop_recovery_ticks = self.drop_recovery_ticks.max(rec);
+            }
+            let mut applied_dmg = 0u8;
+            if dmg > 0 && self.hurt_iframes == 0 && self.health > 0 {
+                self.health = self.health.saturating_sub(dmg);
+                self.hurt_iframes = PLAYER_HURT_IFRAMES;
+                applied_dmg = dmg;
+                self.events.push(ActionEvent::PlayerHurt {
+                    at: self.player_body.position,
+                    floor: self.player.floor,
+                    damage: dmg,
+                    remaining_hp: self.health,
+                    from: self.player_body.position,
+                });
+            }
+            if landed_impact_speed > 1.5 {
+                self.events.push(ActionEvent::ActorLanded {
+                    at: self.player_body.position,
+                    floor: self.player.floor,
+                    impact_speed: landed_impact_speed,
+                    damage: applied_dmg,
+                });
+                if drop_h >= 0.90 {
+                    self.noises.push(NoiseEvent {
+                        origin: self.player.position,
+                        origin_z: self.player_body.position.z,
+                        floor: self.player.floor,
+                        radius: 6.0,
+                        priority: 2,
+                        kind: NoiseKind::WindowDrop,
+                    });
+                }
+            }
         }
 
-        // Anti-oscillation automatic stair transitions.
+        // 8. Walk-through window vault event & footsteps.
+        if self.player.floor == 0 {
+            let cur_t = Tile3D::from_vec2(self.player.position, 0);
+            if self.stage.tile_kind(cur_t) == TileKind::BrokenWindow && prev_tile != cur_t {
+                self.events.push(ActionEvent::WindowClimbed {
+                    at: cur_t,
+                    from: prev_pos,
+                    to: self.player_body.position,
+                });
+                self.noises.push(NoiseEvent {
+                    origin: cur_t.center(),
+                    origin_z: self.player_body.position.z,
+                    floor: 0,
+                    radius: 2.8,
+                    priority: 1,
+                    kind: NoiseKind::WindowVault,
+                });
+            }
+        }
+
+        if self.player_body.motion.is_grounded()
+            && mag > 0.12
+            && (self.player_body.position.xy() - prev_pos.xy()).length_squared() > 1e-6
+            && self.footstep_timer == 0
+        {
+            self.footstep_timer = if self.quiet_walking {
+                24
+            } else {
+                FOOTSTEP_INTERVAL_TICKS
+            };
+            self.events.push(ActionEvent::Footstep {
+                at: self.player_body.position,
+                floor: self.player.floor,
+                surface: ground_surface,
+                quiet: self.quiet_walking,
+            });
+            if !self.quiet_walking {
+                let radius = 2.2
+                    + 1.2
+                        * ((mag - PLAYER_QUIET_STICK_THRESHOLD)
+                            / (1.0 - PLAYER_QUIET_STICK_THRESHOLD));
+                self.noises.push(NoiseEvent {
+                    origin: self.player.position,
+                    origin_z: self.player_body.position.z,
+                    floor: self.player.floor,
+                    radius,
+                    priority: 1,
+                    kind: NoiseKind::Footstep,
+                });
+            }
+        }
+
+        // 9. 3D stair floor sync + switchback / stationary stair completion.
+        if self.player_body.motion.is_grounded() {
+            let new_fl = semantic_floor_for_body(&self.stage, self.player_body, self.player.floor);
+            if new_fl != self.player.floor {
+                let from_floor = self.player.floor;
+                self.last_stair_travel_up = new_fl > from_floor;
+                self.player.floor = new_fl;
+                self.stair_cooldown = STAIR_COOLDOWN_TICKS;
+                self.must_leave_stair = Some(Tile3D::from_vec2(self.player.position, new_fl).pos());
+                self.events.push(ActionEvent::FloorChanged {
+                    from_floor,
+                    to_floor: new_fl,
+                    at: Tile3D::from_vec2(self.player.position, new_fl),
+                    pos: self.player_body.position,
+                    via: FloorTransition::Stairs,
+                });
+            }
+        }
+
         if let Some(stair_pos) = self.must_leave_stair {
             let stair_center = Vec2::new(stair_pos.x as f32, stair_pos.y as f32);
             if self.player.position.distance(stair_center) > 0.62 {
                 self.must_leave_stair = None;
             }
         }
-        if self.stair_cooldown == 0 && self.must_leave_stair.is_none() {
+        if self.stair_cooldown == 0
+            && self.must_leave_stair.is_none()
+            && self.player_body.motion.is_grounded()
+        {
             let p_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
             if let Some((dest, landing)) = self.pick_stair_link(p_tile)
                 && self.player.position.distance(p_tile.center()) <= 0.38
             {
-                self.take_stairs(p_tile, dest, landing);
+                let landing_dir = Vec2::new(landing.0 as f32, landing.1 as f32);
+                let step_xy = (self.player_body.position.xy() - prev_pos.xy()).length();
+                let climbing_smoothly =
+                    mag > 0.05 && dir.dot(landing_dir) > 0.35 && step_xy > 0.015;
+                if !climbing_smoothly {
+                    self.take_stairs(p_tile, dest, landing);
+                }
             }
         }
     }
@@ -814,16 +1090,56 @@ impl ActionGame {
         let from_floor = self.player.floor;
         self.last_stair_travel_up = dest.floor > from_floor;
         self.player.floor = dest.floor;
-        self.player.position = Vec2::new(
-            dest.x as f32 + landing.0 as f32 * 0.42,
-            dest.y as f32 + landing.1 as f32 * 0.42,
-        );
+
+        let gz = self.stage.terrain_at(dest.center()).map_or(0.0, |t| t.z);
+        let probe_origin = dest
+            .center()
+            .extend(gz + dest.floor as f32 * FLOOR_H + 0.30);
+        let candidate_dirs = [
+            landing,
+            (-landing.0, -landing.1),
+            (landing.1, -landing.0),
+            (-landing.1, landing.0),
+        ];
+        let mut chosen_pos: Option<Vec2> = None;
+        for d in candidate_dirs {
+            if d == (0, 0) {
+                continue;
+            }
+            let exit_tile = Tile3D::new(dest.x + d.0 as i32, dest.y + d.1 as i32, dest.floor);
+            let d_vec = Vec2::new(d.0 as f32, d.1 as f32);
+            if self.stage.is_walkable(exit_tile, false)
+                && self
+                    .stage
+                    .raycast_filtered(
+                        Ray3::new(probe_origin, d_vec.normalized().extend(0.0)),
+                        0.78,
+                        QueryFilter::DEFAULT,
+                    )
+                    .is_none()
+            {
+                chosen_pos = Some(dest.center() + d_vec * 0.78);
+                break;
+            }
+        }
+
+        self.player.position = chosen_pos.unwrap_or_else(|| {
+            Vec2::new(
+                dest.x as f32 + landing.0 as f32 * 0.42,
+                dest.y as f32 + landing.1 as f32 * 0.42,
+            )
+        });
+        let (pz, psup, _) = resolve_actor_support(&self.stage, self.player.position, dest.floor);
+        self.player_body =
+            BodyState::from_pose_2d(self.player.position, self.player.facing, pz, psup);
+        self.fall_peak_z = None;
         self.stair_cooldown = STAIR_COOLDOWN_TICKS;
         self.must_leave_stair = Some(stair_tile.pos());
         self.events.push(ActionEvent::FloorChanged {
             from_floor,
             to_floor: dest.floor,
             at: dest,
+            pos: self.player_body.position,
             via: FloorTransition::Stairs,
         });
     }
@@ -950,8 +1266,13 @@ impl ActionGame {
         match action {
             InteractAction::Search(id, at) => {
                 if let Some(loot) = self.stage.take_cache(id) {
+                    let (lz, _, _) = resolve_tile_support(&self.stage, at);
                     self.inventory.collect_loot(loot, &mut self.events);
-                    self.events.push(ActionEvent::Looted { at, loot });
+                    self.events.push(ActionEvent::Looted {
+                        at,
+                        pos: at.center().extend(lz),
+                        loot,
+                    });
                 }
             }
             InteractAction::ToggleDoor(tile, will_open) => {
@@ -972,10 +1293,15 @@ impl ActionGame {
                     }
                 }
                 if let Some(opened) = self.stage.toggle_door(tile) {
-                    self.events
-                        .push(ActionEvent::DoorToggled { at: tile, opened });
+                    let (dz, _, _) = resolve_tile_support(&self.stage, tile);
+                    self.events.push(ActionEvent::DoorToggled {
+                        at: tile,
+                        pos: tile.center().extend(dz),
+                        opened,
+                    });
                     self.noises.push(NoiseEvent {
                         origin: tile.center(),
+                        origin_z: dz,
                         floor: tile.floor,
                         radius: 3.0,
                         priority: 2,
@@ -985,18 +1311,48 @@ impl ActionGame {
             }
             InteractAction::DropWindow(_win, landing) => {
                 let from_floor = self.player.floor;
+                let prev_pos = self.player_body.position;
+                let (landing_z, landing_sup, _) = resolve_tile_support(&self.stage, landing);
                 self.player.floor = landing.floor;
                 self.player.position = landing.center();
                 self.drop_recovery_ticks = DROP_RECOVERY_TICKS;
                 self.stair_cooldown = 12;
+
+                if from_floor.saturating_sub(landing.floor) >= 2 {
+                    self.player_body = BodyState::airborne(
+                        landing
+                            .center()
+                            .extend((prev_pos.z - 0.35).max(landing_z + 0.1)),
+                        Vec3::new(0.0, 0.0, -2.0),
+                        self.player_body.heading,
+                    );
+                    self.fall_peak_z = Some(prev_pos.z);
+                } else {
+                    self.player_body = BodyState::from_pose_2d(
+                        landing.center(),
+                        self.player.facing,
+                        landing_z,
+                        landing_sup,
+                    );
+                    self.fall_peak_z = None;
+                    self.events.push(ActionEvent::ActorLanded {
+                        at: self.player_body.position,
+                        floor: landing.floor,
+                        impact_speed: 4.5,
+                        damage: 0,
+                    });
+                }
+
                 self.events.push(ActionEvent::FloorChanged {
                     from_floor,
                     to_floor: landing.floor,
                     at: landing,
+                    pos: landing.center().extend(landing_z),
                     via: FloorTransition::WindowDrop,
                 });
                 self.noises.push(NoiseEvent {
                     origin: landing.center(),
+                    origin_z: landing_z,
                     floor: landing.floor,
                     radius: 6.0,
                     priority: 2,
@@ -1008,10 +1364,23 @@ impl ActionGame {
                     .stage
                     .circle_walkable(dest.center(), dest.floor, PLAYER_RADIUS, true)
                 {
+                    let prev_pos = self.player_body.position;
+                    let (dest_z, dest_sup, _) = resolve_tile_support(&self.stage, dest);
                     self.player.position = dest.center();
-                    self.events.push(ActionEvent::WindowClimbed { at: win });
+                    self.player_body = BodyState::from_pose_2d(
+                        dest.center(),
+                        self.player.facing,
+                        dest_z,
+                        dest_sup,
+                    );
+                    self.events.push(ActionEvent::WindowClimbed {
+                        at: win,
+                        from: prev_pos,
+                        to: self.player_body.position,
+                    });
                     self.noises.push(NoiseEvent {
                         origin: win.center(),
+                        origin_z: dest_z,
                         floor: win.floor,
                         radius: 2.8,
                         priority: 1,
@@ -1043,9 +1412,13 @@ impl ActionGame {
         }
         for c in collapsed {
             let center = c.center();
-            self.events.push(ActionEvent::StructuralCollapse { at: c });
+            let (c_z, _, _) = resolve_tile_support(&self.stage, c);
+            let c_pos = center.extend(c_z);
+            self.events
+                .push(ActionEvent::StructuralCollapse { at: c, pos: c_pos });
             self.noises.push(NoiseEvent {
                 origin: center,
+                origin_z: c_z,
                 floor: c.floor,
                 radius: 16.0,
                 priority: 4,
@@ -1061,12 +1434,15 @@ impl ActionGame {
                         .has_floor(Tile3D::from_vec2(self.player.position, self.player.floor))
                 {
                     let from_floor = self.player.floor;
+                    self.player_body.motion = MotionState::Airborne;
+                    self.fall_peak_z = Some(self.player_body.position.z);
                     self.player.floor = c.floor;
                     fell = true;
                     self.events.push(ActionEvent::FloorChanged {
                         from_floor,
                         to_floor: c.floor,
                         at: c,
+                        pos: self.player_body.position,
                         via: FloorTransition::Collapse,
                     });
                 }
@@ -1077,11 +1453,11 @@ impl ActionGame {
                     self.health = self.health.saturating_sub(1);
                     self.hurt_iframes = PLAYER_HURT_IFRAMES;
                     self.events.push(ActionEvent::PlayerHurt {
-                        at: self.player.position,
+                        at: self.player_body.position,
                         floor: self.player.floor,
                         damage: 1,
                         remaining_hp: self.health,
-                        from: center,
+                        from: c_pos,
                     });
                 }
             }
@@ -1095,6 +1471,7 @@ impl ActionGame {
                     let mut fell = false;
                     if m.floor > c.floor && !self.stage.has_floor(Tile3D::from_vec2(m.pos, m.floor))
                     {
+                        m.body.motion = MotionState::Airborne;
                         m.floor = c.floor;
                         m.invalidate_path();
                         fell = true;
@@ -1113,12 +1490,49 @@ impl ActionGame {
         self.player
     }
 
+    pub fn player_body(&self) -> BodyState {
+        self.player_body
+    }
+
+    pub fn blasts(&self) -> Vec<BlastView> {
+        self.active_blasts
+            .iter()
+            .map(|b| BlastView {
+                id: b.id,
+                kind: b.kind,
+                position: b.position,
+                floor: b.floor,
+                radius: b.radius,
+                progress: (b.age_ticks as f32 / b.total_ticks.max(1) as f32).clamp(0.0, 1.0),
+            })
+            .collect()
+    }
+
+    pub fn dynamic_flashes(&self) -> Vec<DynamicFlashView> {
+        self.stage.dynamic_flashes()
+    }
+
     pub fn player_render_state(&self) -> PlayerRenderState {
         let interact = self.compute_interact_action();
         let p_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
+        let range = self
+            .inventory
+            .equipped
+            .map_or(1.45, |w| weapon_spec(w).range);
+        let (muzzle_pos, aim_dir) = compute_player_aim_3d(
+            &self.stage,
+            self.player_body,
+            self.player.floor,
+            self.player.facing,
+            range,
+            &self.monsters,
+        );
         PlayerRenderState {
             pose: self.player,
-            elevation: self.player.floor as f32,
+            elevation: self.player_body.position.z,
+            body: self.player_body,
+            aim_dir,
+            muzzle_pos,
             equipped: self.inventory.equipped,
             ammo_in_equipped: self.inventory.equipped_ammo_total(),
             health: self.health,
@@ -1128,7 +1542,12 @@ impl ActionGame {
             near_interact_tile: interact.map(InteractAction::tile),
             interact_prompt: interact.map_or(InteractPrompt::None, InteractAction::prompt),
             rocket_danger_close: self.inventory.equipped == Some(Weapon::RocketLauncher)
-                && is_rocket_danger_close(&self.stage, self.player, &self.monsters),
+                && is_rocket_danger_close_3d(
+                    &self.stage,
+                    self.player,
+                    self.player_body,
+                    &self.monsters,
+                ),
         }
     }
 
@@ -1149,7 +1568,7 @@ impl ActionGame {
     }
 
     pub(crate) fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
-        self.stage.spatial_cell(tile, &self.world)
+        self.stage.spatial_cell(tile)
     }
 
     pub(crate) fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
@@ -1337,7 +1756,12 @@ impl ActionGame {
             interact_prompt,
             objective_kind,
             rocket_danger_close: equipped == Some(Weapon::RocketLauncher)
-                && is_rocket_danger_close(&self.stage, self.player, &self.monsters),
+                && is_rocket_danger_close_3d(
+                    &self.stage,
+                    self.player,
+                    self.player_body,
+                    &self.monsters,
+                ),
             indoors: self.stage.is_indoor(p_tile),
             outcome: self.outcome,
             player_pos: p_tile.pos(),
@@ -1376,8 +1800,13 @@ impl ActionGame {
                 }
                 Stage::County(county) => county.alloc_monster_id(),
             };
-            self.monsters
-                .push(Monster::new(id, kind, (cursor % 3) as u8, tile));
+            self.monsters.push(Monster::new_in_world(
+                id,
+                kind,
+                (cursor % 3) as u8,
+                tile,
+                &self.stage,
+            ));
         }
         self.zombies_total = self.monsters.len().max(self.zombies_total);
     }
@@ -1881,5 +2310,50 @@ mod tests {
             game.stage
                 .circle_walkable(snapped.center(), snapped.floor, PLAYER_RADIUS, false)
         );
+    }
+
+    #[test]
+    fn fall_injury_curve_handles_one_story_two_story_and_cliff_drops() {
+        assert_eq!(ActionGame::compute_fall_damage(0.5), (0, 0));
+        assert_eq!(
+            ActionGame::compute_fall_damage(FLOOR_H),
+            (0, DROP_RECOVERY_TICKS)
+        );
+        assert_eq!(ActionGame::compute_fall_damage(FLOOR_H * 2.0), (1, 16));
+        assert_eq!(ActionGame::compute_fall_damage(FLOOR_H * 3.0), (2, 22));
+        let (cliff_dmg, cliff_rec) = ActionGame::compute_fall_damage(6.5);
+        assert!(cliff_dmg >= 3, "drop > 5.0 units must deal >= 3 HP damage");
+        assert_eq!(cliff_rec, 26);
+
+        let mut game = ActionGame::residential(42);
+        let start_hp = game.hud().health;
+        let xy = game.player_body.position.xy();
+        game.player_body = BodyState::airborne(
+            xy.extend(6.5),
+            Vec3::new(0.0, 0.0, -4.0),
+            game.player_body.heading,
+        );
+        game.fall_peak_z = Some(6.5);
+
+        let mut landed_ev = None;
+        for _ in 0..120 {
+            game.step(ActionInput::default());
+            if let Some(ev) = game
+                .events()
+                .iter()
+                .find(|e| matches!(e, ActionEvent::ActorLanded { .. }))
+            {
+                landed_ev = Some(*ev);
+                break;
+            }
+        }
+        let Some(ActionEvent::ActorLanded { damage, .. }) = landed_ev else {
+            panic!("expected ActorLanded after high airborne drop");
+        };
+        assert!(
+            damage >= 3,
+            "expected >= 3 damage from 6.5u drop, got {damage}"
+        );
+        assert_eq!(game.hud().health, start_hp.saturating_sub(damage));
     }
 }

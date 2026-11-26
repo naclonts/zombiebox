@@ -1,10 +1,15 @@
 //! Survival tools, firearms, melee, projectiles, and medkit system.
 
+use super::PLAYER_SHAPE;
 use super::ai::{self, Monster};
 use super::types::{
     ActionEvent, CacheLoot, CombatWorld, DT, DamageKind, Floor, Material, MaterialCategory,
     NoiseEvent, NoiseKind, Pose, ProjectileId, ProjectileKind, ProjectileView, Tile3D,
-    TileDamageResult, TileObstruction, Vec2, Weapon, mix64,
+    TileDamageResult, TileObstruction, Vec2, Vec3, Weapon, mix64,
+};
+use crate::spatial::{
+    BodyState, ColliderKind, FLOOR_H, HitSurface, QueryFilter, Ray3, WALL_HEIGHT,
+    resolve_actor_support,
 };
 
 /// Cosine of half the 110° axe cleave arc (`cos(55°)`).
@@ -38,10 +43,18 @@ pub const SHOOTER_BOLT_KNOCKBACK: f32 = 0.08;
 
 pub const PLAYER_HURT_IFRAMES: u8 = 24;
 
+/// Default player firearm muzzle height above foot elevation.
+pub const WEAPON_MUZZLE_HEIGHT: f32 = 0.68;
+/// Elevated muzzle height when firing downward from an upper-story window or ledge.
+pub const UPPER_LEDGE_MUZZLE_HEIGHT: f32 = 0.84;
+/// Shooter monster plasma/bolt muzzle height above foot elevation.
+pub const SHOOTER_MUZZLE_HEIGHT: f32 = 0.68;
+
 const SHOTGUN_PELLET_ANGLES_DEG: [f32; 5] = [-14.0, -7.0, 0.0, 7.0, 14.0];
 const SHOTGUN_JITTER_DEG: f32 = 1.1;
 const AXE_TILE_RAY_ANGLES_DEG: [f32; 3] = [-30.0, 0.0, 30.0];
 const UPPER_WINDOW_EXTRA_RANGE: f32 = 2.5;
+#[allow(dead_code)]
 const PROJECTILE_MAX_SUBSTEP: f32 = 0.10;
 const MEDKIT_SLOW_MULT: f32 = 0.65;
 
@@ -418,6 +431,26 @@ impl Inventory {
         events: &mut Vec<ActionEvent>,
         noises: &mut Vec<NoiseEvent>,
     ) -> bool {
+        self.try_use_medkit_3d(
+            health,
+            max_health,
+            player_pos.extend(player_floor as f32 * FLOOR_H),
+            player_floor,
+            events,
+            noises,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_use_medkit_3d(
+        &mut self,
+        health: &mut u8,
+        max_health: u8,
+        player_pos: Vec3,
+        player_floor: Floor,
+        events: &mut Vec<ActionEvent>,
+        noises: &mut Vec<NoiseEvent>,
+    ) -> bool {
         if !self.can_heal(*health, max_health) {
             return false;
         }
@@ -435,7 +468,8 @@ impl Inventory {
             new_health: *health,
         });
         noises.push(NoiseEvent {
-            origin: player_pos,
+            origin: player_pos.xy(),
+            origin_z: player_pos.z,
             floor: player_floor,
             radius: MEDKIT_NOISE_RADIUS,
             priority: 1,
@@ -450,12 +484,9 @@ pub struct Projectile {
     pub id: ProjectileId,
     pub kind: ProjectileKind,
     pub owner_is_player: bool,
-    pub pos: Vec2,
-    pub dir: Vec2,
+    pub position: Vec3,
+    pub velocity: Vec3,
     pub floor: Floor,
-    pub z: f32,
-    pub vz: f32,
-    pub speed: f32,
     pub radius: f32,
     pub remaining_range: f32,
 }
@@ -463,18 +494,23 @@ pub struct Projectile {
 impl Projectile {
     #[allow(clippy::wrong_self_convention)]
     pub fn to_view(&self) -> ProjectileView {
+        let dir = self.velocity.xy().normalized();
         ProjectileView {
             id: self.id,
             kind: self.kind,
-            pos: self.pos,
-            dir: self.dir,
+            pos: self.position.xy(),
+            dir,
             floor: self.floor,
-            z: self.z,
+            z: self.position.z,
+            position: self.position,
+            velocity: self.velocity,
+            radius: self.radius,
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn try_fire_or_swing(
     world: &mut dyn CombatWorld,
     inventory: &mut Inventory,
@@ -487,8 +523,45 @@ pub fn try_fire_or_swing(
     events: &mut Vec<ActionEvent>,
     noises: &mut Vec<NoiseEvent>,
 ) {
+    let (pz, sup, _) = resolve_actor_support(world, player.position, player.floor);
+    let player_body = BodyState::from_pose_2d(player.position, player.facing, pz, sup);
+    try_fire_or_swing_3d(
+        world,
+        inventory,
+        player,
+        player_body,
+        monsters,
+        projectiles,
+        next_proj_id,
+        seed,
+        tick,
+        events,
+        noises,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_fire_or_swing_3d(
+    world: &mut dyn CombatWorld,
+    inventory: &mut Inventory,
+    player: Pose,
+    player_body: BodyState,
+    monsters: &mut [Monster],
+    projectiles: &mut Vec<Projectile>,
+    next_proj_id: &mut u32,
+    seed: u64,
+    tick: u64,
+    events: &mut Vec<ActionEvent>,
+    noises: &mut Vec<NoiseEvent>,
+) {
     if inventory.fire_cooldown > 0 {
         return;
+    }
+
+    for m in monsters.iter_mut() {
+        if m.is_targetable() {
+            m.ensure_body_synced(world);
+        }
     }
 
     let facing = {
@@ -501,12 +574,29 @@ pub fn try_fire_or_swing(
     };
 
     let Some(weapon) = inventory.equipped else {
-        execute_unarmed_shove(world, inventory, player, facing, monsters, events);
+        execute_unarmed_shove_3d(
+            world,
+            inventory,
+            player,
+            player_body,
+            facing,
+            monsters,
+            events,
+        );
         return;
     };
 
     if weapon == Weapon::Axe {
-        execute_axe_swing(world, inventory, player, facing, monsters, events, noises);
+        execute_axe_swing_3d(
+            world,
+            inventory,
+            player,
+            player_body,
+            facing,
+            monsters,
+            events,
+            noises,
+        );
         return;
     }
 
@@ -539,34 +629,40 @@ pub fn try_fire_or_swing(
     inventory.mag[slot] -= 1;
     inventory.fire_cooldown = spec.fire_cooldown;
 
+    let (muzzle_pos, aim_dir3) = compute_player_aim_3d(
+        world,
+        player_body,
+        player.floor,
+        facing,
+        spec.range,
+        monsters,
+    );
+
     events.push(ActionEvent::ShotFired {
         weapon,
-        from: player.position,
+        from: player_body.position,
+        muzzle: muzzle_pos,
         floor: player.floor,
         facing,
+        dir: aim_dir3,
     });
 
     match weapon {
         Weapon::Pistol => {
-            world.register_dynamic_flash(
-                player.position + facing * 0.35,
-                player.floor,
-                3.2,
-                130,
-                3,
-            );
+            world.register_dynamic_flash(muzzle_pos + aim_dir3 * 0.35, player.floor, 3.2, 130, 3);
             noises.push(NoiseEvent {
-                origin: player.position,
+                origin: player_body.position.xy(),
+                origin_z: player_body.position.z,
                 floor: player.floor,
                 radius: spec.fire_noise_radius,
                 priority: 4,
                 kind: NoiseKind::PistolShot,
             });
-            let hit = trace_bullet_ray(
+            let hit = trace_bullet_ray_3d(
                 world,
-                player.position,
+                muzzle_pos,
                 player.floor,
-                facing,
+                aim_dir3,
                 spec.range,
                 DamageKind::Bullet,
                 monsters,
@@ -575,17 +671,17 @@ pub fn try_fire_or_swing(
             );
             events.push(ActionEvent::BulletTrace {
                 weapon: Weapon::Pistol,
-                from: player.position,
-                from_z: player.floor as f32,
+                from: muzzle_pos,
                 to: hit.end_pos,
-                to_z: hit.end_z,
+                hit_normal: hit.hit_normal,
                 hit_material: hit.hit_material,
             });
             if let Some(idx) = hit.hit_monster {
+                let kb_dir = aim_dir3.xy().normalized();
                 let _ = ai::damage_monster(
                     &mut monsters[idx],
                     spec.monster_damage,
-                    facing * spec.knockback,
+                    kb_dir * spec.knockback,
                     spec.hitstun_ticks,
                     false,
                     events,
@@ -593,9 +689,10 @@ pub fn try_fire_or_swing(
             }
         }
         Weapon::Shotgun => {
-            world.register_dynamic_flash(player.position + facing * 0.4, player.floor, 4.5, 175, 4);
+            world.register_dynamic_flash(muzzle_pos + aim_dir3 * 0.4, player.floor, 4.5, 175, 4);
             noises.push(NoiseEvent {
-                origin: player.position,
+                origin: player_body.position.xy(),
+                origin_z: player_body.position.z,
                 floor: player.floor,
                 radius: spec.fire_noise_radius,
                 priority: 5,
@@ -606,6 +703,14 @@ pub fn try_fire_or_swing(
             let mut hit_targets: [(usize, u8, Vec2); 5] = [(0, 0, Vec2::ZERO); 5];
             let mut hit_target_count = 0usize;
 
+            let horiz = aim_dir3.xy();
+            let horiz_len = horiz.length();
+            let base_horiz = if horiz_len > 1e-4 {
+                horiz * (1.0 / horiz_len)
+            } else {
+                facing
+            };
+
             for (pellet_idx, base_deg) in SHOTGUN_PELLET_ANGLES_DEG.iter().enumerate() {
                 let h = mix64(
                     seed ^ tick.wrapping_mul(0x9e37_79b9_7f4a_7c15)
@@ -613,13 +718,19 @@ pub fn try_fire_or_swing(
                 );
                 let unit = ((h & 0xffff) as f32 / 65535.0) * 2.0 - 1.0;
                 let angle_rad = (*base_deg + unit * SHOTGUN_JITTER_DEG).to_radians();
-                let dir = facing.rotate(angle_rad).normalized();
+                let horiz_dir = base_horiz.rotate(angle_rad).normalized();
+                let dir3 = Vec3::new(
+                    horiz_dir.x * horiz_len.max(0.05),
+                    horiz_dir.y * horiz_len.max(0.05),
+                    aim_dir3.z,
+                )
+                .normalized();
 
-                let hit = trace_bullet_ray(
+                let hit = trace_bullet_ray_3d(
                     world,
-                    player.position,
+                    muzzle_pos,
                     player.floor,
-                    dir,
+                    dir3,
                     spec.range,
                     DamageKind::ShotgunPellet,
                     monsters,
@@ -628,15 +739,14 @@ pub fn try_fire_or_swing(
                 );
                 events.push(ActionEvent::BulletTrace {
                     weapon: Weapon::Shotgun,
-                    from: player.position,
-                    from_z: player.floor as f32,
+                    from: muzzle_pos,
                     to: hit.end_pos,
-                    to_z: hit.end_z,
+                    hit_normal: hit.hit_normal,
                     hit_material: hit.hit_material,
                 });
 
                 if let Some(m_idx) = hit.hit_monster {
-                    let kb = dir * spec.knockback;
+                    let kb = horiz_dir * spec.knockback;
                     if let Some(entry) = hit_targets[..hit_target_count]
                         .iter_mut()
                         .find(|(idx, _, _)| *idx == m_idx)
@@ -663,62 +773,198 @@ pub fn try_fire_or_swing(
             }
         }
         Weapon::RocketLauncher => {
-            world.register_dynamic_flash(player.position + facing * 0.4, player.floor, 4.0, 160, 5);
+            world.register_dynamic_flash(muzzle_pos + aim_dir3 * 0.4, player.floor, 4.0, 160, 5);
             noises.push(NoiseEvent {
-                origin: player.position,
+                origin: player_body.position.xy(),
+                origin_z: player_body.position.z,
                 floor: player.floor,
                 radius: spec.fire_noise_radius,
                 priority: 4,
                 kind: NoiseKind::RocketLaunch,
             });
 
-            let vz = compute_rocket_launch_vz(world, player, facing, spec.range, monsters);
             let id = ProjectileId(*next_proj_id);
             *next_proj_id = next_proj_id.wrapping_add(1);
             projectiles.push(Projectile {
                 id,
                 kind: ProjectileKind::Rocket,
                 owner_is_player: true,
-                pos: player.position,
-                dir: facing,
+                position: muzzle_pos,
+                velocity: aim_dir3 * ROCKET_SPEED,
                 floor: player.floor,
-                z: player.floor as f32,
-                vz,
-                speed: ROCKET_SPEED,
                 radius: ROCKET_RADIUS,
                 remaining_range: spec.range,
             });
             events.push(ActionEvent::ProjectileLaunched {
                 id,
                 kind: ProjectileKind::Rocket,
-                from: player.position,
+                from: muzzle_pos,
                 floor: player.floor,
-                dir: facing,
+                dir: aim_dir3.xy(),
+                velocity: aim_dir3 * ROCKET_SPEED,
             });
         }
         Weapon::Axe => unreachable!(),
     }
 }
 
-fn execute_unarmed_shove(
+/// Computes `(muzzle_pos, aim_dir3)` with 3D target assist, upper-window downward pitch,
+/// and road/stair grade alignment.
+pub(crate) fn compute_player_aim_3d(
+    world: &dyn CombatWorld,
+    player_body: BodyState,
+    player_floor: Floor,
+    facing: Vec2,
+    range: f32,
+    monsters: &[Monster],
+) -> (Vec3, Vec3) {
+    let facing = {
+        let f = facing.normalized();
+        if f.length_squared() > 0.01 {
+            f
+        } else {
+            Vec2::new(0.0, -1.0)
+        }
+    };
+    let foot_z = player_body.position.z;
+    let base_muzzle = player_body.position.with_z(foot_z + WEAPON_MUZZLE_HEIGHT);
+
+    // 1. 3D target assist along the horizontal aim corridor.
+    let mut best_target: Option<(f32, Vec3, Vec3)> = None;
+    for m in monsters {
+        if !m.is_targetable() {
+            continue;
+        }
+        let offset_xy = m.pos - base_muzzle.xy();
+        let along = offset_xy.dot(facing);
+        if along < 0.30 || along > range + UPPER_WINDOW_EXTRA_RANGE {
+            continue;
+        }
+        let perp = offset_xy.perp_dot(facing).abs();
+        if perp > m.radius() + 0.55 {
+            continue;
+        }
+        let target_pt = m
+            .body
+            .position
+            .with_z(m.body.position.z + WEAPON_MUZZLE_HEIGHT);
+        let cand_muzzle = if player_floor > 0 && target_pt.z < foot_z - 0.30 {
+            player_body
+                .position
+                .with_z(foot_z + UPPER_LEDGE_MUZZLE_HEIGHT)
+        } else {
+            base_muzzle
+        };
+        if (target_pt.z - cand_muzzle.z).abs() / along.max(0.5) > 1.35 {
+            continue;
+        }
+        let delta = target_pt - cand_muzzle;
+        let dist = delta.length();
+        if dist < 0.05 {
+            continue;
+        }
+        let dir = delta * (1.0 / dist);
+        let check_dist = (dist - m.radius() - 0.04).max(0.02);
+        if world
+            .raycast_filtered(
+                Ray3::new(cand_muzzle, dir),
+                check_dist,
+                QueryFilter::LINE_OF_SIGHT,
+            )
+            .is_some()
+        {
+            continue;
+        }
+        if best_target.is_none_or(|(best_along, _, _)| along < best_along) {
+            best_target = Some((along, cand_muzzle, dir));
+        }
+    }
+    if let Some((_, cand_muzzle, dir)) = best_target {
+        return (cand_muzzle, dir);
+    }
+
+    // 2. Upper-floor window / ledge fallback.
+    if player_floor > 0 {
+        let start_tile = Tile3D::from_vec2(base_muzzle.xy(), player_floor);
+        for i in 1..=35 {
+            let t = i as f32 * 0.10;
+            let p = base_muzzle.xy() + facing * t;
+            let tile = Tile3D::from_vec2(p, player_floor);
+            if tile == start_tile {
+                continue;
+            }
+            if !in_world_bounds(world, tile) {
+                break;
+            }
+            if !world.has_floor(tile) {
+                let cand_muzzle = player_body
+                    .position
+                    .with_z(foot_z + UPPER_LEDGE_MUZZLE_HEIGHT);
+                let ahead_xy = cand_muzzle.xy() + facing * 5.5;
+                let gz = world.terrain_at(ahead_xy).map_or(0.0, |tr| tr.z);
+                let dir = (ahead_xy.extend(gz + 0.55) - cand_muzzle).normalized();
+                return (cand_muzzle, dir);
+            }
+            match world.obstruction(tile) {
+                TileObstruction::Wall(_)
+                | TileObstruction::DoorClosed
+                | TileObstruction::LowProp(_) => break,
+                TileObstruction::IntactWindow
+                | TileObstruction::BrokenWindow
+                | TileObstruction::Open => {}
+            }
+        }
+    }
+
+    // 3. Terrain / stair grade alignment fallback.
+    let ahead_xy = base_muzzle.xy() + facing * 2.0;
+    let mut sups = Vec::with_capacity(4);
+    world.supports_at(ahead_xy, &mut sups);
+    let mut best_sup: Option<f32> = None;
+    for s in sups {
+        if !s.walkable {
+            continue;
+        }
+        let dz = (s.z - foot_z).abs();
+        if dz <= 0.70 && best_sup.is_none_or(|b| (b - foot_z).abs() > dz) {
+            best_sup = Some(s.z);
+        }
+    }
+    if let Some(sz) = best_sup {
+        let dz = (sz - foot_z).clamp(-0.70, 0.70);
+        return (
+            base_muzzle,
+            Vec3::new(facing.x * 2.0, facing.y * 2.0, dz).normalized(),
+        );
+    }
+
+    (base_muzzle, facing.extend(0.0))
+}
+
+fn execute_unarmed_shove_3d(
     world: &dyn CombatWorld,
     inventory: &mut Inventory,
     player: Pose,
+    player_body: BodyState,
     facing: Vec2,
     monsters: &mut [Monster],
     events: &mut Vec<ActionEvent>,
 ) {
     inventory.fire_cooldown = UNARMED_SHOVE_COOLDOWN;
     events.push(ActionEvent::UnarmedShove {
-        from: player.position,
+        from: player_body.position,
         floor: player.floor,
         facing,
     });
+    let from_chest = player_body.position.with_z(player_body.position.z + 0.55);
     for monster in monsters.iter_mut() {
-        if !monster.is_targetable() || monster.floor != player.floor {
+        if !monster.is_targetable() {
             continue;
         }
-        let offset = monster.pos - player.position;
+        if (monster.body.position.z - player_body.position.z).abs() > 0.78 {
+            continue;
+        }
+        let offset = monster.pos - player_body.position.xy();
         let dist = offset.length();
         if dist > UNARMED_SHOVE_RANGE + monster.radius() {
             continue;
@@ -731,23 +977,36 @@ fn execute_unarmed_shove(
         if dist > 0.45 && dir.dot(facing) < 0.35 {
             continue;
         }
-        if ai::segment_blocked_by_solid(world, player.position, monster.pos, player.floor) {
+        let target_chest = monster.body.position.with_z(monster.body.position.z + 0.55);
+        let seg = target_chest - from_chest;
+        let seg_len = seg.length();
+        if seg_len > 0.05
+            && world
+                .raycast_filtered(
+                    Ray3::new(from_chest, seg * (1.0 / seg_len)),
+                    (seg_len - monster.radius() * 0.5).max(0.02),
+                    QueryFilter::LINE_OF_SIGHT,
+                )
+                .is_some()
+        {
             continue;
         }
         monster.apply_shove(
             dir * UNARMED_SHOVE_KNOCKBACK,
             UNARMED_SHOVE_HITSTUN,
-            player.position,
+            player_body.position.xy(),
             player.floor,
             events,
         );
     }
 }
 
-fn execute_axe_swing(
+#[allow(clippy::too_many_arguments)]
+fn execute_axe_swing_3d(
     world: &mut dyn CombatWorld,
     inventory: &mut Inventory,
     player: Pose,
+    player_body: BodyState,
     facing: Vec2,
     monsters: &mut [Monster],
     events: &mut Vec<ActionEvent>,
@@ -758,7 +1017,7 @@ fn execute_axe_swing(
 
     let swing_event_idx = events.len();
     events.push(ActionEvent::AxeSwing {
-        from: player.position,
+        from: player_body.position,
         floor: player.floor,
         facing,
         hit_flesh: false,
@@ -767,12 +1026,16 @@ fn execute_axe_swing(
 
     let mut hit_flesh = false;
     let mut hit_solid = false;
+    let from_chest = player_body.position.with_z(player_body.position.z + 0.55);
 
     for monster in monsters.iter_mut() {
-        if !monster.is_targetable() || monster.floor != player.floor {
+        if !monster.is_targetable() {
             continue;
         }
-        let offset = monster.pos - player.position;
+        if (monster.body.position.z - player_body.position.z).abs() > 0.85 {
+            continue;
+        }
+        let offset = monster.pos - player_body.position.xy();
         let dist = offset.length();
         if dist > spec.range + monster.radius() {
             continue;
@@ -785,7 +1048,18 @@ fn execute_axe_swing(
         if dist >= 0.15 && dir.dot(facing) < AXE_CLEAVE_HALF_ANGLE_COS {
             continue;
         }
-        if ai::segment_blocked_by_solid(world, player.position, monster.pos, player.floor) {
+        let target_chest = monster.body.position.with_z(monster.body.position.z + 0.55);
+        let seg = target_chest - from_chest;
+        let seg_len = seg.length();
+        if seg_len > 0.05
+            && world
+                .raycast_filtered(
+                    Ray3::new(from_chest, seg * (1.0 / seg_len)),
+                    (seg_len - monster.radius() * 0.5).max(0.02),
+                    QueryFilter::LINE_OF_SIGHT,
+                )
+                .is_some()
+        {
             continue;
         }
         hit_flesh = true;
@@ -799,39 +1073,53 @@ fn execute_axe_swing(
         );
     }
 
-    // Cast 3 short rays (-30°, 0°, +30°) to damage up to 2 distinct destructible tiles.
-    let mut hit_tiles: [(Tile3D, Vec2); 2] = [(Tile3D::default(), Vec2::ZERO); 2];
+    // Cast 3 short waist-height 3D rays (-30°, 0°, +30°) to damage up to 2 distinct destructible tiles.
+    let mut hit_tiles: [(Tile3D, Vec3, Vec3); 2] = [(Tile3D::default(), Vec3::ZERO, Vec3::Z); 2];
     let mut hit_tile_count = 0usize;
+    let start_tile = Tile3D::from_vec2(player_body.position.xy(), player.floor);
 
     for angle_deg in AXE_TILE_RAY_ANGLES_DEG {
         if hit_tile_count >= hit_tiles.len() {
             break;
         }
-        let dir = facing.rotate(angle_deg.to_radians()).normalized();
-        if let Some((tile, hit_pos)) =
-            cast_axe_tile_ray(world, player.position, player.floor, dir, spec.range)
+        let dir2 = facing.rotate(angle_deg.to_radians()).normalized();
+        let ray = Ray3::new(from_chest, dir2.extend(0.0));
+        if let Some(hit) = world.raycast(ray, spec.range)
+            && hit.distance > 0.01
+            && let HitSurface::Collider(kind) = hit.surface
         {
-            if !hit_tiles[..hit_tile_count]
-                .iter()
-                .any(|(existing, _)| *existing == tile)
+            let tile = match kind {
+                ColliderKind::Wall { tile }
+                | ColliderKind::ClosedDoor { tile }
+                | ColliderKind::WindowSill { tile, .. }
+                | ColliderKind::WindowGlass { tile }
+                | ColliderKind::Prop { tile, .. } => Some(tile),
+                _ => None,
+            };
+            if let Some(tile) = tile
+                && tile != start_tile
+                && in_world_bounds(world, tile)
+                && !hit_tiles[..hit_tile_count]
+                    .iter()
+                    .any(|(existing, _, _)| *existing == tile)
             {
-                hit_tiles[hit_tile_count] = (tile, hit_pos);
+                hit_tiles[hit_tile_count] = (tile, hit.point, hit.normal);
                 hit_tile_count += 1;
             }
         }
     }
 
-    for &(tile, hit_pos) in &hit_tiles[..hit_tile_count] {
-        if let Some(res) = world.damage_tile(tile, DamageKind::Axe) {
-            if res.damaged {
-                hit_solid = true;
-                emit_tile_damage_effects(tile, hit_pos, res, events, noises);
-            }
+    for &(tile, hit_pos, hit_normal) in &hit_tiles[..hit_tile_count] {
+        if let Some(res) = world.damage_tile(tile, DamageKind::Axe)
+            && res.damaged
+        {
+            hit_solid = true;
+            emit_tile_damage_effects(tile, hit_pos, hit_normal, res, events, noises);
         }
     }
 
     events[swing_event_idx] = ActionEvent::AxeSwing {
-        from: player.position,
+        from: player_body.position,
         floor: player.floor,
         facing,
         hit_flesh,
@@ -839,7 +1127,8 @@ fn execute_axe_swing(
     };
 
     noises.push(NoiseEvent {
-        origin: player.position,
+        origin: player_body.position.xy(),
+        origin_z: player_body.position.z,
         floor: player.floor,
         radius: spec.fire_noise_radius,
         priority: 2,
@@ -847,259 +1136,134 @@ fn execute_axe_swing(
     });
 }
 
-fn cast_axe_tile_ray(
-    world: &dyn CombatWorld,
-    from: Vec2,
-    floor: Floor,
-    dir: Vec2,
-    range: f32,
-) -> Option<(Tile3D, Vec2)> {
-    let start_tile = Tile3D::from_vec2(from, floor);
-    let steps = (range / 0.08).ceil() as usize;
-    for i in 1..=steps {
-        let t = (i as f32 * 0.08).min(range);
-        let p = from + dir * t;
-        let tile = Tile3D::from_vec2(p, floor);
-        if tile == start_tile {
-            continue;
-        }
-        if !in_world_bounds(world, tile) {
-            return None;
-        }
-        match world.obstruction(tile) {
-            TileObstruction::Open | TileObstruction::BrokenWindow => {}
-            TileObstruction::IntactWindow
-            | TileObstruction::DoorClosed
-            | TileObstruction::LowProp(_)
-            | TileObstruction::Wall(_) => return Some((tile, p)),
-        }
-    }
-    None
-}
-
-fn compute_rocket_launch_vz(
-    world: &dyn CombatWorld,
-    player: Pose,
-    facing: Vec2,
-    range: f32,
-    monsters: &[Monster],
-) -> f32 {
-    if player.floor == 0 {
-        return 0.0;
-    }
-    // Check if the player is aiming out an upper-story window / open edge into exterior air.
-    let start_tile = Tile3D::from_vec2(player.position, player.floor);
-    let mut exits_into_air = false;
-    let probe_steps = 40usize; // 4.0 tiles ahead
-    for i in 1..=probe_steps {
-        let t = i as f32 * 0.10;
-        let p = player.position + facing * t;
-        let tile = Tile3D::from_vec2(p, player.floor);
-        if tile == start_tile {
-            continue;
-        }
-        if !in_world_bounds(world, tile) {
-            break;
-        }
-        if !world.has_floor(tile) {
-            exits_into_air = true;
-            break;
-        }
-        match world.obstruction(tile) {
-            TileObstruction::Wall(_)
-            | TileObstruction::DoorClosed
-            | TileObstruction::LowProp(_)
-            | TileObstruction::IntactWindow => break,
-            TileObstruction::Open | TileObstruction::BrokenWindow => {}
-        }
-    }
-    if !exits_into_air {
-        return 0.0;
-    }
-
-    // If an outdoor Floor 0 monster lies near the aim line, slope toward its distance.
-    let mut best_along: Option<f32> = None;
-    for m in monsters {
-        if !m.is_targetable() || m.floor != 0 {
-            continue;
-        }
-        let offset = m.pos - player.position;
-        let along = offset.dot(facing);
-        if !(1.5..=range).contains(&along) {
-            continue;
-        }
-        let side = offset.perp_dot(facing).abs();
-        if side <= 1.25 && best_along.is_none_or(|best| along < best) {
-            best_along = Some(along);
-        }
-    }
-
-    if let Some(along) = best_along {
-        let flight_t = (along / ROCKET_SPEED).max(0.15);
-        (-(player.floor as f32) / flight_t).clamp(-ROCKET_SPEED * 0.45, -ROCKET_SPEED * 0.10)
-    } else {
-        -ROCKET_SPEED * 0.22
-    }
-}
-
-struct RayHit {
-    end_pos: Vec2,
-    end_z: f32,
+struct RayHit3D {
+    end_pos: Vec3,
+    hit_normal: Vec3,
     hit_material: MaterialCategory,
     hit_monster: Option<usize>,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn trace_bullet_ray(
+fn trace_bullet_ray_3d(
     world: &mut dyn CombatWorld,
-    from: Vec2,
+    muzzle: Vec3,
     from_floor: Floor,
-    dir: Vec2,
+    dir3: Vec3,
     base_range: f32,
     damage_kind: DamageKind,
     monsters: &[Monster],
     events: &mut Vec<ActionEvent>,
     noises: &mut Vec<NoiseEvent>,
-) -> RayHit {
-    let sx = from.x + 0.5;
-    let sy = from.y + 0.5;
-    let mut tx = sx.floor() as i32;
-    let mut ty = sy.floor() as i32;
-
-    let (step_x, mut t_max_x, t_delta_x) = if dir.x > 1e-6 {
-        (1, ((tx + 1) as f32 - sx) / dir.x, 1.0 / dir.x)
-    } else if dir.x < -1e-6 {
-        (-1, (sx - tx as f32) / -dir.x, 1.0 / -dir.x)
+) -> RayHit3D {
+    let dir3 = dir3.normalized();
+    let max_range = if from_floor > 0 && dir3.z < -0.05 {
+        base_range + UPPER_WINDOW_EXTRA_RANGE
     } else {
-        (0, f32::INFINITY, f32::INFINITY)
+        base_range
     };
 
-    let (step_y, mut t_max_y, t_delta_y) = if dir.y > 1e-6 {
-        (1, ((ty + 1) as f32 - sy) / dir.y, 1.0 / dir.y)
-    } else if dir.y < -1e-6 {
-        (-1, (sy - ty as f32) / -dir.y, 1.0 / -dir.y)
-    } else {
-        (0, f32::INFINITY, f32::INFINITY)
-    };
+    let mut t_cursor = 0.0_f32;
+    let mut last_shattered: Option<Tile3D> = None;
 
-    let mut cur_floor = from_floor;
-    let mut max_range = base_range;
-    let mut t_prev = 0.0_f32;
+    for _ in 0..8 {
+        if t_cursor >= max_range {
+            break;
+        }
+        let seg_origin = muzzle + dir3 * t_cursor;
+        let remaining = max_range - t_cursor;
+        let world_hit = world.raycast(Ray3::new(seg_origin, dir3), remaining);
+        let seg_end = world_hit.map_or(max_range, |h| t_cursor + h.distance);
 
-    for _ in 0..128 {
-        let next_t = t_max_x.min(t_max_y);
-        let seg_end = next_t.min(max_range);
-
-        // Check monsters along [t_prev, seg_end] on the active floor before terrain hits.
-        if let Some((m_idx, m_t)) =
-            closest_monster_on_ray(monsters, cur_floor, from, dir, t_prev, seg_end)
+        if let Some((m_idx, m_t, m_normal)) =
+            closest_monster_on_ray_3d(monsters, muzzle, dir3, t_cursor, seg_end)
         {
-            return RayHit {
-                end_pos: from + dir * m_t,
-                end_z: cur_floor as f32,
+            return RayHit3D {
+                end_pos: muzzle + dir3 * m_t,
+                hit_normal: m_normal,
                 hit_material: MaterialCategory::Flesh,
                 hit_monster: Some(m_idx),
             };
         }
 
-        if next_t > max_range {
-            return RayHit {
-                end_pos: from + dir * max_range,
-                end_z: cur_floor as f32,
+        let Some(hit) = world_hit else {
+            return RayHit3D {
+                end_pos: muzzle + dir3 * max_range,
+                hit_normal: -dir3,
                 hit_material: MaterialCategory::None,
                 hit_monster: None,
             };
-        }
+        };
 
-        // Corner-safe DDA step: if crossing an exact grid corner, block if either side is solid.
-        if (t_max_x - t_max_y).abs() < 1e-5 && step_x != 0 && step_y != 0 {
-            let side_a = Tile3D::new(tx + step_x, ty, cur_floor);
-            let side_b = Tile3D::new(tx, ty + step_y, cur_floor);
-            let a_solid = matches!(
-                world.obstruction(side_a),
-                TileObstruction::Wall(_) | TileObstruction::DoorClosed
-            );
-            let b_solid = matches!(
-                world.obstruction(side_b),
-                TileObstruction::Wall(_) | TileObstruction::DoorClosed
-            );
-            if a_solid || b_solid {
-                let hit_tile = if a_solid { side_a } else { side_b };
-                let hit_pos = from + dir * next_t;
-                let mat =
-                    apply_bullet_tile_hit(world, hit_tile, hit_pos, damage_kind, events, noises);
-                return RayHit {
-                    end_pos: hit_pos,
-                    end_z: cur_floor as f32,
+        match hit.surface {
+            HitSurface::Collider(ColliderKind::WindowGlass { tile }) => {
+                if last_shattered != Some(tile) {
+                    last_shattered = Some(tile);
+                    let _ = apply_bullet_tile_hit_3d(
+                        world,
+                        tile,
+                        hit.point,
+                        hit.normal,
+                        damage_kind,
+                        events,
+                        noises,
+                    );
+                }
+                t_cursor = seg_end + 0.03;
+            }
+            HitSurface::Collider(
+                ColliderKind::Wall { tile }
+                | ColliderKind::ClosedDoor { tile }
+                | ColliderKind::WindowSill { tile, .. }
+                | ColliderKind::Prop { tile, .. },
+            ) => {
+                let mat = apply_bullet_tile_hit_3d(
+                    world,
+                    tile,
+                    hit.point,
+                    hit.normal,
+                    damage_kind,
+                    events,
+                    noises,
+                );
+                return RayHit3D {
+                    end_pos: hit.point,
+                    hit_normal: hit.normal,
                     hit_material: mat,
                     hit_monster: None,
                 };
             }
-            tx += step_x;
-            ty += step_y;
-            t_max_x += t_delta_x;
-            t_max_y += t_delta_y;
-        } else if t_max_x < t_max_y {
-            tx += step_x;
-            t_max_x += t_delta_x;
-        } else {
-            ty += step_y;
-            t_max_y += t_delta_y;
-        }
-
-        t_prev = next_t;
-        let hit_pos = from + dir * next_t;
-        let mut tile = Tile3D::new(tx, ty, cur_floor);
-
-        if !in_world_bounds(world, tile) {
-            return RayHit {
-                end_pos: hit_pos,
-                end_z: cur_floor as f32,
-                hit_material: MaterialCategory::None,
-                hit_monster: None,
-            };
-        }
-
-        // Upper-floor shots exiting through an open/shattered upper window into exterior air
-        // automatically angle downward to engage Floor 0 outdoor targets & terrain.
-        if cur_floor > 0 && !world.has_floor(tile) {
-            cur_floor = 0;
-            max_range = base_range + UPPER_WINDOW_EXTRA_RANGE;
-            tile = Tile3D::new(tx, ty, 0);
-        }
-
-        match world.obstruction(tile) {
-            TileObstruction::Open | TileObstruction::BrokenWindow => {}
-            TileObstruction::IntactWindow => {
-                // Shatter the window and let the bullet keep traveling!
-                let _ = apply_bullet_tile_hit(world, tile, hit_pos, damage_kind, events, noises);
-            }
-            TileObstruction::DoorClosed
-            | TileObstruction::LowProp(_)
-            | TileObstruction::Wall(_) => {
-                let mat = apply_bullet_tile_hit(world, tile, hit_pos, damage_kind, events, noises);
-                return RayHit {
-                    end_pos: hit_pos,
-                    end_z: cur_floor as f32,
-                    hit_material: mat,
+            HitSurface::Terrain { .. }
+            | HitSurface::BridgeDeck { .. }
+            | HitSurface::Stair { .. }
+            | HitSurface::Collider(
+                ColliderKind::BuildingSlab { .. }
+                | ColliderKind::BridgeParapet { .. }
+                | ColliderKind::BridgeDeck { .. }
+                | ColliderKind::WaterHazard { .. },
+            ) => {
+                return RayHit3D {
+                    end_pos: hit.point,
+                    hit_normal: hit.normal,
+                    hit_material: MaterialCategory::Stone,
                     hit_monster: None,
                 };
             }
         }
     }
 
-    RayHit {
-        end_pos: from + dir * max_range,
-        end_z: cur_floor as f32,
+    RayHit3D {
+        end_pos: muzzle + dir3 * max_range,
+        hit_normal: -dir3,
         hit_material: MaterialCategory::None,
         hit_monster: None,
     }
 }
 
-fn apply_bullet_tile_hit(
+fn apply_bullet_tile_hit_3d(
     world: &mut dyn CombatWorld,
     tile: Tile3D,
-    hit_pos: Vec2,
+    hit_pos: Vec3,
+    hit_normal: Vec3,
     damage_kind: DamageKind,
     events: &mut Vec<ActionEvent>,
     noises: &mut Vec<NoiseEvent>,
@@ -1112,7 +1276,7 @@ fn apply_bullet_tile_hit(
     };
     if let Some(res) = world.damage_tile(tile, damage_kind) {
         if res.damaged {
-            emit_tile_damage_effects(tile, hit_pos, res, events, noises);
+            emit_tile_damage_effects(tile, hit_pos, hit_normal, res, events, noises);
         }
         let cat = res.material.category();
         if cat != MaterialCategory::None {
@@ -1122,39 +1286,148 @@ fn apply_bullet_tile_hit(
     fallback_mat
 }
 
-fn closest_monster_on_ray(
+/// Ray vs finite vertical cylinder `(xy, radius + 0.05, [foot_z, foot_z + height])`.
+fn closest_monster_on_ray_3d(
     monsters: &[Monster],
-    floor: Floor,
-    from: Vec2,
-    dir: Vec2,
+    origin: Vec3,
+    dir: Vec3,
     t_min: f32,
     t_max: f32,
-) -> Option<(usize, f32)> {
-    let mut best: Option<(usize, f32)> = None;
+) -> Option<(usize, f32, Vec3)> {
+    let mut best: Option<(usize, f32, Vec3)> = None;
+    let d_xy = dir.xy();
+    let a = d_xy.length_squared();
+
     for (i, m) in monsters.iter().enumerate() {
-        if !m.is_targetable() || m.floor != floor {
+        if !m.is_targetable() {
             continue;
         }
+        let c_xy = m.body.position.xy();
         let r = m.radius() + 0.05;
-        let oc = m.pos - from;
-        let proj = oc.dot(dir);
-        let perp_sq = oc.length_squared() - proj * proj;
-        if perp_sq > r * r {
+        let z0 = m.body.position.z;
+        let z1 = z0 + m.spec().height;
+
+        let (t_xy0, t_xy1) = if a > 1e-10 {
+            let oc = origin.xy() - c_xy;
+            let b = oc.dot(d_xy);
+            let c = oc.length_squared() - r * r;
+            let disc = b * b - a * c;
+            if disc < 0.0 {
+                continue;
+            }
+            let sqrt_d = disc.sqrt();
+            ((-b - sqrt_d) / a, (-b + sqrt_d) / a)
+        } else if (origin.xy() - c_xy).length_squared() <= r * r {
+            (t_min, t_max)
+        } else {
             continue;
-        }
-        let half_chord = (r * r - perp_sq).max(0.0).sqrt();
-        if proj + half_chord < t_min {
+        };
+
+        let (t_z0, t_z1) = if dir.z.abs() > 1e-7 {
+            let tz_a = (z0 - origin.z) / dir.z;
+            let tz_b = (z1 - origin.z) / dir.z;
+            (tz_a.min(tz_b), tz_a.max(tz_b))
+        } else if origin.z >= z0 && origin.z <= z1 {
+            (-f32::INFINITY, f32::INFINITY)
+        } else {
             continue;
-        }
-        let t_hit = (proj - half_chord).max(t_min);
-        if t_hit <= t_max && best.is_none_or(|(_, best_t)| t_hit < best_t) {
-            best = Some((i, t_hit));
+        };
+
+        let t_enter = t_xy0.max(t_z0).max(t_min);
+        let t_exit = t_xy1.min(t_z1).min(t_max);
+        if t_enter <= t_exit && best.is_none_or(|(_, best_t, _)| t_enter < best_t) {
+            let normal = if t_z0 > t_xy0 {
+                Vec3::new(0.0, 0.0, if dir.z > 0.0 { -1.0 } else { 1.0 })
+            } else {
+                let p_xy = origin.xy() + d_xy * t_enter;
+                let n_xy = (p_xy - c_xy).normalized();
+                if n_xy.length_squared() > 0.01 {
+                    n_xy.extend(0.0)
+                } else {
+                    -dir
+                }
+            };
+            best = Some((i, t_enter, normal));
         }
     }
     best
 }
 
+/// Sweeps a sphere of radius `sphere_r` along `from -> to` against a vertical actor cylinder.
+/// Returns `(u, normal)` with `u in [0.0, 1.0]` on intersection.
+fn sweep_sphere_cylinder(
+    from: Vec3,
+    to: Vec3,
+    sphere_r: f32,
+    center_xy: Vec2,
+    actor_r: f32,
+    z_min: f32,
+    z_max: f32,
+) -> Option<(f32, Vec3)> {
+    let d = to - from;
+    let d_xy = d.xy();
+    let a = d_xy.length_squared();
+    let r_sum = actor_r + sphere_r;
+
+    let (u_xy0, u_xy1) = if a > 1e-10 {
+        let oc = from.xy() - center_xy;
+        let b = oc.dot(d_xy);
+        let c = oc.length_squared() - r_sum * r_sum;
+        let disc = b * b - a * c;
+        if disc < 0.0 {
+            return None;
+        }
+        let sqrt_d = disc.sqrt();
+        ((-b - sqrt_d) / a, (-b + sqrt_d) / a)
+    } else if (from.xy() - center_xy).length_squared() <= r_sum * r_sum {
+        (0.0, 1.0)
+    } else {
+        return None;
+    };
+
+    let z0 = z_min - sphere_r;
+    let z1 = z_max + sphere_r;
+    let (u_z0, u_z1) = if d.z.abs() > 1e-7 {
+        let uz_a = (z0 - from.z) / d.z;
+        let uz_b = (z1 - from.z) / d.z;
+        (uz_a.min(uz_b), uz_a.max(uz_b))
+    } else if from.z >= z0 && from.z <= z1 {
+        (0.0, 1.0)
+    } else {
+        return None;
+    };
+
+    let u_enter = u_xy0.max(u_z0).max(0.0);
+    let u_exit = u_xy1.min(u_z1).min(1.0);
+    if u_enter > u_exit {
+        return None;
+    }
+
+    let normal = if u_z0 > u_xy0 {
+        Vec3::new(0.0, 0.0, if d.z > 0.0 { -1.0 } else { 1.0 })
+    } else {
+        let p_xy = from.xy() + d_xy * u_enter;
+        let n_xy = (p_xy - center_xy).normalized();
+        if n_xy.length_squared() > 0.01 {
+            n_xy.extend(0.0)
+        } else {
+            (-d).normalized()
+        }
+    };
+    Some((u_enter, normal))
+}
+
+#[inline]
+fn semantic_floor_at_point(world: &dyn CombatWorld, pos: Vec3) -> Floor {
+    let gz = world.terrain_at(pos.xy()).map_or(0.0, |t| t.z);
+    let max_floor = world.bounds().2.saturating_sub(1);
+    ((pos.z - gz) / FLOOR_H)
+        .round()
+        .clamp(0.0, max_floor as f32) as Floor
+}
+
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub fn step_projectiles(
     world: &mut dyn CombatWorld,
     projectiles: &mut Vec<Projectile>,
@@ -1167,109 +1440,103 @@ pub fn step_projectiles(
     events: &mut Vec<ActionEvent>,
     noises: &mut Vec<NoiseEvent>,
 ) {
+    let (pz, sup, _) = resolve_actor_support(world, player_pose.position, player_pose.floor);
+    let player_body = BodyState::from_pose_2d(player_pose.position, player_pose.facing, pz, sup);
+    step_projectiles_3d(
+        world,
+        projectiles,
+        player_pose,
+        player_body,
+        player_radius,
+        player_health,
+        player_iframes,
+        player_knockback,
+        monsters,
+        events,
+        noises,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn step_projectiles_3d(
+    world: &mut dyn CombatWorld,
+    projectiles: &mut Vec<Projectile>,
+    player_pose: Pose,
+    player_body: BodyState,
+    player_radius: f32,
+    player_health: &mut u8,
+    player_iframes: &mut u8,
+    player_knockback: &mut Vec2,
+    monsters: &mut [Monster],
+    events: &mut Vec<ActionEvent>,
+    noises: &mut Vec<NoiseEvent>,
+) {
+    for m in monsters.iter_mut() {
+        if m.is_alive() {
+            m.ensure_body_synced(world);
+        }
+    }
+
     let (_, _, num_floors) = world.bounds();
     let max_floor = num_floors.saturating_sub(1);
 
     let mut idx = 0usize;
     while idx < projectiles.len() {
         let mut proj = projectiles[idx];
-        let total_dist = (proj.speed * DT).min(proj.remaining_range.max(0.0));
-        let substeps = ((total_dist / PROJECTILE_MAX_SUBSTEP).ceil() as usize).max(1);
-        let sub_dist = total_dist / substeps as f32;
-        let sub_dt = if proj.speed > 0.001 {
-            sub_dist / proj.speed
+        let speed = proj.velocity.length();
+        let step_dist = (speed * DT).min(proj.remaining_range.max(0.0));
+        let vel_dir = if speed > 1e-4 {
+            proj.velocity * (1.0 / speed)
         } else {
-            0.0
+            Vec3::X
         };
+        let end_pos = proj.position + vel_dir * step_dist;
+        proj.remaining_range -= step_dist;
 
         let mut remove = false;
+        let mut seg_from = proj.position;
         let mut last_shattered_window: Option<Tile3D> = None;
 
-        for _ in 0..substeps {
-            proj.pos += proj.dir * sub_dist;
-            proj.z += proj.vz * sub_dt;
-            proj.remaining_range -= sub_dist;
-
-            // Ground impact check (upper-floor angled rockets / bolts hitting Floor 0).
-            if proj.z <= 0.0 && proj.vz < 0.0 {
-                proj.z = 0.0;
-                proj.floor = 0;
-                if proj.kind == ProjectileKind::Rocket {
-                    detonate_rocket(
-                        world,
-                        proj.pos,
-                        0,
-                        player_pose,
-                        player_health,
-                        player_iframes,
-                        player_knockback,
-                        monsters,
-                        events,
-                        noises,
-                    );
-                }
-                remove = true;
+        for _ in 0..4 {
+            let seg_vec = end_pos - seg_from;
+            let seg_len = seg_vec.length();
+            if seg_len <= 1e-5 {
                 break;
             }
 
-            // Bolt flying well above the top floor disappears cleanly.
-            if proj.kind == ProjectileKind::ShooterBolt
-                && proj.vz > 0.0
-                && proj.z > max_floor as f32 + 0.6
-            {
-                remove = true;
-                break;
-            }
-
-            proj.floor = proj.z.round().clamp(0.0, max_floor as f32) as Floor;
-            let tile = Tile3D::from_vec2(proj.pos, proj.floor);
-
-            if !in_world_bounds(world, tile) {
-                if proj.kind == ProjectileKind::Rocket {
-                    detonate_rocket(
-                        world,
-                        proj.pos,
-                        proj.floor,
-                        player_pose,
-                        player_health,
-                        player_iframes,
-                        player_knockback,
-                        monsters,
-                        events,
-                        noises,
-                    );
-                }
-                remove = true;
-                break;
-            }
+            let world_hit = world.sphere_cast(seg_from, end_pos, proj.radius);
+            let world_u =
+                world_hit.map_or(f32::INFINITY, |h| (h.distance / seg_len).clamp(0.0, 1.0));
 
             match proj.kind {
                 ProjectileKind::Rocket => {
-                    // If a horizontal upper-floor rocket exits into exterior air (e.g. through a breached wall),
-                    // angle it downward toward Floor 0.
-                    if proj.floor > 0 && !world.has_floor(tile) && proj.vz == 0.0 {
-                        proj.vz = -ROCKET_SPEED * 0.22;
+                    let mut best_m_u = f32::INFINITY;
+                    for m in monsters.iter() {
+                        if !m.is_alive() {
+                            continue;
+                        }
+                        if let Some((u, _)) = sweep_sphere_cylinder(
+                            seg_from,
+                            end_pos,
+                            proj.radius,
+                            m.body.position.xy(),
+                            m.radius(),
+                            m.body.position.z,
+                            m.body.position.z + m.spec().height,
+                        ) && u < best_m_u
+                        {
+                            best_m_u = u;
+                        }
                     }
 
-                    let hit_terrain = matches!(
-                        world.obstruction(tile),
-                        TileObstruction::Wall(_)
-                            | TileObstruction::DoorClosed
-                            | TileObstruction::LowProp(_)
-                            | TileObstruction::IntactWindow
-                    );
-                    let hit_monster = monsters.iter().any(|m| {
-                        m.is_alive()
-                            && m.floor == proj.floor
-                            && m.pos.distance(proj.pos) <= m.radius() + proj.radius
-                    });
-
-                    if hit_terrain || hit_monster {
-                        detonate_rocket(
+                    if best_m_u <= world_u && best_m_u <= 1.0 {
+                        let center = seg_from.lerp(end_pos, best_m_u);
+                        detonate_rocket_3d(
                             world,
-                            proj.pos,
-                            proj.floor,
+                            center,
+                            -vel_dir,
                             player_pose,
+                            player_body,
                             player_health,
                             player_iframes,
                             player_knockback,
@@ -1280,78 +1547,139 @@ pub fn step_projectiles(
                         remove = true;
                         break;
                     }
-                }
-                ProjectileKind::ShooterBolt => {
-                    match world.obstruction(tile) {
-                        TileObstruction::Wall(_)
-                        | TileObstruction::DoorClosed
-                        | TileObstruction::LowProp(_) => {
-                            let _ = apply_bullet_tile_hit(
-                                world,
-                                tile,
-                                proj.pos,
-                                DamageKind::Bullet,
-                                events,
-                                noises,
-                            );
-                            remove = true;
-                            break;
-                        }
-                        TileObstruction::IntactWindow => {
-                            if last_shattered_window != Some(tile) {
-                                last_shattered_window = Some(tile);
-                                let _ = apply_bullet_tile_hit(
-                                    world,
-                                    tile,
-                                    proj.pos,
-                                    DamageKind::Bullet,
-                                    events,
-                                    noises,
-                                );
-                            }
-                        }
-                        TileObstruction::Open | TileObstruction::BrokenWindow => {}
+
+                    if let Some(hit) = world_hit {
+                        let center = seg_from.lerp(end_pos, world_u);
+                        detonate_rocket_3d(
+                            world,
+                            center,
+                            hit.normal,
+                            player_pose,
+                            player_body,
+                            player_health,
+                            player_iframes,
+                            player_knockback,
+                            monsters,
+                            events,
+                            noises,
+                        );
+                        remove = true;
+                        break;
                     }
 
+                    break;
+                }
+                ProjectileKind::ShooterBolt => {
+                    let mut player_hit: Option<(f32, Vec3)> = None;
                     if !proj.owner_is_player
-                        && proj.floor == player_pose.floor
-                        && player_pose.position.distance(proj.pos) <= player_radius + proj.radius
+                        && let Some((u, n)) = sweep_sphere_cylinder(
+                            seg_from,
+                            end_pos,
+                            proj.radius,
+                            player_body.position.xy(),
+                            player_radius,
+                            player_body.position.z,
+                            player_body.position.z + PLAYER_SHAPE.height,
+                        )
                     {
+                        player_hit = Some((u, n));
+                    }
+
+                    let p_u = player_hit.map_or(f32::INFINITY, |(u, _)| u);
+                    if p_u <= world_u && p_u <= 1.0 {
+                        let hit_pt = seg_from.lerp(end_pos, p_u);
                         if *player_iframes == 0 {
                             *player_health = player_health.saturating_sub(1);
                             *player_iframes = PLAYER_HURT_IFRAMES;
-                            *player_knockback += proj.dir.normalized() * SHOOTER_BOLT_KNOCKBACK;
+                            *player_knockback += vel_dir.xy().normalized() * SHOOTER_BOLT_KNOCKBACK;
                             events.push(ActionEvent::PlayerHurt {
-                                at: player_pose.position,
+                                at: player_body.position,
                                 floor: player_pose.floor,
                                 damage: 1,
                                 remaining_hp: *player_health,
-                                from: proj.pos,
+                                from: hit_pt,
                             });
                         }
                         remove = true;
                         break;
                     }
+
+                    if let Some(hit) = world_hit {
+                        match hit.surface {
+                            HitSurface::Collider(ColliderKind::WindowGlass { tile }) => {
+                                if last_shattered_window != Some(tile) {
+                                    last_shattered_window = Some(tile);
+                                    let _ = apply_bullet_tile_hit_3d(
+                                        world,
+                                        tile,
+                                        hit.point,
+                                        hit.normal,
+                                        DamageKind::Bullet,
+                                        events,
+                                        noises,
+                                    );
+                                }
+                                let next_u = (world_u + 0.04 / seg_len).min(1.0);
+                                seg_from = seg_from.lerp(end_pos, next_u);
+                                continue;
+                            }
+                            HitSurface::Collider(
+                                ColliderKind::Wall { tile }
+                                | ColliderKind::ClosedDoor { tile }
+                                | ColliderKind::WindowSill { tile, .. }
+                                | ColliderKind::Prop { tile, .. },
+                            ) => {
+                                let _ = apply_bullet_tile_hit_3d(
+                                    world,
+                                    tile,
+                                    hit.point,
+                                    hit.normal,
+                                    DamageKind::Bullet,
+                                    events,
+                                    noises,
+                                );
+                                remove = true;
+                                break;
+                            }
+                            _ => {
+                                remove = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    break;
                 }
             }
         }
 
-        if !remove && proj.remaining_range <= 0.001 {
-            if proj.kind == ProjectileKind::Rocket {
-                detonate_rocket(
-                    world,
-                    proj.pos,
-                    proj.floor,
-                    player_pose,
-                    player_health,
-                    player_iframes,
-                    player_knockback,
-                    monsters,
-                    events,
-                    noises,
-                );
+        if !remove {
+            proj.position = end_pos;
+            proj.floor = semantic_floor_at_point(world, proj.position);
+            let tile = Tile3D::from_vec2(proj.position.xy(), proj.floor);
+
+            let out_of_bounds = !in_world_bounds(world, tile)
+                || (proj.kind == ProjectileKind::ShooterBolt
+                    && proj.velocity.z > 0.0
+                    && proj.position.z > (max_floor as f32 + 0.8) * FLOOR_H);
+            if out_of_bounds || proj.remaining_range <= 0.001 {
+                if proj.kind == ProjectileKind::Rocket {
+                    detonate_rocket_3d(
+                        world,
+                        proj.position,
+                        -vel_dir,
+                        player_pose,
+                        player_body,
+                        player_health,
+                        player_iframes,
+                        player_knockback,
+                        monsters,
+                        events,
+                        noises,
+                    );
+                }
+                remove = true;
             }
-            remove = true;
         }
 
         if remove {
@@ -1363,12 +1691,30 @@ pub fn step_projectiles(
     }
 }
 
+/// Returns `true` when `QueryFilter::LINE_OF_SIGHT` encounters terrain, a floor slab,
+/// bridge deck, wall, or closed door between `origin` and `target`.
+pub(crate) fn is_blast_occluded_3d(world: &dyn CombatWorld, origin: Vec3, target: Vec3) -> bool {
+    let delta = target - origin;
+    let dist = delta.length();
+    if dist <= 0.08 {
+        return false;
+    }
+    world
+        .raycast_filtered(
+            Ray3::new(origin, delta * (1.0 / dist)),
+            dist - 0.04,
+            QueryFilter::LINE_OF_SIGHT,
+        )
+        .is_some()
+}
+
 #[allow(clippy::too_many_arguments)]
-fn detonate_rocket(
+fn detonate_rocket_3d(
     world: &mut dyn CombatWorld,
-    center: Vec2,
-    floor: Floor,
+    center: Vec3,
+    blast_normal: Vec3,
     player_pose: Pose,
+    player_body: BodyState,
     player_health: &mut u8,
     player_iframes: &mut u8,
     player_knockback: &mut Vec2,
@@ -1377,6 +1723,9 @@ fn detonate_rocket(
     noises: &mut Vec<NoiseEvent>,
 ) {
     let spec = weapon_spec(Weapon::RocketLauncher);
+    let (_, _, num_floors) = world.bounds();
+    let floor = semantic_floor_at_point(world, center);
+    let ray_origin = center + blast_normal * 0.06;
 
     world.register_dynamic_flash(center, floor, 7.5, 220, 10);
     events.push(ActionEvent::RocketBlast {
@@ -1385,57 +1734,96 @@ fn detonate_rocket(
         radius: ROCKET_BLAST_RADIUS,
     });
     noises.push(NoiseEvent {
-        origin: center,
+        origin: center.xy(),
+        origin_z: center.z,
         floor,
         radius: ROCKET_BLAST_NOISE_RADIUS,
         priority: 6,
         kind: NoiseKind::RocketBlast,
     });
 
-    // Damage terrain: core breach within ROCKET_BREACH_RADIUS, splash out to ROCKET_BLAST_RADIUS.
+    // Step 1: Damage tiles inside the 3D blast sphere across overlapping vertical floor bands.
     let cx = center.x.round() as i32;
     let cy = center.y.round() as i32;
-    for dy in -3..=3 {
-        for dx in -3..=3 {
-            let tile = Tile3D::new(cx + dx, cy + dy, floor);
-            if !in_world_bounds(world, tile) {
-                continue;
-            }
-            let dist = center.distance(tile.center());
-            if dist > ROCKET_BLAST_RADIUS {
-                continue;
-            }
-            let kind = if dist <= ROCKET_BREACH_RADIUS {
-                DamageKind::RocketBlast
-            } else {
-                DamageKind::RocketSplash
-            };
-            if let Some(res) = world.damage_tile(tile, kind) {
-                if res.damaged {
-                    emit_tile_damage_effects(tile, tile.center(), res, events, noises);
+    let gz_center = world.terrain_at(center.xy()).map_or(0.0, |t| t.z);
+    for fl in 0..num_floors {
+        let z_band_base = gz_center + fl as f32 * FLOOR_H;
+        if center.z + ROCKET_BLAST_RADIUS < z_band_base
+            || center.z - ROCKET_BLAST_RADIUS > z_band_base + WALL_HEIGHT
+        {
+            continue;
+        }
+        for dy in -3..=3 {
+            for dx in -3..=3 {
+                let tile = Tile3D::new(cx + dx, cy + dy, fl);
+                if !in_world_bounds(world, tile) {
+                    continue;
+                }
+                let tile_gz = world.terrain_at(tile.center()).map_or(gz_center, |t| t.z);
+                let tile_z_base = tile_gz + fl as f32 * FLOOR_H;
+                let closest_z = center.z.clamp(tile_z_base, tile_z_base + FLOOR_H);
+                let tile_pt = tile.center().extend(closest_z);
+                let dist3 = center.distance(tile_pt);
+                if dist3 > ROCKET_BLAST_RADIUS {
+                    continue;
+                }
+                if fl != floor
+                    && is_blast_occluded_3d(
+                        world,
+                        ray_origin,
+                        tile.center().extend(tile_z_base + 0.55),
+                    )
+                {
+                    continue;
+                }
+                let kind = if dist3 <= ROCKET_BREACH_RADIUS {
+                    DamageKind::RocketBlast
+                } else {
+                    DamageKind::RocketSplash
+                };
+                if let Some(res) = world.damage_tile(tile, kind)
+                    && res.damaged
+                {
+                    emit_tile_damage_effects(tile, tile_pt, Vec3::Z, res, events, noises);
                 }
             }
         }
     }
 
-    // Damage monsters with smooth falloff (10 core -> 4 rim at 2.4 tiles).
+    // Step 2: Damage monsters with 3D distance falloff and line-of-sight occlusion.
     let mut chain_bloaters: Vec<usize> = Vec::new();
     for (i, m) in monsters.iter_mut().enumerate() {
-        if !m.is_alive() || m.floor != floor {
+        if !m.is_alive() {
             continue;
         }
-        let dist = m.pos.distance(center);
-        if dist > ROCKET_BLAST_RADIUS + m.radius() {
+        let m_foot_z = m.body.position.z;
+        let m_h = m.spec().height;
+        let closest_z = center.z.clamp(
+            m_foot_z + 0.15,
+            (m_foot_z + m_h - 0.15).max(m_foot_z + 0.15),
+        );
+        let actor_pt = m.body.position.xy().extend(closest_z);
+        let dist3 = center.distance(actor_pt);
+        if dist3 > ROCKET_BLAST_RADIUS + m.radius() {
             continue;
         }
-        let t = (dist / ROCKET_BLAST_RADIUS).clamp(0.0, 1.0);
+        let torso_pt = m.body.position.xy().extend(m_foot_z + m_h * 0.52);
+        if dist3 > m.radius() + ROCKET_RADIUS + 0.15
+            && is_blast_occluded_3d(world, ray_origin, torso_pt)
+        {
+            continue;
+        }
+
+        let t = (dist3 / ROCKET_BLAST_RADIUS).clamp(0.0, 1.0);
         let max_dmg = spec.monster_damage as f32;
         let min_dmg = ROCKET_MIN_DAMAGE as f32;
         let dmg = (max_dmg - (max_dmg - min_dmg) * t)
             .round()
             .clamp(min_dmg, max_dmg) as u8;
-        let dir = if dist > 0.001 {
-            (m.pos - center) * (1.0 / dist)
+        let diff_xy = m.body.position.xy() - center.xy();
+        let dist_xy = diff_xy.length();
+        let dir = if dist_xy > 0.001 {
+            diff_xy * (1.0 / dist_xy)
         } else {
             Vec2::new(1.0, 0.0)
         };
@@ -1445,43 +1833,57 @@ fn detonate_rocket(
         }
     }
 
-    // Fair player self-damage (2 core inside 1.25, 1 in 1.25..=2.4) respecting iframes.
-    if player_pose.floor == floor {
-        let dist = player_pose.position.distance(center);
-        if dist <= ROCKET_BLAST_RADIUS {
-            let dmg = if dist <= ROCKET_SELF_CORE_RADIUS {
-                2
-            } else {
-                1
-            };
-            let dir = if dist > 0.001 {
-                (player_pose.position - center) * (1.0 / dist)
-            } else {
-                Vec2::new(1.0, 0.0)
-            };
-            let t = (dist / ROCKET_BLAST_RADIUS).clamp(0.0, 1.0);
-            *player_knockback += dir * (0.28 * (1.0 - 0.5 * t));
-            if *player_iframes == 0 {
-                *player_health = player_health.saturating_sub(dmg);
-                *player_iframes = PLAYER_HURT_IFRAMES;
-                events.push(ActionEvent::PlayerHurt {
-                    at: player_pose.position,
-                    floor: player_pose.floor,
-                    damage: dmg,
-                    remaining_hp: *player_health,
-                    from: center,
-                });
-            }
+    // Fair player self-damage (2 core inside 1.25, 1 in 1.25..=2.4) respecting occlusion & iframes.
+    let p_foot_z = player_body.position.z;
+    let p_closest_z = center.z.clamp(
+        p_foot_z + 0.15,
+        (p_foot_z + PLAYER_SHAPE.height - 0.15).max(p_foot_z + 0.15),
+    );
+    let p_pt = player_body.position.xy().extend(p_closest_z);
+    let p_dist3 = center.distance(p_pt);
+    let p_torso = player_body
+        .position
+        .xy()
+        .extend(p_foot_z + PLAYER_SHAPE.height * 0.52);
+    if p_dist3 <= ROCKET_BLAST_RADIUS
+        && (p_dist3 <= PLAYER_SHAPE.radius + ROCKET_RADIUS + 0.15
+            || !is_blast_occluded_3d(world, ray_origin, p_torso))
+    {
+        let dmg = if p_dist3 <= ROCKET_SELF_CORE_RADIUS {
+            2
+        } else {
+            1
+        };
+        let diff_xy = player_body.position.xy() - center.xy();
+        let dist_xy = diff_xy.length();
+        let dir = if dist_xy > 0.001 {
+            diff_xy * (1.0 / dist_xy)
+        } else {
+            Vec2::new(1.0, 0.0)
+        };
+        let t = (p_dist3 / ROCKET_BLAST_RADIUS).clamp(0.0, 1.0);
+        *player_knockback += dir * (0.28 * (1.0 - 0.5 * t));
+        if *player_iframes == 0 {
+            *player_health = player_health.saturating_sub(dmg);
+            *player_iframes = PLAYER_HURT_IFRAMES;
+            events.push(ActionEvent::PlayerHurt {
+                at: player_body.position,
+                floor: player_pose.floor,
+                damage: dmg,
+                remaining_hp: *player_health,
+                from: center,
+            });
         }
     }
 
     // Trigger immediate chain detonations for any explosively killed Bloaters.
     for bloater_idx in chain_bloaters {
-        ai::detonate_bloater(
+        ai::detonate_bloater_3d(
             world,
             monsters,
             bloater_idx,
             player_pose,
+            player_body.position,
             player_health,
             player_iframes,
             player_knockback,
@@ -1492,61 +1894,57 @@ fn detonate_rocket(
     }
 }
 
+#[allow(dead_code)]
 pub fn is_rocket_danger_close(world: &dyn CombatWorld, player: Pose, monsters: &[Monster]) -> bool {
+    let (pz, sup, _) = resolve_actor_support(world, player.position, player.floor);
+    let player_body = BodyState::from_pose_2d(player.position, player.facing, pz, sup);
+    is_rocket_danger_close_3d(world, player, player_body, monsters)
+}
+
+pub(crate) fn is_rocket_danger_close_3d(
+    world: &dyn CombatWorld,
+    player: Pose,
+    player_body: BodyState,
+    monsters: &[Monster],
+) -> bool {
     let dir = player.facing.normalized();
     if dir.length_squared() <= 0.01 {
         return false;
     }
 
-    // Any living monster intersecting the aim line within blast radius is danger close.
+    let range = weapon_spec(Weapon::RocketLauncher).range;
+    let (muzzle, aim_dir3) =
+        compute_player_aim_3d(world, player_body, player.floor, dir, range, monsters);
+    let end = muzzle + aim_dir3 * ROCKET_BLAST_RADIUS;
+
+    // Any living monster swept within blast radius is danger close.
     for m in monsters {
-        if !m.is_alive() || m.floor != player.floor {
+        if !m.is_alive() {
             continue;
         }
-        let r = m.radius() + ROCKET_RADIUS;
-        let oc = m.pos - player.position;
-        let proj = oc.dot(dir);
-        let perp_sq = oc.length_squared() - proj * proj;
-        if perp_sq > r * r {
-            continue;
-        }
-        let half_chord = (r * r - perp_sq).max(0.0).sqrt();
-        let t_hit = (proj - half_chord).max(0.0);
-        if proj + half_chord >= 0.0 && t_hit <= ROCKET_BLAST_RADIUS {
+        let m_body = m.resolved_body(world);
+        if sweep_sphere_cylinder(
+            muzzle,
+            end,
+            ROCKET_RADIUS,
+            m_body.position.xy(),
+            m.radius(),
+            m_body.position.z,
+            m_body.position.z + m.spec().height,
+        )
+        .is_some()
+        {
             return true;
         }
     }
 
-    // Any solid terrain / intact window along the aim ray within blast radius is danger close.
-    let start_tile = Tile3D::from_vec2(player.position, player.floor);
-    let steps = (ROCKET_BLAST_RADIUS / 0.08).ceil() as usize;
-    for i in 1..=steps {
-        let t = (i as f32 * 0.08).min(ROCKET_BLAST_RADIUS);
-        let p = player.position + dir * t;
-        let tile = Tile3D::from_vec2(p, player.floor);
-        if tile == start_tile {
-            continue;
-        }
-        if !in_world_bounds(world, tile) {
-            return true;
-        }
-        if matches!(
-            world.obstruction(tile),
-            TileObstruction::Wall(_)
-                | TileObstruction::DoorClosed
-                | TileObstruction::LowProp(_)
-                | TileObstruction::IntactWindow
-        ) {
-            return true;
-        }
-    }
-
-    false
+    world.sphere_cast(muzzle, end, ROCKET_RADIUS).is_some()
 }
 
 pub(crate) fn emit_tile_damage_effects(
     tile: Tile3D,
-    hit_pos: Vec2,
+    hit_pos: Vec3,
+    hit_normal: Vec3,
     res: TileDamageResult,
     events: &mut Vec<ActionEvent>,
     noises: &mut Vec<NoiseEvent>,
@@ -1554,12 +1952,16 @@ pub(crate) fn emit_tile_damage_effects(
     events.push(ActionEvent::MaterialHit {
         at: tile,
         hit_pos,
+        hit_normal,
         material: res.material,
         destroyed: res.destroyed,
         light_changed: res.light_changed,
     });
     if res.collapsed_cells > 0 {
-        events.push(ActionEvent::StructuralCollapse { at: tile });
+        events.push(ActionEvent::StructuralCollapse {
+            at: tile,
+            pos: hit_pos,
+        });
     }
     if res.sound_radius > 0.0 {
         let (kind, priority) = if res.collapsed_cells > 0 {
@@ -1572,7 +1974,8 @@ pub(crate) fn emit_tile_damage_effects(
             (NoiseKind::AxeSwing, 2)
         };
         noises.push(NoiseEvent {
-            origin: hit_pos,
+            origin: hit_pos.xy(),
+            origin_z: hit_pos.z,
             floor: tile.floor,
             radius: res.sound_radius,
             priority,
@@ -1590,8 +1993,13 @@ fn in_world_bounds(world: &dyn CombatWorld, tile: Tile3D) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Position;
     use crate::action::types::{BuildingId, MonsterId, MonsterKind, TileKind};
+    use crate::spatial::{
+        Aabb3, Collider, SLAB_THICKNESS, SpatialWorld, SupportId, SupportSurface, SurfaceQuad,
+        TerrainSample, TerrainTriangle, WALL_HALF_THICKNESS, WINDOW_LINTEL_Z, WINDOW_SILL_HEIGHT,
+        world_to_tile_coord,
+    };
+    use crate::{Position, Surface};
     use std::collections::HashMap;
 
     struct MockWorld {
@@ -1601,7 +2009,7 @@ mod tests {
         version: u64,
         tiles: HashMap<Tile3D, (TileObstruction, u16)>,
         missing_floors: HashMap<Tile3D, bool>,
-        flashes: Vec<(Vec2, Floor, f32, u8, u8)>,
+        flashes: Vec<(Vec3, Floor, f32, u8, u8)>,
     }
 
     impl MockWorld {
@@ -1623,6 +2031,256 @@ mod tests {
 
         fn set_no_floor(&mut self, tile: Tile3D) {
             self.missing_floors.insert(tile, true);
+        }
+
+        fn is_wall_like(&self, tile: Tile3D) -> bool {
+            matches!(
+                self.obstruction(tile),
+                TileObstruction::Wall(_)
+                    | TileObstruction::DoorClosed
+                    | TileObstruction::IntactWindow
+                    | TileObstruction::BrokenWindow
+            )
+        }
+    }
+
+    impl SpatialWorld for MockWorld {
+        fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+            let tx = world_to_tile_coord(xy.x);
+            let ty = world_to_tile_coord(xy.y);
+            if tx < 0 || tx >= self.width || ty < 0 || ty >= self.height {
+                return None;
+            }
+            Some(TerrainSample {
+                z: 0.0,
+                normal: Vec3::Z,
+                tile: Position::new(tx, ty),
+                water_z: None,
+                triangle: TerrainTriangle::LowerRight,
+            })
+        }
+
+        fn supports_at(&self, xy: Vec2, out: &mut Vec<SupportSurface>) {
+            out.clear();
+            let Some(terrain) = self.terrain_at(xy) else {
+                return;
+            };
+            let p = terrain.tile;
+            if self.has_floor(Tile3D::from_pos(p, 0)) {
+                out.push(SupportSurface {
+                    id: SupportId::Terrain,
+                    z: 0.0,
+                    normal: Vec3::Z,
+                    walkable: true,
+                    is_stair: false,
+                    floor: 0,
+                    surface: Surface::Grass,
+                    water_z: None,
+                });
+            }
+            for fl in 1..self.floors {
+                let t = Tile3D::from_pos(p, fl);
+                if self.has_floor(t) {
+                    out.push(SupportSurface {
+                        id: SupportId::Floor(t),
+                        z: fl as f32 * FLOOR_H,
+                        normal: Vec3::Z,
+                        walkable: true,
+                        is_stair: false,
+                        floor: fl,
+                        surface: Surface::WoodFloor,
+                        water_z: None,
+                    });
+                }
+            }
+        }
+
+        fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+            out.clear();
+            let (min_tile, max_tile) = bounds.tile_bounds();
+            let push_if = |out: &mut Vec<Collider>, c: Collider| {
+                if c.bounds.intersects(bounds) {
+                    out.push(c);
+                }
+            };
+            for ty in min_tile.y..=max_tile.y {
+                for tx in min_tile.x..=max_tile.x {
+                    if tx < 0 || tx >= self.width || ty < 0 || ty >= self.height {
+                        push_if(
+                            out,
+                            Collider {
+                                bounds: Aabb3::new(
+                                    Vec3::new(tx as f32 - 0.5, ty as f32 - 0.5, -10.0),
+                                    Vec3::new(tx as f32 + 0.5, ty as f32 + 0.5, 20.0),
+                                ),
+                                kind: ColliderKind::Wall {
+                                    tile: Tile3D::new(tx, ty, 0),
+                                },
+                                material: Material::BrickMasonry,
+                            },
+                        );
+                        continue;
+                    }
+                    let fx = tx as f32;
+                    let fy = ty as f32;
+                    for fl in 0..self.floors {
+                        let tile = Tile3D::new(tx, ty, fl);
+                        let z_base = fl as f32 * FLOOR_H;
+                        let z_top = z_base
+                            + if fl + 1 < self.floors {
+                                WALL_HEIGHT
+                            } else {
+                                FLOOR_H
+                            };
+                        match self.obstruction(tile) {
+                            TileObstruction::Wall(mat) => {
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(fx - 0.5, fy - 0.5, z_base),
+                                            Vec3::new(fx + 0.5, fy + 0.5, z_top),
+                                        ),
+                                        kind: ColliderKind::Wall { tile },
+                                        material: mat,
+                                    },
+                                );
+                            }
+                            TileObstruction::DoorClosed => {
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(fx - 0.5, fy - 0.5, z_base),
+                                            Vec3::new(fx + 0.5, fy + 0.5, z_top),
+                                        ),
+                                        kind: ColliderKind::ClosedDoor { tile },
+                                        material: Material::WoodDoor,
+                                    },
+                                );
+                            }
+                            TileObstruction::IntactWindow | TileObstruction::BrokenWindow => {
+                                let broken =
+                                    self.obstruction(tile) == TileObstruction::BrokenWindow;
+                                let has_x = self.is_wall_like(Tile3D::new(tx - 1, ty, fl))
+                                    || self.is_wall_like(Tile3D::new(tx + 1, ty, fl));
+                                let has_y = self.is_wall_like(Tile3D::new(tx, ty - 1, fl))
+                                    || self.is_wall_like(Tile3D::new(tx, ty + 1, fl));
+                                let along_y = has_y || !has_x;
+                                let (x0, x1, y0, y1) = if along_y {
+                                    (
+                                        fx - WALL_HALF_THICKNESS,
+                                        fx + WALL_HALF_THICKNESS,
+                                        fy - 0.5,
+                                        fy + 0.5,
+                                    )
+                                } else {
+                                    (
+                                        fx - 0.5,
+                                        fx + 0.5,
+                                        fy - WALL_HALF_THICKNESS,
+                                        fy + WALL_HALF_THICKNESS,
+                                    )
+                                };
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(x0, y0, z_base),
+                                            Vec3::new(x1, y1, z_base + WINDOW_SILL_HEIGHT),
+                                        ),
+                                        kind: ColliderKind::WindowSill { tile, broken },
+                                        material: Material::WoodSiding,
+                                    },
+                                );
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(x0, y0, z_base + WINDOW_LINTEL_Z),
+                                            Vec3::new(x1, y1, z_top),
+                                        ),
+                                        kind: ColliderKind::Wall { tile },
+                                        material: Material::WoodSiding,
+                                    },
+                                );
+                                if !broken {
+                                    push_if(
+                                        out,
+                                        Collider {
+                                            bounds: Aabb3::new(
+                                                Vec3::new(x0, y0, z_base + WINDOW_SILL_HEIGHT),
+                                                Vec3::new(x1, y1, z_base + WINDOW_LINTEL_Z),
+                                            ),
+                                            kind: ColliderKind::WindowGlass { tile },
+                                            material: Material::Glass,
+                                        },
+                                    );
+                                }
+                            }
+                            TileObstruction::LowProp(mat) => {
+                                push_if(
+                                    out,
+                                    Collider {
+                                        bounds: Aabb3::new(
+                                            Vec3::new(fx - 0.38, fy - 0.38, z_base),
+                                            Vec3::new(fx + 0.38, fy + 0.38, z_base + 0.78),
+                                        ),
+                                        kind: ColliderKind::Prop { tile, prop: None },
+                                        material: mat,
+                                    },
+                                );
+                            }
+                            TileObstruction::Open => {}
+                        }
+                        if fl >= 1 && self.has_floor(tile) {
+                            push_if(
+                                out,
+                                Collider {
+                                    bounds: Aabb3::new(
+                                        Vec3::new(fx - 0.5, fy - 0.5, z_base - SLAB_THICKNESS),
+                                        Vec3::new(fx + 0.5, fy + 0.5, z_base),
+                                    ),
+                                    kind: ColliderKind::BuildingSlab {
+                                        floor: fl,
+                                        building_id: 0,
+                                        is_roof: false,
+                                    },
+                                    material: Material::None,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        fn surface_quads_in(
+            &self,
+            min_tile: Position,
+            max_tile: Position,
+            out: &mut Vec<SurfaceQuad>,
+        ) {
+            out.clear();
+            for ty in min_tile.y..=max_tile.y {
+                for tx in min_tile.x..=max_tile.x {
+                    if tx < 0 || tx >= self.width || ty < 0 || ty >= self.height {
+                        continue;
+                    }
+                    let p = Position::new(tx, ty);
+                    if self.has_floor(Tile3D::from_pos(p, 0)) {
+                        out.push(SurfaceQuad {
+                            surface: HitSurface::Terrain { tile: p },
+                            x0: tx as f32 - 0.5,
+                            y0: ty as f32 - 0.5,
+                            x1: tx as f32 + 0.5,
+                            y1: ty as f32 + 0.5,
+                            corners: [0.0; 4],
+                            material: Material::None,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -1758,7 +2416,7 @@ mod tests {
 
         fn register_dynamic_flash(
             &mut self,
-            pos: Vec2,
+            pos: Vec3,
             floor: Floor,
             radius: f32,
             intensity: u8,
@@ -2272,11 +2930,11 @@ mod tests {
         assert!(events.iter().any(|e| matches!(
             e,
             ActionEvent::BulletTrace {
-                from_z,
-                to_z,
+                from,
+                to,
                 hit_material: MaterialCategory::Flesh,
                 ..
-            } if (*from_z - 1.0).abs() < 0.01 && to_z.abs() < 0.01
+            } if from.z > FLOOR_H && to.z < FLOOR_H && from.z > to.z
         )));
     }
 
@@ -2409,12 +3067,9 @@ mod tests {
             id: ProjectileId(9),
             kind: ProjectileKind::ShooterBolt,
             owner_is_player: false,
-            pos: Vec2::new(5.0, 5.0),
-            dir: Vec2::new(1.0, 0.0),
+            position: Vec3::new(5.0, 5.0, SHOOTER_MUZZLE_HEIGHT),
+            velocity: Vec3::new(SHOOTER_BOLT_SPEED, 0.0, 0.0),
             floor: 0,
-            z: 0.0,
-            vz: 0.0,
-            speed: SHOOTER_BOLT_SPEED,
             radius: SHOOTER_BOLT_RADIUS,
             remaining_range: SHOOTER_BOLT_RANGE,
         };

@@ -2,7 +2,7 @@ use std::{mem, slice};
 
 use zombiebox_core::{
     ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionOutcome, FloorTransition,
-    Material, ProjectileKind, Tile3D, Vec2, Weapon,
+    Material, ProjectileKind, Tile3D, Vec2, Vec3, Weapon,
 };
 use zombiebox_render::{Renderer, screen_vector_to_world};
 
@@ -447,6 +447,7 @@ fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
             ActionEvent::StructuralCollapse { .. } => mask |= ZB_SFX_STRUCTURAL_BREACH,
             ActionEvent::DoorToggled { .. } => mask |= ZB_SFX_DOOR_TOGGLE,
             ActionEvent::WindowClimbed { .. } => mask |= ZB_SFX_WINDOW_CLIMB,
+            ActionEvent::Footstep { .. } | ActionEvent::ActorLanded { .. } => {}
             ActionEvent::WeaponSwitched { .. } => mask |= ZB_SFX_WEAPON_SWITCH,
             ActionEvent::ReloadStarted { .. } => mask |= ZB_SFX_RELOAD_START,
             ActionEvent::ReloadCompleted { .. } => mask |= ZB_SFX_RELOAD_FINISH,
@@ -697,7 +698,7 @@ mod tests {
     fn events_to_sfx_mask_maps_all_categories() {
         let events = [
             ActionEvent::AxeSwing {
-                from: Vec2::ZERO,
+                from: Vec3::ZERO,
                 floor: 0,
                 facing: Vec2::new(1.0, 0.0),
                 hit_flesh: true,
@@ -705,49 +706,56 @@ mod tests {
             },
             ActionEvent::ShotFired {
                 weapon: Weapon::Shotgun,
-                from: Vec2::ZERO,
+                from: Vec3::ZERO,
+                muzzle: Vec3::ZERO,
                 floor: 0,
                 facing: Vec2::new(1.0, 0.0),
+                dir: Vec3::X,
             },
             ActionEvent::ProjectileLaunched {
                 id: ProjectileId(1),
                 kind: ProjectileKind::ShooterBolt,
-                from: Vec2::ZERO,
+                from: Vec3::ZERO,
                 floor: 0,
                 dir: Vec2::new(-1.0, 0.0),
+                velocity: Vec3::new(-10.0, 0.0, 0.0),
             },
             ActionEvent::RocketBlast {
-                at: Vec2::ZERO,
+                at: Vec3::ZERO,
                 floor: 0,
                 radius: 2.4,
             },
             ActionEvent::MaterialHit {
                 at: Tile3D::default(),
-                hit_pos: Vec2::ZERO,
+                hit_pos: Vec3::ZERO,
+                hit_normal: Vec3::Z,
                 material: Material::Glass,
                 destroyed: true,
                 light_changed: false,
             },
             ActionEvent::MaterialHit {
                 at: Tile3D::default(),
-                hit_pos: Vec2::ZERO,
+                hit_pos: Vec3::ZERO,
+                hit_normal: Vec3::Z,
                 material: Material::MetalPole,
                 destroyed: true,
                 light_changed: true,
             },
             ActionEvent::MaterialHit {
                 at: Tile3D::default(),
-                hit_pos: Vec2::ZERO,
+                hit_pos: Vec3::ZERO,
+                hit_normal: Vec3::Z,
                 material: Material::BrickMasonry,
                 destroyed: true,
                 light_changed: false,
             },
             ActionEvent::Looted {
                 at: Tile3D::default(),
+                pos: Vec3::ZERO,
                 loot: CacheLoot::default(),
             },
             ActionEvent::Healed {
-                at: Vec2::ZERO,
+                at: Vec3::ZERO,
                 floor: 0,
                 amount: 3,
                 new_health: 6,
@@ -755,14 +763,16 @@ mod tests {
             ActionEvent::MonsterDown {
                 id: MonsterId(1),
                 kind: MonsterKind::Shambler,
-                at: Vec2::ZERO,
+                at: Vec3::ZERO,
                 floor: 0,
+                facing: Vec2::new(1.0, 0.0),
                 overkill: false,
             },
             ActionEvent::FloorChanged {
                 from_floor: 0,
                 to_floor: 1,
                 at: Tile3D::default(),
+                pos: Vec3::ZERO,
                 via: FloorTransition::Stairs,
             },
             ActionEvent::Won,
