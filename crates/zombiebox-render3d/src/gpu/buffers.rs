@@ -1,8 +1,9 @@
-//! wgpu vertex layouts, GpuMesh, ChunkMeshPool, and DynamicInstanceBuffer (`T03`).
+//! wgpu vertex layouts, GpuMesh, and instance batch descriptors (`T03`).
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::coords::{ChunkCoord, RenderAabb};
 use crate::mesh::{MeshBuffer, VertexMeta, WorldVertex};
@@ -201,6 +202,16 @@ pub struct InstanceBatch<'a> {
     pub instances: &'a [InstanceRaw],
 }
 
+/// A batch whose instances already live in a stable range of the GPU instance buffer.
+///
+/// Draw calls must reference this range instead of assuming the batch starts at
+/// offset zero: every batch in a frame shares one buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedInstanceBatch {
+    pub mesh: PrototypeMeshId,
+    pub instance_range: Range<u32>,
+}
+
 #[derive(Debug)]
 pub struct ChunkGpuSlot {
     pub coord: ChunkCoord,
@@ -283,53 +294,5 @@ impl ChunkMeshPool {
         let mut coords: Vec<ChunkCoord> = self.slots.keys().copied().collect();
         coords.sort();
         coords
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct DynamicInstanceBuffer {
-    buffer: Option<wgpu::Buffer>,
-    capacity: usize,
-    scratch: Vec<InstanceRaw>,
-}
-
-impl DynamicInstanceBuffer {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn update_buffer(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[InstanceRaw],
-        label: &str,
-    ) {
-        self.scratch.clear();
-        self.scratch.extend_from_slice(instances);
-        if self.scratch.is_empty() {
-            return;
-        }
-        let needed = self.scratch.len();
-        if needed > self.capacity || self.buffer.is_none() {
-            let new_cap = needed.max(64).next_power_of_two();
-            let size = (new_cap * std::mem::size_of::<InstanceRaw>()) as wgpu::BufferAddress;
-            self.buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
-            self.capacity = new_cap;
-        }
-        if let Some(buf) = &self.buffer {
-            queue.write_buffer(buf, 0, bytemuck::cast_slice(&self.scratch));
-        }
-    }
-
-    #[must_use]
-    pub fn buffer(&self) -> Option<&wgpu::Buffer> {
-        self.buffer.as_ref()
     }
 }

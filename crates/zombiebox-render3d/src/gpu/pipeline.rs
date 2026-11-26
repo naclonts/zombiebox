@@ -3,9 +3,10 @@
 use glam::{UVec2, Vec3};
 
 use super::buffers::{
-    ChunkMeshPool, DynamicInstanceBuffer, GpuMesh, InstanceBatch, InstanceRaw, PrototypeMeshId,
-    instance_raw_layout, world_vertex_layout,
+    ChunkMeshPool, GpuMesh, InstanceBatch, InstanceRaw, PrototypeMeshId, instance_raw_layout,
+    world_vertex_layout,
 };
+use super::instance_buffer::DynamicInstanceBuffer;
 use super::uniforms::{SceneLightingUniforms, UpscaleUniforms};
 use super::{GpuContext, GpuError, OffscreenTarget};
 use crate::RgbaImage;
@@ -644,6 +645,16 @@ impl GpuRenderer {
                 label: Some("render_encoder"),
             });
 
+        // Pack every instanced batch into one upload up front. Each draw call
+        // below gets its own stable range, because command encoding does not
+        // snapshot the buffer contents.
+        let prepared_batches = self.dynamic_instance_buffer.prepare_batches(
+            &ctx.device,
+            &ctx.queue,
+            instances,
+            "instance_buffer",
+        );
+
         let mut chunks_drawn = 0_u32;
         let mut chunks_culled = 0_u32;
         let mut prototype_batches_drawn = 0_u32;
@@ -724,32 +735,24 @@ impl GpuRenderer {
                 }
             }
 
-            // Draw instanced batches
-            for batch in instances {
-                if batch.instances.is_empty() {
-                    continue;
-                }
-                if let Some(proto) = self.prototypes.get(batch.mesh.0 as usize) {
-                    self.dynamic_instance_buffer.update_buffer(
-                        &ctx.device,
-                        &ctx.queue,
-                        batch.instances,
-                        "instance_buffer",
+            // Draw instanced batches from their own slices of the shared buffer
+            if let Some(inst_buf) = self.dynamic_instance_buffer.buffer() {
+                pass.set_vertex_buffer(1, inst_buf.slice(..));
+                for batch in &prepared_batches {
+                    let Some(proto) = self.prototypes.get(batch.mesh.0 as usize) else {
+                        continue;
+                    };
+                    pass.set_vertex_buffer(0, proto.mesh.vertex_buffer.slice(..));
+                    pass.set_index_buffer(
+                        proto.mesh.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
                     );
-                    if let Some(inst_buf) = self.dynamic_instance_buffer.buffer() {
-                        pass.set_vertex_buffer(0, proto.mesh.vertex_buffer.slice(..));
-                        pass.set_vertex_buffer(1, inst_buf.slice(..));
-                        pass.set_index_buffer(
-                            proto.mesh.index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        let inst_count = batch.instances.len() as u32;
-                        pass.draw_indexed(0..proto.mesh.index_count, 0, 0..inst_count);
-                        prototype_batches_drawn += 1;
-                        instances_drawn += inst_count;
-                        triangles_submitted +=
-                            ((proto.mesh.index_count / 3) as u64) * (inst_count as u64);
-                    }
+                    let inst_count = batch.instance_range.end - batch.instance_range.start;
+                    pass.draw_indexed(0..proto.mesh.index_count, 0, batch.instance_range.clone());
+                    prototype_batches_drawn += 1;
+                    instances_drawn += inst_count;
+                    triangles_submitted +=
+                        ((proto.mesh.index_count / 3) as u64) * (inst_count as u64);
                 }
             }
 
@@ -886,6 +889,15 @@ impl GpuRenderer {
                 label: Some("surface_render_encoder"),
             });
 
+        // Same single-upload scheme as the offscreen path: every batch draws from
+        // its own range of the shared instance buffer.
+        let prepared_batches = self.dynamic_instance_buffer.prepare_batches(
+            &ctx.device,
+            &ctx.queue,
+            instances,
+            "instance_buffer",
+        );
+
         let mut chunks_drawn = 0_u32;
         let mut chunks_culled = 0_u32;
         let mut prototype_batches_drawn = 0_u32;
@@ -964,31 +976,23 @@ impl GpuRenderer {
                 }
             }
 
-            for batch in instances {
-                if batch.instances.is_empty() {
-                    continue;
-                }
-                if let Some(proto) = self.prototypes.get(batch.mesh.0 as usize) {
-                    self.dynamic_instance_buffer.update_buffer(
-                        &ctx.device,
-                        &ctx.queue,
-                        batch.instances,
-                        "instance_buffer",
+            if let Some(inst_buf) = self.dynamic_instance_buffer.buffer() {
+                pass.set_vertex_buffer(1, inst_buf.slice(..));
+                for batch in &prepared_batches {
+                    let Some(proto) = self.prototypes.get(batch.mesh.0 as usize) else {
+                        continue;
+                    };
+                    pass.set_vertex_buffer(0, proto.mesh.vertex_buffer.slice(..));
+                    pass.set_index_buffer(
+                        proto.mesh.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
                     );
-                    if let Some(inst_buf) = self.dynamic_instance_buffer.buffer() {
-                        pass.set_vertex_buffer(0, proto.mesh.vertex_buffer.slice(..));
-                        pass.set_vertex_buffer(1, inst_buf.slice(..));
-                        pass.set_index_buffer(
-                            proto.mesh.index_buffer.slice(..),
-                            wgpu::IndexFormat::Uint32,
-                        );
-                        let inst_count = batch.instances.len() as u32;
-                        pass.draw_indexed(0..proto.mesh.index_count, 0, 0..inst_count);
-                        prototype_batches_drawn += 1;
-                        instances_drawn += inst_count;
-                        triangles_submitted +=
-                            ((proto.mesh.index_count / 3) as u64) * (inst_count as u64);
-                    }
+                    let inst_count = batch.instance_range.end - batch.instance_range.start;
+                    pass.draw_indexed(0..proto.mesh.index_count, 0, batch.instance_range.clone());
+                    prototype_batches_drawn += 1;
+                    instances_drawn += inst_count;
+                    triangles_submitted +=
+                        ((proto.mesh.index_count / 3) as u64) * (inst_count as u64);
                 }
             }
 
