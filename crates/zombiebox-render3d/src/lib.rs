@@ -24,6 +24,12 @@ pub use mesh::{
     CardinalDir, EXTERIOR_FLOOR_SENTINEL, FaceMask, GeometryTag, MaterialFlags, MeshBuffer,
     MeshBuilder, MeshValidationError, RidgeAxis, VertexMeta, WorldVertex,
 };
+pub use scene::{
+    BuildingCutawayState, BuildingSnapshot, CacheSnapshot, CacheSyncMode, CachedChunk,
+    ChunkSnapshot, ChunkTerrainSnapshot, DirtyChunkDelta, DynamicSceneState, FloorCellSnapshot,
+    FrameSnapshot, LocalVisibilityGrid, PlayerSnapshot, SceneCache, SceneConfig, SceneManager,
+    TileSnapshot, VisibilityCell, halo_affected_chunks,
+};
 
 #[cfg(feature = "gpu")]
 pub use gpu::{
