@@ -26,6 +26,8 @@ For changes to the legacy browser encounter, play from the opening screen throug
 
 For 3D action rendering changes, inspect Birch Street outside and inside, then check a breach and stair transition. Switch cameras and confirm that undiscovered room content remains hidden. For county rendering changes, start seed `42` and cross a chunk edge during real-time play. Check residential streets, dense downtown, a multi-floor interior, and a rural or water crossing. Verify that streets, terrain, and building cutaways stay readable during movement. Use the atlas to revisit a chunk and confirm that searched caches and broken structures stay changed. Validate controls and frame pacing on a modest physical Android handset and record host, emulator, and handset results separately.
 
+The user confirmed that the 3D build works on a physical Android handset. The device model, exact playthrough coverage, and frame timing were not supplied, so the full handset completion checks remain open.
+
 The seed 42 browser action playtest verified movement, pause and resume, same-run atlas teleport to the hospital, and Birch Street selection. The visual review covered the residential spawn, downtown, hospital, police precinct, army base, and woods across browser and host renderer captures. The legacy browser encounter also passed a full clear and replay. [Android and host rendering results](../apps/mobile/README.md#verification)
 
 ## Planned milestones and completion checks

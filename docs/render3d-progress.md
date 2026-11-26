@@ -2,7 +2,7 @@
 
 * **Baseline Commit:** `daeff4a`  
 * **Toolchain / Environment:** `rustc 1.100.0`, `wgpu 30.0.1` (`0ef1bc386 2026-11-09`, MSRV `1.87`, `glam 0.27.0`, `bytemuck 1.25.2`, `winit 0.30.13`, `png 0.18.1`)
-* **Current Phase:** 3D action renderer cutover. Physical Android handset validation is open.
+* **Current Phase:** 3D action renderer cutover. The user confirmed the 3D build works on a physical Android handset; detailed handset validation remains open.
 
 ---
 
@@ -23,10 +23,10 @@
 | `T07` | Visibility, Cutaways & Shading | DONE | — | Gameplay room visibility, screen-door cutaways, dusk and point lighting. Verified Birch Street interior and GPU depth/shroud behavior. |
 | `T08` | Articulated Actors & Instanced Animation | DONE | — | Animated rigid-part actors, aim, hit and firing poses, temporary corpses, and batched draws. The 160-infected stress fixture submitted 220 instances before corpse events. |
 | `T09` | Effects, Obstruction & Interactive Desktop Viewer | DONE | — | Shared `Presentation`, transient effects, chase/orbit camera collision, interactive desktop viewer, and deterministic headless captures. |
-| `T10` | Android Native Integration | APK BUILT | — | `SurfaceView` worker, Android JNI GPU path, and five camera modes in Settings. Release APK compiled and linked for both ABIs. |
-| `T11` | Handset QA & Performance Tuning | HANDSET PENDING | — | Frame interval percentiles, frustum and light culling, adaptive resolution, and a host stress run. Physical handset performance remains open. |
+| `T10` | Android Native Integration | HANDSET SMOKE CONFIRMED | — | `SurfaceView` worker, Android JNI GPU path, and five camera modes in Settings. Release APK compiled and linked for both ABIs; the user confirmed the 3D build works on a physical Android handset. |
+| `T11` | Handset QA & Performance Tuning | DETAILED HANDSET QA PENDING | — | Physical handset operation is user-confirmed; device details, full playthrough, control and latency checks, thermal behavior, and frame pacing remain open. |
 | `T12` | Web GPU Action Host | DONE | — | Shared server GPU device and ZBF2 frame stream. Browser movement, camera changes, pause, atlas, Birch selection, and legacy replay passed. |
-| `T13` | Legacy Cutover & Cleanup | CODE CUTOVER | — | Removed the former action renderer and bitmap ABI. The turn-based browser encounter and county atlas remain available. |
+| `T13` | Legacy Cutover & Cleanup | CODE CUTOVER | — | Removed the former action renderer and bitmap ABI; the user confirmed the 3D build works on a physical Android handset. Detailed handset validation remains open. The turn-based browser encounter and county atlas remain available. |
 
 ---
 
@@ -57,4 +57,4 @@
 - **Browser.** A local Chrome run exercised seed 42 movement, isometric and overhead views, pause and resume, the county atlas, same-run hospital teleport, and Birch Street selection. The turn-based route completed the cache and combat encounter and replayed.
 - **Android build.** Offline `assembleRelease` produced `apps/mobile/build/zombiebox-android.apk` (SHA-256 `c7e3c7362fb681e5f23b0f10ef20b0f6bdbee860479bf4256aac9370cbd511f9`) with `arm64-v8a` and `x86_64` native libraries. The renderer requests the adapter’s surface resolution limits so a 2400×1080 swapchain can exceed the 2048-pixel downlevel default.
 - **Android emulator (final APK).** On an offline API 35 x86_64 emulator using SwiftShader at 2400×1080, seed 42 movement changed tile `(354, 163)` to `(352, 163)`. Aim input, Settings TOP camera, pause, Home, foreground, and resume retained the HUD location. The atlas then teleported the run to `(324, 175)` and returned to gameplay. One 118-sample log reported frame interval p50 100.98 ms, p95 153.52 ms, p99 172.24 ms at 67% resolution while other tools were running; the next window reported p95 139.81 ms. This is software-emulator evidence, not handset performance.
-- **Physical Android handset.** No handset was attached. The full Birch Street playthrough, touch/audio/haptic response, and sustained frame pacing are open. [Completion checks](product-decisions.md#planned-milestones-and-completion-checks)
+- **Physical Android handset.** The user confirmed that the 3D build works on a physical Android handset. Device model, exact playthrough coverage, and frame timing were not supplied. A full Birch Street clear, detailed controls and touch/audio/haptic latency checks, thermal behavior, and sustained frame pacing remain open. [Completion checks](product-decisions.md#planned-milestones-and-completion-checks)
