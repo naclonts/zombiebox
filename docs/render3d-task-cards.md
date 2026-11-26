@@ -13,7 +13,7 @@
 Copy-paste this into each agent session, filling in `<TASK_ID>`:
 
 ```text
-Hola! Implement task I <TASK_ID> from docs/render3d-task-cards.md.
+Hola! Implement task ID <TASK_ID> from docs/render3d-task-cards.md.
 Read:
 1. AGENTS.md
 2. docs/render3d-architecture.md
