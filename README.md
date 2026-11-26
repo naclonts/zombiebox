@@ -1,6 +1,10 @@
 # Zombiebox
 
-A single-player isometric action-adventure and zombie survival sandbox built for Android. The default run opens in a seeded 512 × 512 county with connected roads, towns, and wilderness. Explore on foot, search multi-floor buildings for supplies, and fight infected. Choose **Birch Street** to play the original destructible residential block encounter.
+This is a wip zombie survival sandbox game for Android or web browser. The world is procedurally generated.
+
+![in-game screenshot in firefox](./screenshot.png)
+
+> AI generated info below!
 
 ## Run the browser playtest
 
