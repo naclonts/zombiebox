@@ -365,6 +365,7 @@ impl CountyStage {
                     floors: 1,
                     style: BuildingStyle::ArmyBarracks,
                     front_door: door,
+                    foundation_z: b.foundation_z,
                 });
                 boxes[idx] = ArmySubBox {
                     id,
@@ -387,6 +388,7 @@ impl CountyStage {
                 floors: b.floors.min(COUNTY_FLOORS as u8),
                 style,
                 front_door: b.entry,
+                foundation_z: b.foundation_z,
             });
             BuildingReg::Single(id)
         };

@@ -46,6 +46,7 @@ impl IndexMut<Position> for ParcelTiles {
 struct Parcel {
     lot: Lot,
     template: u64,
+    foundation_z: f32,
     detail: OnceLock<(ParcelTiles, Sites)>,
 }
 
@@ -84,6 +85,7 @@ impl Parcels {
             parcels.push(Parcel {
                 lot,
                 template,
+                foundation_z: 0.0,
                 detail: OnceLock::new(),
             });
         }
@@ -94,6 +96,24 @@ impl Parcels {
         }
     }
 
+    pub(super) fn planned_pads(
+        &self,
+        seed: u64,
+        terrain: &[Tile],
+    ) -> Vec<(usize, sites::PlannedPad)> {
+        self.parcels
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, p)| {
+                sites::planned_pad(seed, &p.lot, p.template, terrain).map(|pad| (idx, pad))
+            })
+            .collect()
+    }
+
+    pub(super) fn set_foundation(&mut self, parcel_idx: usize, foundation_z: f32) {
+        self.parcels[parcel_idx].foundation_z = foundation_z;
+    }
+
     fn detail<'a>(
         &self,
         parcel: &'a Parcel,
@@ -102,7 +122,13 @@ impl Parcels {
     ) -> &'a (ParcelTiles, Sites) {
         parcel.detail.get_or_init(|| {
             let mut cells = ParcelTiles::new(parcel.lot, terrain);
-            let sites = sites::generate(seed, &parcel.lot, parcel.template, &mut cells);
+            let sites = sites::generate(
+                seed,
+                &parcel.lot,
+                parcel.template,
+                parcel.foundation_z,
+                &mut cells,
+            );
             dressing::generate(seed, &parcel.lot, &sites, &mut cells);
             (cells, sites)
         })

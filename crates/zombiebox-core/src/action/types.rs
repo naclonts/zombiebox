@@ -1,5 +1,6 @@
 //! Shared 2.5D types, world trait, input/HUD contracts, and gameplay events for `ActionGame`.
 
+pub use crate::spatial::Vec2;
 use crate::{District, Position};
 
 pub const ACTION_TICKS_PER_SECOND: u32 = 60;
@@ -29,94 +30,6 @@ pub const fn mix64(mut n: u64) -> u64 {
     n = (n ^ (n >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     n = (n ^ (n >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     n ^ (n >> 31)
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Vec2 {
-    pub x: f32,
-    pub y: f32,
-}
-
-impl Vec2 {
-    pub const ZERO: Self = Self { x: 0.0, y: 0.0 };
-
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-
-    #[inline]
-    pub fn length_squared(self) -> f32 {
-        self.x * self.x + self.y * self.y
-    }
-
-    #[inline]
-    pub fn length(self) -> f32 {
-        self.length_squared().sqrt()
-    }
-
-    #[inline]
-    pub fn normalized(self) -> Self {
-        let len = self.length();
-        if len > 0.0001 {
-            Self::new(self.x / len, self.y / len)
-        } else {
-            Self::ZERO
-        }
-    }
-
-    #[inline]
-    pub fn distance(self, other: Self) -> f32 {
-        (self - other).length()
-    }
-
-    #[inline]
-    pub fn dot(self, other: Self) -> f32 {
-        self.x * other.x + self.y * other.y
-    }
-
-    #[inline]
-    pub fn perp_dot(self, other: Self) -> f32 {
-        self.x * other.y - self.y * other.x
-    }
-
-    #[inline]
-    pub fn rotate(self, radians: f32) -> Self {
-        let (s, c) = radians.sin_cos();
-        Self::new(self.x * c - self.y * s, self.x * s + self.y * c)
-    }
-
-    #[inline]
-    pub fn tile(self) -> Position {
-        Position::new(self.x.round() as i32, self.y.round() as i32)
-    }
-}
-
-impl std::ops::Add for Vec2 {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        Self::new(self.x + rhs.x, self.y + rhs.y)
-    }
-}
-
-impl std::ops::AddAssign for Vec2 {
-    fn add_assign(&mut self, rhs: Self) {
-        self.x += rhs.x;
-        self.y += rhs.y;
-    }
-}
-
-impl std::ops::Sub for Vec2 {
-    type Output = Self;
-    fn sub(self, rhs: Self) -> Self {
-        Self::new(self.x - rhs.x, self.y - rhs.y)
-    }
-}
-
-impl std::ops::Mul<f32> for Vec2 {
-    type Output = Self;
-    fn mul(self, rhs: f32) -> Self {
-        Self::new(self.x * rhs, self.y * rhs)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Ord, PartialOrd)]
@@ -285,7 +198,7 @@ impl BuildingStyle {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuildingInfo {
     pub id: BuildingId,
     pub name: &'static str,
@@ -296,6 +209,7 @@ pub struct BuildingInfo {
     pub floors: u8,
     pub style: BuildingStyle,
     pub front_door: Position,
+    pub foundation_z: f32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

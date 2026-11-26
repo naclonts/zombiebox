@@ -100,7 +100,7 @@ pub struct Room {
     pub floor: u8,
     pub kind: RoomKind,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Building {
     pub min: Position,
     pub max: Position,
@@ -109,6 +109,7 @@ pub struct Building {
     pub entry: Position,
     pub kind: BuildingKind,
     pub material: Material,
+    pub foundation_z: f32,
     pub layout: Vec<Room>,
     // Compact, row-major floor maps; ground level is also copied into tiles.
     features: Vec<Vec<Feature>>,
@@ -155,11 +156,19 @@ pub struct InfectedSite {
     pub floor: u8,
     pub kind: MonsterKind,
 }
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sites {
     pub buildings: Vec<Building>,
     pub loot: Vec<LootSite>,
     pub infected: Vec<InfectedSite>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PlannedPad {
+    pub min: Position,
+    pub max: Position,
+    pub entry: Position,
+    pub front: Position,
 }
 impl Sites {
     /// Returns a building feature on the requested floor, if a building occupies it.
@@ -320,7 +329,57 @@ fn connect_floor(map: &mut [Feature], min: Position, max: Position, start: Posit
     }
 }
 
-fn floorplan(lot: &Lot, k: BuildingKind, n: u64, min: Position, max: Position) -> Building {
+fn entry_for_footprint(lot: &Lot, min: Position, max: Position) -> Position {
+    if lot.front.x <= lot.min.x {
+        Position::new(min.x, lot.front.y.clamp(min.y + 1, max.y - 1))
+    } else if lot.front.x >= lot.max.x {
+        Position::new(max.x, lot.front.y.clamp(min.y + 1, max.y - 1))
+    } else if lot.front.y <= lot.min.y {
+        Position::new(lot.front.x.clamp(min.x + 1, max.x - 1), min.y)
+    } else {
+        Position::new(lot.front.x.clamp(min.x + 1, max.x - 1), max.y)
+    }
+}
+
+pub(super) fn planned_pad(
+    seed: u64,
+    lot: &Lot,
+    ordinal: u64,
+    terrain: &[super::Tile],
+) -> Option<PlannedPad> {
+    let n = noise(seed, 0x4255494c44, lot.min.x, lot.min.y);
+    let choice = ordinal + seed % 3;
+    let k = kind(lot.district, choice);
+    let (min, max) = footprint(lot, k, n);
+    let w = max.x - min.x + 1;
+    let h = max.y - min.y + 1;
+    if w < 5 || h < 5 || min.x < 0 || min.y < 0 || max.x >= WORLD_SIZE || max.y >= WORLD_SIZE {
+        return None;
+    }
+    if (min.y..=max.y).any(|y| {
+        (min.x..=max.x).any(|x| {
+            let tile = terrain[(y * WORLD_SIZE + x) as usize];
+            road(tile.ground) || tile.feature != Feature::Empty
+        })
+    }) {
+        return None;
+    }
+    Some(PlannedPad {
+        min,
+        max,
+        entry: entry_for_footprint(lot, min, max),
+        front: lot.front,
+    })
+}
+
+fn floorplan(
+    lot: &Lot,
+    k: BuildingKind,
+    n: u64,
+    min: Position,
+    max: Position,
+    foundation_z: f32,
+) -> Building {
     let w = max.x - min.x + 1;
     let h = max.y - min.y + 1;
     let floors = match k {
@@ -331,15 +390,7 @@ fn floorplan(lot: &Lot, k: BuildingKind, n: u64, min: Position, max: Position) -
         BuildingKind::Apartments => 3,
         _ => 2,
     };
-    let entry = if lot.front.x <= lot.min.x {
-        Position::new(min.x, lot.front.y.clamp(min.y + 1, max.y - 1))
-    } else if lot.front.x >= lot.max.x {
-        Position::new(max.x, lot.front.y.clamp(min.y + 1, max.y - 1))
-    } else if lot.front.y <= lot.min.y {
-        Position::new(lot.front.x.clamp(min.x + 1, max.x - 1), min.y)
-    } else {
-        Position::new(lot.front.x.clamp(min.x + 1, max.x - 1), max.y)
-    };
+    let entry = entry_for_footprint(lot, min, max);
     let mat = if matches!(
         k,
         BuildingKind::Bungalow
@@ -640,6 +691,7 @@ fn floorplan(lot: &Lot, k: BuildingKind, n: u64, min: Position, max: Position) -
         entry,
         kind: k,
         material: mat,
+        foundation_z,
         layout,
         features,
     }
@@ -889,7 +941,13 @@ fn populate(seed: u64, lot: &Lot, building: &Building, tiles: &mut ParcelTiles, 
     }
 }
 
-pub(super) fn generate(seed: u64, lot: &Lot, ordinal: u64, tiles: &mut ParcelTiles) -> Sites {
+pub(super) fn generate(
+    seed: u64,
+    lot: &Lot,
+    ordinal: u64,
+    foundation_z: f32,
+    tiles: &mut ParcelTiles,
+) -> Sites {
     let mut sites = Sites::default();
     let n = noise(seed, 0x4255494c44, lot.min.x, lot.min.y);
     // Cycle by the parcel's stable district ordinal, independent of visit order.
@@ -910,7 +968,7 @@ pub(super) fn generate(seed: u64, lot: &Lot, ordinal: u64, tiles: &mut ParcelTil
     }) {
         return sites;
     }
-    let building = floorplan(lot, k, n, min, max);
+    let building = floorplan(lot, k, n, min, max, foundation_z);
     place_building(lot, &building, tiles);
     populate(seed, lot, &building, tiles, &mut sites);
     sites.buildings.push(building);

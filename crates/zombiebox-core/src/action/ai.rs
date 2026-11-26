@@ -1303,7 +1303,7 @@ impl AiSystem {
                 let radius = monsters[i].radius();
                 let floor = monsters[i].floor;
                 move_circle(world, &mut monsters[i].pos, floor, step, radius, can_vault);
-                monsters[i].knockback = monsters[i].knockback - step;
+                monsters[i].knockback -= step;
                 if monsters[i].knockback.length_squared() < 0.0001 {
                     monsters[i].knockback = Vec2::ZERO;
                 }

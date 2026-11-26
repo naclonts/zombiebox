@@ -1,6 +1,7 @@
 //! Deterministic single-player rules. One call to `step` consumes one tick.
 
 mod action;
+pub mod spatial;
 mod survey;
 pub use survey::county_survey_json;
 mod world;
@@ -13,8 +14,13 @@ pub use action::{
     Material, MaterialCategory, MonsterId, MonsterKind, MonsterView, NUM_FLOORS, NoiseEvent,
     NoiseKind, ObjectiveKind, PLAYER_MAX_HEALTH, PlayerRenderState, Pose, ProjectileId,
     ProjectileKind, ProjectileView, PropKind, ReloadMode, Surface, Tile3D, TileDamageResult,
-    TileKind, TileObstruction, TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon,
-    WeaponSpec, mix64, weapon_spec,
+    TileKind, TileObstruction, TileRenderInfo, TileVisibility, WallOrientation, Weapon, WeaponSpec,
+    mix64, weapon_spec,
+};
+pub use spatial::{
+    Aabb3, BodyShape, BodyState, CHUNK_VERTICES, FLOOR_H, MAX_ROAD_GRADE, MIN_BRIDGE_CLEARANCE,
+    MotionState, SupportId, TERRAIN_GRID_SIDE, TerrainGrid, TerrainSample, TerrainTriangle, Vec2,
+    Vec3, WATER_SURFACE_Z, floor_elevation, sample_quad_00_11, world_to_tile_coord,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};

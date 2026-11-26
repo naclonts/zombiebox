@@ -140,7 +140,27 @@ fn field(seed: u64, domain: u64, x: i32, y: i32, scale: i32) -> i32 {
     (a * (scale - v) + b * v) / (scale * scale)
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ValleyMeta {
+    pub rotation: u64,
+    pub mirror: bool,
+    pub pass_y: i32,
+    pub town_min: (i32, i32),
+    pub town_max: (i32, i32),
+    pub lake_center: (i32, i32),
+    pub lake_radii: (i32, i32),
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn generate(seed: u64, tiles: &mut [Tile]) -> (Vec<Landmark>, Vec<Lot>) {
+    let (landmarks, lots, _) = generate_with_meta(seed, tiles);
+    (landmarks, lots)
+}
+
+pub(super) fn generate_with_meta(
+    seed: u64,
+    tiles: &mut [Tile],
+) -> (Vec<Landmark>, Vec<Lot>, ValleyMeta) {
     let plan = Plan {
         seed,
         rotation: noise(seed, 0, 0, 0) % 4,
@@ -500,7 +520,16 @@ pub(super) fn generate(seed: u64, tiles: &mut [Tile]) -> (Vec<Landmark>, Vec<Lot
             trail_y,
         ),
     ];
-    (landmarks, lots)
+    let meta = ValleyMeta {
+        rotation: plan.rotation,
+        mirror: plan.mirror,
+        pass_y,
+        town_min: (xs[0], ys[0]),
+        town_max: (xs[5], ys[5]),
+        lake_center: (lake_x, lake_y),
+        lake_radii: (rx, ry),
+    };
+    (landmarks, lots, meta)
 }
 
 #[cfg(test)]

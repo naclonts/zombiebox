@@ -127,7 +127,7 @@ mod tests {
             let (_, lots) = geography::generate(seed, &mut terrain);
             for (i, lot) in lots.iter().enumerate() {
                 let mut tiles = ParcelTiles::new(*lot, &terrain);
-                let sites = sites::generate(seed, lot, i as u64, &mut tiles);
+                let sites = sites::generate(seed, lot, i as u64, 0.0, &mut tiles);
                 let before = tiles.clone();
                 generate(seed, lot, &sites, &mut tiles);
                 for y in lot.min.y..=lot.max.y {

@@ -801,6 +801,7 @@ impl ResidentialBlock {
                     self.origin.x + bp.front_door.0 as i32,
                     self.origin.y + bp.front_door.1 as i32,
                 ),
+                foundation_z: 0.0,
             });
 
             for (floor, grid) in [bp.f0, bp.f1].iter().enumerate() {

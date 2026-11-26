@@ -707,7 +707,7 @@ impl ActionGame {
             );
         }
 
-        self.player_knockback = self.player_knockback * KNOCKBACK_DECAY;
+        self.player_knockback *= KNOCKBACK_DECAY;
         if self.player_knockback.length_squared() < 1e-6 {
             self.player_knockback = Vec2::ZERO;
         }

@@ -4,9 +4,14 @@ mod dressing;
 mod geography;
 mod parcels;
 use parcels::{ParcelTiles, Parcels};
+mod relief;
 mod sites;
 pub use sites::*;
 
+use crate::spatial::{
+    CHUNK_VERTICES, TerrainGrid, TerrainSample, TerrainTriangle, Vec2, Vec3, WATER_SURFACE_Z,
+    sample_quad_00_11,
+};
 use std::sync::Arc;
 
 pub const CHUNK_SIZE: i32 = 16;
@@ -152,6 +157,7 @@ struct County {
     tiles: Vec<Tile>,
     landmarks: Vec<Landmark>,
     parcels: Parcels,
+    terrain: TerrainGrid,
     spawn: Position,
 }
 
@@ -166,8 +172,14 @@ pub struct World {
 impl World {
     pub fn new(seed: u64) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
-        let (landmarks, lots) = geography::generate(seed, &mut tiles);
-        let parcels = Parcels::new(lots);
+        let (landmarks, lots, valley_meta) = geography::generate_with_meta(seed, &mut tiles);
+        let mut parcels = Parcels::new(lots);
+        let planned = parcels.planned_pads(seed, &tiles);
+        let pads: Vec<_> = planned.iter().map(|(_, pad)| *pad).collect();
+        let (terrain, foundations) = relief::generate(seed, &tiles, &valley_meta, &pads);
+        for ((parcel_idx, _), foundation_z) in planned.into_iter().zip(foundations) {
+            parcels.set_foundation(parcel_idx, foundation_z);
+        }
         let spawn = landmarks
             .iter()
             .find(|l| l.kind == LandmarkKind::Residential)
@@ -179,13 +191,167 @@ impl World {
                 tiles,
                 landmarks,
                 parcels,
+                terrain,
                 spawn,
             })),
         }
     }
 
-    pub(crate) fn birch_street(seed: u64) -> Self {
+    pub fn birch_street(seed: u64) -> Self {
         Self { seed, county: None }
+    }
+
+    #[inline]
+    pub fn is_flat(&self) -> bool {
+        self.county.is_none()
+    }
+
+    fn resolve_cell(xy: Vec2) -> Option<(Position, f32, f32)> {
+        let max = WORLD_SIZE as f32 - 0.5;
+        if !xy.x.is_finite()
+            || !xy.y.is_finite()
+            || xy.x < -0.5
+            || xy.x > max
+            || xy.y < -0.5
+            || xy.y > max
+        {
+            return None;
+        }
+        let gx_f = xy.x + 0.5;
+        let gy_f = xy.y + 0.5;
+        let tx = (gx_f.floor() as i32).clamp(0, WORLD_SIZE - 1);
+        let ty = (gy_f.floor() as i32).clamp(0, WORLD_SIZE - 1);
+        let u = (gx_f - tx as f32).clamp(0.0, 1.0);
+        let v = (gy_f - ty as f32).clamp(0.0, 1.0);
+        Some((Position::new(tx, ty), u, v))
+    }
+
+    pub fn grid_height(&self, gx: i32, gy: i32) -> Option<f32> {
+        if !(0..=WORLD_SIZE).contains(&gx) || !(0..=WORLD_SIZE).contains(&gy) {
+            return None;
+        }
+        Some(self.county.as_ref().map_or(0.0, |c| {
+            c.terrain
+                .grid_height(gx, gy)
+                .expect("validated grid vertex")
+        }))
+    }
+
+    pub fn grid_normal(&self, gx: i32, gy: i32) -> Option<Vec3> {
+        if !(0..=WORLD_SIZE).contains(&gx) || !(0..=WORLD_SIZE).contains(&gy) {
+            return None;
+        }
+        Some(self.county.as_ref().map_or(Vec3::Z, |c| {
+            c.terrain
+                .grid_normal(gx, gy)
+                .expect("validated grid vertex")
+        }))
+    }
+
+    pub fn terrain_quad(&self, p: Position) -> Option<[f32; 4]> {
+        p.index()?;
+        Some(
+            self.county
+                .as_ref()
+                .map_or([0.0; 4], |c| c.terrain.quad(p).expect("validated tile")),
+        )
+    }
+
+    pub fn water_level_at(&self, p: Position) -> Option<f32> {
+        let idx = p.index()?;
+        let c = self.county.as_ref()?;
+        c.tiles[idx].water.map(|_| WATER_SURFACE_Z)
+    }
+
+    pub fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        let (tile, u, v) = Self::resolve_cell(xy)?;
+        let Some(county) = &self.county else {
+            let triangle = if u >= v {
+                TerrainTriangle::LowerRight
+            } else {
+                TerrainTriangle::UpperLeft
+            };
+            return Some(TerrainSample {
+                z: 0.0,
+                normal: Vec3::Z,
+                tile,
+                water_z: None,
+                triangle,
+            });
+        };
+        let [z00, z10, z01, z11] = county.terrain.quad(tile)?;
+        let (z, normal, triangle) = sample_quad_00_11(z00, z10, z01, z11, u, v);
+        Some(TerrainSample {
+            z,
+            normal,
+            tile,
+            water_z: self.water_level_at(tile),
+            triangle,
+        })
+    }
+
+    #[inline]
+    pub fn elevation_at(&self, xy: Vec2) -> Option<f32> {
+        self.terrain_at(xy).map(|s| s.z)
+    }
+
+    #[inline]
+    pub fn normal_at(&self, xy: Vec2) -> Option<Vec3> {
+        self.terrain_at(xy).map(|s| s.normal)
+    }
+
+    #[inline]
+    pub fn bridge_quad(&self, p: Position) -> Option<[f32; 4]> {
+        self.county.as_ref()?.terrain.bridge_quad(p)
+    }
+
+    pub fn bridge_deck_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        let (tile, u, v) = Self::resolve_cell(xy)?;
+        let [z00, z10, z01, z11] = self.bridge_quad(tile)?;
+        let (z, normal, triangle) = sample_quad_00_11(z00, z10, z01, z11, u, v);
+        Some(TerrainSample {
+            z,
+            normal,
+            tile,
+            water_z: self.water_level_at(tile),
+            triangle,
+        })
+    }
+
+    /// Row-major `17 x 17` chunk corner elevations, indexed `[ly][lx]`.
+    pub fn chunk_heights(
+        &self,
+        cx: i32,
+        cy: i32,
+    ) -> Option<[[f32; CHUNK_VERTICES]; CHUNK_VERTICES]> {
+        if !(0..CHUNKS_PER_SIDE).contains(&cx) || !(0..CHUNKS_PER_SIDE).contains(&cy) {
+            return None;
+        }
+        Some(std::array::from_fn(|ly| {
+            let gy = cy * CHUNK_SIZE + ly as i32;
+            std::array::from_fn(|lx| {
+                self.grid_height(cx * CHUNK_SIZE + lx as i32, gy)
+                    .expect("validated chunk vertex")
+            })
+        }))
+    }
+
+    /// Row-major `17 x 17` chunk corner smooth normals, indexed `[ly][lx]`.
+    pub fn chunk_normals(
+        &self,
+        cx: i32,
+        cy: i32,
+    ) -> Option<[[Vec3; CHUNK_VERTICES]; CHUNK_VERTICES]> {
+        if !(0..CHUNKS_PER_SIDE).contains(&cx) || !(0..CHUNKS_PER_SIDE).contains(&cy) {
+            return None;
+        }
+        Some(std::array::from_fn(|ly| {
+            let gy = cy * CHUNK_SIZE + ly as i32;
+            std::array::from_fn(|lx| {
+                self.grid_normal(cx * CHUNK_SIZE + lx as i32, gy)
+                    .expect("validated chunk vertex")
+            })
+        }))
     }
 
     pub fn seed(&self) -> u64 {
