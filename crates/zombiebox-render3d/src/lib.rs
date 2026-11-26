@@ -1,11 +1,8 @@
 //! 3D presentation and `wgpu` rendering engine for Zombiebox.
 
-// Link workspace/feature crates explicitly while non-GPU modules are T00 stubs.
-use bytemuck as _;
-use glam as _;
+// Link feature-gated viewer crate explicitly while viewer runtime is a T00 stub.
 #[cfg(feature = "viewer")]
 use winit as _;
-use zombiebox_core as _;
 
 pub mod animation;
 pub mod camera;
@@ -17,8 +14,12 @@ pub mod materials;
 pub mod mesh;
 pub mod scene;
 
-/// Standard vertical floor increment in world units (re-exported from `zombiebox-core` once `S01` lands).
-pub const FLOOR_H: f32 = 1.388;
+pub use camera::{
+    CameraConfig, CameraFrame, CameraGpuUniforms, CameraMode, CameraRig, CameraTarget, Frustum,
+    FrustumPlane, ISO_PIXELS_PER_UNIT, RenderRay, ScreenPoint, SimRay, compute_internal_resolution,
+    weapon_look_ahead_distance,
+};
+pub use coords::{ChunkCoord, FLOOR_H, RenderAabb, RenderVec3, SimAabb3, SimVec3};
 
 /// Tightly packed row-major RGBA8888 image (`width * height * 4` bytes).
 #[derive(Clone, Debug, PartialEq, Eq)]
