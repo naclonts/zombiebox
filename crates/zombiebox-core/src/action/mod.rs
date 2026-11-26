@@ -219,6 +219,34 @@ impl Stage {
             Self::County(c) => c.take_collapsed_tiles(),
         }
     }
+
+    fn spatial_cell(&self, tile: Tile3D, world: &World) -> Option<SpatialCell> {
+        match self {
+            Self::Residential(b) => b.spatial_cell(tile),
+            Self::County(c) => c.spatial_cell(tile, world),
+        }
+    }
+
+    fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
+        match self {
+            Self::Residential(b) => b.building_by_id(id),
+            Self::County(c) => c.building_by_id(id),
+        }
+    }
+
+    fn playable_bounds(&self) -> (Position, Position) {
+        match self {
+            Self::Residential(b) => b.playable_bounds(),
+            Self::County(c) => c.playable_bounds(),
+        }
+    }
+
+    const fn max_floors(&self) -> Floor {
+        match self {
+            Self::Residential(_) => NUM_FLOORS as Floor,
+            Self::County(_) => COUNTY_FLOORS as Floor,
+        }
+    }
 }
 
 impl CombatWorld for Stage {
@@ -1106,6 +1134,34 @@ impl ActionGame {
 
     pub fn world(&self) -> &World {
         &self.world
+    }
+
+    pub fn spatial(&self) -> crate::spatial::ActionSpatialView<'_> {
+        crate::spatial::ActionSpatialView::new(self)
+    }
+
+    pub fn toggle_door(&mut self, tile: Tile3D) -> Option<bool> {
+        self.stage.toggle_door(tile)
+    }
+
+    pub fn damage_tile(&mut self, tile: Tile3D, kind: DamageKind) -> Option<TileDamageResult> {
+        self.stage.damage_tile(tile, kind)
+    }
+
+    pub(crate) fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
+        self.stage.spatial_cell(tile, &self.world)
+    }
+
+    pub(crate) fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
+        self.stage.building_by_id(id)
+    }
+
+    pub(crate) fn playable_bounds(&self) -> (Position, Position) {
+        self.stage.playable_bounds()
+    }
+
+    pub(crate) const fn max_floors(&self) -> Floor {
+        self.stage.max_floors()
     }
 
     pub fn block(&self) -> Option<&ResidentialBlock> {

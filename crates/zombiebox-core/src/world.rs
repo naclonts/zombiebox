@@ -358,6 +358,10 @@ impl World {
         self.seed
     }
 
+    pub fn spatial(&self) -> crate::spatial::WorldSpatialView<'_> {
+        crate::spatial::WorldSpatialView::new(self)
+    }
+
     pub fn wake_position(&self) -> Position {
         self.county
             .as_ref()

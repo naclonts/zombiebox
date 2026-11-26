@@ -464,6 +464,33 @@ impl ResidentialBlock {
         &self.buildings
     }
 
+    pub(crate) fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
+        self.buildings.get(id.checked_sub(1)? as usize)
+    }
+
+    pub(crate) fn playable_bounds(&self) -> (Position, Position) {
+        (
+            self.origin,
+            Position::new(
+                self.origin.x + BLOCK_WIDTH as i32 - 1,
+                self.origin.y + BLOCK_HEIGHT as i32 - 1,
+            ),
+        )
+    }
+
+    pub(crate) fn spatial_cell(&self, tile: Tile3D) -> Option<super::types::SpatialCell> {
+        let (lx, ly, fl) = self.world_to_local(tile)?;
+        let cell = self.cell_at(lx, ly, fl);
+        Some(super::types::SpatialCell {
+            surface: cell.surface,
+            kind: cell.kind,
+            material: cell.material,
+            building_id: cell.building_id,
+            orientation: self.wall_orientation(lx, ly, fl),
+            stair_dir: cell.stair_dir,
+        })
+    }
+
     pub fn caches(&self) -> &[SupplyCache] {
         &self.caches
     }
@@ -1886,7 +1913,7 @@ impl CombatWorld for ResidentialBlock {
     }
 }
 
-pub(super) fn is_room_barrier(kind: TileKind) -> bool {
+pub(crate) fn is_room_barrier(kind: TileKind) -> bool {
     matches!(
         kind,
         TileKind::ExteriorWall

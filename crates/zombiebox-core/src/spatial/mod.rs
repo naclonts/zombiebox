@@ -2,16 +2,56 @@
 
 use crate::{Floor, Position, Tile3D};
 
+pub mod action_adapter;
+pub mod collision;
+pub mod kinematics;
 pub mod math;
+pub mod query;
+pub mod support;
 pub mod terrain;
 
+pub use action_adapter::{ActionSpatialView, WorldSpatialView};
+pub use collision::{raycast_world, sphere_cast_world};
+pub use kinematics::{
+    MoveParams, MoveResult, move_kinematic_with_horizontal_vel, step_kinematic_body,
+};
 pub use math::{Aabb3, Vec2, Vec3, world_to_tile_coord};
+pub use query::{
+    Collider, ColliderKind, Hit3, HitSurface, QueryFilter, Ray3, SpatialWorld, SupportSurface,
+    SurfaceQuad,
+};
+pub use support::{
+    AirborneSupportHit, StairGeometry, select_grounded_support, sweep_airborne_support,
+};
 pub use terrain::{
     CHUNK_VERTICES, TERRAIN_GRID_SIDE, TerrainGrid, TerrainTriangle, sample_quad_00_11,
 };
 
 /// Vertical floor-to-floor increment in world units (~34 px in 2:1 isometric at 28.284 px/unit).
 pub const FLOOR_H: f32 = 1.388;
+
+/// Structural wall segment thickness (`[-0.08, +0.08]` around tile centerline).
+pub const WALL_THICKNESS: f32 = 0.16;
+pub const WALL_HALF_THICKNESS: f32 = WALL_THICKNESS * 0.5;
+
+/// Upper-floor & roof structural slab thickness below `floor_elevation`.
+pub const SLAB_THICKNESS: f32 = 0.16;
+
+/// Clear floor-to-ceiling wall height beneath an upper floor slab (`1.388 - 0.16 = 1.228`).
+pub const WALL_HEIGHT: f32 = FLOOR_H - SLAB_THICKNESS;
+
+/// Window sill top offset above floor `z` (`0.38 > max_step_up = 0.22`).
+pub const WINDOW_SILL_HEIGHT: f32 = 0.38;
+
+/// Window lintel bottom offset above floor `z` (aperture spans `[0.38, 1.02]`).
+pub const WINDOW_LINTEL_Z: f32 = 1.02;
+
+/// Clear doorway opening height above floor `z` (`1.15 > Bloater height 1.12`).
+pub const DOOR_OPENING_HEIGHT: f32 = 1.15;
+
+/// Bridge deck slab thickness and open-edge parapet guardrail height.
+pub const BRIDGE_SLAB_THICKNESS: f32 = 0.20;
+pub const BRIDGE_PARAPET_HEIGHT: f32 = 0.45;
 
 /// Unified county water-table elevation (`+z` up) shared by rivers and lakes.
 pub const WATER_SURFACE_Z: f32 = 0.0;

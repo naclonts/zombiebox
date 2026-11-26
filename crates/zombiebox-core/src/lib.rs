@@ -18,9 +18,15 @@ pub use action::{
     mix64, weapon_spec,
 };
 pub use spatial::{
-    Aabb3, BodyShape, BodyState, CHUNK_VERTICES, FLOOR_H, MAX_ROAD_GRADE, MIN_BRIDGE_CLEARANCE,
-    MotionState, SupportId, TERRAIN_GRID_SIDE, TerrainGrid, TerrainSample, TerrainTriangle, Vec2,
-    Vec3, WATER_SURFACE_Z, floor_elevation, sample_quad_00_11, world_to_tile_coord,
+    Aabb3, ActionSpatialView, AirborneSupportHit, BRIDGE_PARAPET_HEIGHT, BRIDGE_SLAB_THICKNESS,
+    BodyShape, BodyState, CHUNK_VERTICES, Collider, ColliderKind, DOOR_OPENING_HEIGHT, FLOOR_H,
+    Hit3, HitSurface, MAX_ROAD_GRADE, MIN_BRIDGE_CLEARANCE, MotionState, MoveParams, MoveResult,
+    QueryFilter, Ray3, SLAB_THICKNESS, SpatialWorld, StairGeometry, SupportId, SupportSurface,
+    SurfaceQuad, TERRAIN_GRID_SIDE, TerrainGrid, TerrainSample, TerrainTriangle, Vec2, Vec3,
+    WALL_HALF_THICKNESS, WALL_HEIGHT, WALL_THICKNESS, WATER_SURFACE_Z, WINDOW_LINTEL_Z,
+    WINDOW_SILL_HEIGHT, WorldSpatialView, floor_elevation, move_kinematic_with_horizontal_vel,
+    raycast_world, sample_quad_00_11, select_grounded_support, sphere_cast_world,
+    step_kinematic_body, sweep_airborne_support, world_to_tile_coord,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};

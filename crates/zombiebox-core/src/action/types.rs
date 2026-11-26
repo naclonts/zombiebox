@@ -226,6 +226,16 @@ pub enum WallOrientation {
     Corner,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SpatialCell {
+    pub surface: Surface,
+    pub kind: TileKind,
+    pub material: Material,
+    pub building_id: BuildingId,
+    pub orientation: WallOrientation,
+    pub stair_dir: (i8, i8),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TileRenderInfo {
     pub surface: Surface,

@@ -1126,6 +1126,88 @@ impl CountyStage {
         &self.window_buildings
     }
 
+    pub(crate) fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
+        self.all_buildings.get(id.checked_sub(1)? as usize)
+    }
+
+    pub(crate) fn playable_bounds(&self) -> (Position, Position) {
+        (
+            Position::new(0, 0),
+            Position::new(WORLD_SIZE - 1, WORLD_SIZE - 1),
+        )
+    }
+
+    pub(crate) fn spatial_cell(
+        &self,
+        tile: Tile3D,
+        world: &World,
+    ) -> Option<super::types::SpatialCell> {
+        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= COUNTY_FLOORS {
+            return None;
+        }
+        if let Some(cell) = self.cell_at_world(tile) {
+            return Some(super::types::SpatialCell {
+                surface: cell.surface,
+                kind: cell.kind,
+                material: cell.material,
+                building_id: cell.building_id,
+                orientation: self.wall_orientation(tile.x, tile.y, tile.floor),
+                stair_dir: cell.stair_dir,
+            });
+        }
+        if tile.floor == 0 {
+            let wt = world.tile_at(tile.pos())?;
+            let surface = match wt.ground {
+                Ground::Bridge => Surface::Bridge,
+                Ground::River | Ground::Lake => Surface::Water,
+                Ground::Mountain => Surface::Mountain,
+                Ground::Street | Ground::Road => Surface::Road,
+                Ground::Pavement => Surface::Sidewalk,
+                Ground::Trail => Surface::Trail,
+                Ground::Gravel => Surface::Gravel,
+                Ground::Forest => Surface::Forest,
+                Ground::Field => Surface::Field,
+                Ground::Grass => Surface::Grass,
+            };
+            let kind = match wt.feature {
+                Feature::Streetlight => TileKind::Streetlight,
+                Feature::Tree => TileKind::Prop(PropKind::BirchTree),
+                Feature::Fence => TileKind::Prop(PropKind::Fence),
+                Feature::Gate => TileKind::Door {
+                    open: true,
+                    exterior: true,
+                },
+                _ => TileKind::Empty,
+            };
+            let (material, _) = super::block::tile_spec(kind, Material::None);
+            let orientation = if kind == TileKind::Prop(PropKind::Fence) {
+                let is_fence = |nx: i32, ny: i32| -> bool {
+                    world
+                        .tile_at(Position::new(nx, ny))
+                        .is_some_and(|nt| nt.feature == Feature::Fence)
+                };
+                let has_x = is_fence(tile.x - 1, tile.y) || is_fence(tile.x + 1, tile.y);
+                let has_y = is_fence(tile.x, tile.y - 1) || is_fence(tile.x, tile.y + 1);
+                match (has_x, has_y) {
+                    (true, true) => WallOrientation::Corner,
+                    (false, true) => WallOrientation::AlongY,
+                    _ => WallOrientation::AlongX,
+                }
+            } else {
+                WallOrientation::AlongX
+            };
+            return Some(super::types::SpatialCell {
+                surface,
+                kind,
+                material,
+                building_id: 0,
+                orientation,
+                stair_dir: (0, 0),
+            });
+        }
+        None
+    }
+
     pub fn caches(&self) -> &[SupplyCache] {
         &self.caches
     }
