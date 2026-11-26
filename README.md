@@ -1,6 +1,6 @@
 # Zombiebox
 
-This is a wip zombie survival sandbox game for Android or web browser. The world is procedurally generated.
+This is a wip zombie survival sandbox game for mobile or web browser. The world is procedurally generated.
 
 ![in-game screenshot in firefox](./screenshot.png)
 
