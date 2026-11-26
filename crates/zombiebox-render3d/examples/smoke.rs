@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = GpuContext::new_headless()?;
     let width = 640;
     let height = 360;
-    let image = render_smoke_cube(&ctx, width, height)?;
+    let image = render_smoke_cube(&ctx, width, height, 0.0)?;
     write_rgba8_png(&out_path, &image)?;
 
     println!(

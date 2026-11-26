@@ -2,7 +2,7 @@
 
 * **Baseline Commit:** `daeff4a`  
 * **Toolchain / Environment:** `rustc 1.100.0`, `wgpu 30.0.1` (`0ef1bc386 2026-11-09`, MSRV `1.87`, `glam 0.27.0`, `bytemuck 1.25.2`, `winit 0.30.13`, `png 0.18.1`)
-* **Current Phase:** `Phase 2 (T02 / T03)`
+* **Current Phase:** `Phase 2 (T03 Complete)`
 
 ---
 
@@ -12,11 +12,11 @@
 |---|---|---|---|---|
 | `T00` | Baseline Capture & Desktop GPU Setup | DONE | `b8ddaf0` | 11 reference PNGs archived in `docs/baselines/iso-2p5d/`; `zombiebox-render3d` CPU + headless GPU cube smoke test verified |
 | `S01` | Spatial Primitives, Terrain Grid & World Relief | DONE | `91e741c` | `zombiebox_core::spatial` (`Vec2`, `Vec3`, `Aabb3`, `TerrainGrid`, `sample_quad_00_11`), continuous `513×513` county relief, flat `foundation_z` pads, `<= 0.20` road grades, submerged waterbeds, and flat Birch Street queries verified across 8 seeds (`cargo test --workspace`, `gpu`, `clippy`, `fmt` clean) |
-| `S02` | Spatial Supports, Collision & Kinematics | DONE | — | `SpatialWorld`, `StairGeometry` (`3×3` straight & L-turn winder + `StairsBoth`), anti-snap support selection, Minkowski circle-AABB CCD + adaptive kinematic sweep, watertight `raycast`/`sphere_cast` with window/door apertures, and `O(1)` `ActionSpatialView` / `WorldSpatialView` adapters (`spatial_kinematics` + workspace verification) |
-| `S03` | Core Simulation 3D Migration | DONE | — | `CombatWorld: SpatialWorld`, 3D `ActionEvent` / `PlayerRenderState` / `MonsterView` / `ProjectileView` / `CacheView` / `LightSourceView` / `BlastView` / `DynamicFlashView`, `ActionGame` 3D kinematic movement/stairs/window drops/fall injury, 3D monster eye-to-eye LOS, acoustic attenuation & Shooter 3D targeting, 3D hitscan/sphere-cast projectiles/occluded blasts, downstream compatibility shims, and `tests/action_3d.rs` |
+| `S02` | Spatial Supports, Collision & Kinematics | DONE | `fbcb1bb` | `SpatialWorld`, `StairGeometry` (`3×3` straight & L-turn winder + `StairsBoth`), anti-snap support selection, Minkowski circle-AABB CCD + adaptive kinematic sweep, watertight `raycast`/`sphere_cast` with window/door apertures, and `O(1)` `ActionSpatialView` / `WorldSpatialView` adapters (`spatial_kinematics` + workspace verification) |
+| `S03` | Core Simulation 3D Migration | DONE | `6a2f00f` | `CombatWorld: SpatialWorld`, 3D `ActionEvent` / `PlayerRenderState` / `MonsterView` / `ProjectileView` / `CacheView` / `LightSourceView` / `BlastView` / `DynamicFlashView`, `ActionGame` 3D kinematic movement/stairs/window drops/fall injury, 3D monster eye-to-eye LOS, acoustic attenuation & Shooter 3D targeting, 3D hitscan/sphere-cast projectiles/occluded blasts, downstream compatibility shims, and `tests/action_3d.rs` |
 | `T01` | Coordinates, Camera Rigs & Input Mapping | DONE | `1c9eca7` | `coords.rs` (`Sim<->Render` axes, `ChunkCoord`, `RenderAabb`, CCW helpers, `FLOOR_H` re-export) & `camera.rs` (5 camera modes, `(+20,+10)`/`(-20,+10)`/`(0,-34)` iso calibration, `[0,1]` Gribb-Hartmann frustum, rays, stick mapping, 224B GPU uniforms) verified offline (`cargo test` CPU + `gpu`, `viewer` check, `clippy`, `fmt` clean) |
 | `T02` | Scene Management & Chunk Invalidation Cache | TODO | — | Scene snapshot synchronization & dirty chunk caching |
-| `T03` | Mesh Primitives & GPU Render Pipeline | TODO | — | `wgpu` pipeline, mesh builders, low-res target & retro upscale |
+| `T03` | Mesh Primitives & GPU Render Pipeline | DONE | — | `wgpu` pipeline, `MeshBuilder`, primitive emitters (`emit_box`, `emit_cylinder`, `emit_cone`, `emit_quad`), `DynamicInstanceBuffer`, offscreen/surface render targets, internal resolution scaling & retro upscale, and `preview3d` diorama export verified (`cargo test -p zombiebox-render3d --features gpu`, `clippy -D warnings`, `cargo fmt`) |
 | `T04` | 3D Terrain & Surface Meshing | TODO | — | County terrain, roads, water planes, and bridge decks |
 | `T05` | 3D Buildings, Openings & Destruction | TODO | — | Multi-floor buildings, walls, openings, stairs, roofs & collapse |
 | `T06` | Props, Caches & District Palettes | TODO | — | Props, streetlights, loot caches, material registries |

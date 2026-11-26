@@ -29,3 +29,8 @@ winit = { version = "0.30.13", optional = true, default-features = false, featur
 name = "smoke"
 path = "examples/smoke.rs"
 required-features = ["gpu"]
+
+[[example]]
+name = "preview3d"
+path = "examples/preview3d.rs"
+required-features = ["gpu"]

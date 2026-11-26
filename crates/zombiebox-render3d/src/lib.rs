@@ -20,6 +20,18 @@ pub use camera::{
     weapon_look_ahead_distance,
 };
 pub use coords::{ChunkCoord, FLOOR_H, RenderAabb, RenderVec3, SimAabb3, SimVec3};
+pub use mesh::{
+    CardinalDir, EXTERIOR_FLOOR_SENTINEL, FaceMask, GeometryTag, MaterialFlags, MeshBuffer,
+    MeshBuilder, MeshValidationError, RidgeAxis, VertexMeta, WorldVertex,
+};
+
+#[cfg(feature = "gpu")]
+pub use gpu::{
+    ChunkGpuSlot, ChunkMeshPool, FrameStats, GpuContext, GpuError, GpuMesh, GpuRenderer,
+    InstanceBatch, InstanceRaw, InternalResolutionPolicy, OffscreenTarget, PointLightGpu,
+    PrototypeMeshId, RenderPipelineConfig, SceneLightingUniforms, SurfaceFrameOutcome,
+    render_smoke_cube, select_surface_format, write_rgba8_png,
+};
 
 /// Tightly packed row-major RGBA8888 image (`width * height * 4` bytes).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +66,21 @@ impl RgbaImage {
             self.pixels[idx + 2],
             self.pixels[idx + 3],
         ]
+    }
+
+    /// Encodes this RGBA8888 image as a PNG file at `path`.
+    #[cfg(feature = "gpu")]
+    pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let file = std::fs::File::create(path)?;
+        let writer = std::io::BufWriter::new(file);
+        let mut encoder = png::Encoder::new(writer, self.width, self.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut png_writer = encoder.write_header().map_err(std::io::Error::other)?;
+        png_writer
+            .write_image_data(&self.pixels)
+            .map_err(std::io::Error::other)?;
+        Ok(())
     }
 }
 
