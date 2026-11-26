@@ -1,487 +1,247 @@
-# Zombiebox 3D — Agent Task Cards (Desktop-First)
+# Zombiebox 3D — Roadmap & Task Cards
 
-**Workflow:** You (the coordinator) spin up one fresh agent session per task card below, review the diff and test output, update `docs/render3d-progress.md`, and merge before starting the next dependent card.
-
-### Tier Legend
-* **`[Lightweight OK]`** — Narrow write set, pure Rust / deterministic unit tests, safe for GLM 5.3 flash.
-* **`[Coordinator / Frontier]`** — Involves unsafe FFI/JNI, `wgpu` 26 API setup, or complex cross-file architecture. Run with a stronger model or review closely.
+This document outlines the implementation roadmap for the Zombiebox 3D migration. Each card describes a milestone's objective, design guidelines, and acceptance criteria. Tasks are framed at a high level so capable models can make autonomous decisions regarding file navigation, refactoring, and validation strategies.
 
 ---
 
-## Reusable Session Prompt Template
+## Migration Overview
 
-Copy-paste this into each agent session, filling in `<TASK_ID>`:
-
-```text
-Hola! Implement task ID <TASK_ID> from docs/render3d-task-cards.md.
-Read:
-1. AGENTS.md
-2. docs/render3d-architecture.md
-3. docs/render3d-progress.md
-4. The task ID card in docs/render3d-task-cards.md
-5. The files explicitly listed in the card's Read Set and Write Set.
-
-Rules:
-- Stay strictly inside the Write Set. Do not refactor unrelated files.
-- Follow the exact struct/trait names and coordinate conventions in docs/render3d-architecture.md.
-- Before editing, output a brief 3-5 bullet plan.
-- After editing, run EVERY command in the card's Verification section and report the exact output. Never claim unrun tests passed.
-- If a contract conflicts with existing code, stop and report the exact compiler/API conflict rather than inventing a workaround.
-- Update docs/render3d-progress.md with status, tests run, and any notes.
+```mermaid
+flowchart TD
+    T00["T00: Baseline & Desktop Setup"] --> S01["S01: Spatial Core & Relief"]
+    S01 --> S02["S02: Collision & Kinematics"]
+    S02 --> S03["S03: Core 3D Action Migration"]
+    S01 --> T01["T01: Camera & Coordinate Math"]
+    T01 --> T02["T02: Scene & Chunk Invalidation"]
+    T01 --> T03["T03: Mesh & GPU Pipeline"]
+    S03 --> T02
+    T02 --> T04["T04: Terrain Meshing"]
+    T03 --> T04
+    T04 --> T05["T05: Buildings & Destruction"]
+    T05 --> T06["T06: Props & Palettes"]
+    T06 --> T07["T07: Visibility & Cutaway Shading"]
+    T07 --> T08["T08: Actors & Instancing"]
+    T08 --> T09["T09: Effects & Desktop Viewer"]
+    T09 --> T10["T10: Android Native Integration"]
+    T09 --> T12["T12: Web GPU Action Host"]
+    T10 --> T11["T11: Handset QA & Performance"]
+    T11 --> T13["T13: Legacy Cutover & Cleanup"]
+    T12 --> T13
 ```
 
 ---
 
-## Phase 0: Baseline & Desktop GPU Feasibility
+## Phase 0: Baseline & Feasibility
 
-### `T00a` — Baseline, `wgpu` Pin & Desktop Headless Smoke
-* **Tier:** `[Coordinator / Frontier]`
-* **Depends on:** None
-* **Read Set:** `Cargo.toml`, `crates/zombiebox-render/examples/preview.rs`, `scripts/check-native.sh`, `AGENTS.md`
-* **Write Set:** `Cargo.toml`, `Cargo.lock`, `crates/zombiebox-render3d/Cargo.toml`, `crates/zombiebox-render3d/src/lib.rs`, `crates/zombiebox-render3d/examples/smoke_triangle.rs`, `docs/render3d-progress.md`
-* **Goal:**
-  1. Capture baseline CPU reference screenshots (Birch Street & County seed 42) using `zombiebox-render`'s `preview` example; record exact CLI flags and dimensions in `docs/render3d-progress.md`.
-  2. Scaffold `crates/zombiebox-render3d` with optional `gpu` (`wgpu = "26.0.1"`, `bytemuck`, `pollster`) and `viewer` (`winit`) features, plus `glam` as default dep. Verify `Cargo.lock` builds cleanly on Rust `1.87.0`. (If `wgpu 26.0.1` fails MSRV/transitives, pick the closest verified version and record it in the ledger.)
-  3. Build `examples/smoke_triangle.rs` that renders a depth-tested colored triangle offscreen and writes a PNG. Record desktop adapter/backend in ledger.
-* **Verification:**
-  ```sh
-  cargo +1.87.0 test --workspace --locked
-  cargo +1.87.0 check -p zombiebox-render3d --no-default-features --locked
-  cargo +1.87.0 run -p zombiebox-render3d --example smoke_triangle --features gpu --locked
-  ```
-* *(Note: Android `ANativeWindow` surface spike is intentionally deferred to `T10b` so desktop e2e progress is unblocked.)*
+### `T00` — Baseline Capture & Desktop GPU Setup
+* **Objective:** Establish reference visual baselines from the existing CPU renderer and verify that `wgpu` builds cleanly on the workspace toolchain.
+* **Key Guidelines:**
+  * Capture baseline reference screenshots for key scenes (Birch Street and procedural county seed 42) using the legacy `preview` tool so visual parity can be verified throughout the migration.
+  * Scaffold `crates/zombiebox-render3d` with `wgpu`, `glam`, and `bytemuck`. Keep GPU dependencies gated behind optional feature flags (e.g. `gpu` and `viewer`) so pure math and data structures build without GPU requirements.
+  * Implement a simple headless offscreen smoke test (rendering a colored triangle or cube to a PNG) to confirm GPU device initialization and pipeline execution work on the host environment.
+* **Acceptance Criteria:**
+  * Reference screenshots captured and archived.
+  * `zombiebox-render3d` builds cleanly both with and without GPU features.
+  * Desktop headless GPU smoke test executes and outputs a valid image.
 
 ---
 
 ## Phase 1: Authoritative 3D Spatial Core (`zombiebox-core`)
 
-### `S01a` — Spatial Primitives & Terrain Grid Sampler
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T00a`
-* **Read Set:** `crates/zombiebox-core/src/lib.rs`, `crates/zombiebox-core/src/world.rs`
-* **Write Set:** `crates/zombiebox-core/src/spatial/mod.rs`, `crates/zombiebox-core/src/spatial/terrain.rs`, `crates/zombiebox-core/src/lib.rs`, `crates/zombiebox-core/tests/spatial_terrain.rs`
-* **Goal:**
-  1. Implement `FLOOR_H`, `Vec3`, `Aabb3`, `BodyShape`, `SupportId`, `MotionState`, `BodyState` in `spatial/mod.rs`.
-  2. Implement `TerrainGrid` ($513 \times 513$ quantized `i16` at $1/256$ units), `TerrainCell`, `TerrainSample`, and flat-zero builder for Birch Street.
-  3. Implement `TerrainGrid::cell(Position)` and `TerrainGrid::sample(Vec2)` using the exact `00 -> 11` diagonal triangle split and outward `+z` normal. Return `None` out of bounds (never clamp).
-  4. Write unit tests verifying triangle continuity across cell edges, exact diagonal split, normal orientation, quantization round-trip, and OOB `None`.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --test spatial_terrain --locked
-  ```
+### `S01` — Spatial Primitives, Terrain Grid & World Relief
+* **Objective:** Introduce 3D spatial foundation types and continuous world elevation into `zombiebox-core`.
+* **Key Guidelines:**
+  * Define core spatial primitives (`Vec3`, `Aabb3`, `BodyShape`, `BodyState`, `MotionState`) in a dedicated spatial module. Standardize on `FLOOR_H ≈ 1.388` for vertical building floor increments.
+  * Build a continuous height representation for the county (e.g., $513 \times 513$ height grid for a $512 \times 512$ world) using a consistent diagonal triangle split (such as `00 -> 11`) to ensure simulation elevation and rendering match.
+  * Enhance terrain generation to compute deterministic continuous relief from seed data, ensuring flat building pads (`foundation_z`), reasonable road grades ($\le 0.20$), and stable river/lake water planes with submerged riverbeds.
+  * Provide clean spatial query access on `World` (e.g. elevation, terrain cell, and normal queries).
+* **Acceptance Criteria:**
+  * Flat ground fixtures (e.g. Birch Street) remain at zero elevation without regressing existing behavior.
+  * County terrain produces smooth, continuous heights and normals across chunk boundaries without tears.
+  * Unit and integration tests verify deterministic terrain generation, flat building pads, and road slope constraints across multiple seeds.
 
-### `S01b` — Deterministic Relief, Building Pads & Road Grading
-* **Tier:** `[Coordinator / Frontier]` *(algorithmic density: road grade relaxation)*
-* **Depends on:** `S01a`
-* **Read Set:** `crates/zombiebox-core/src/world.rs`, `crates/zombiebox-core/src/world/geography.rs`, `crates/zombiebox-core/src/world/parcels.rs`, `crates/zombiebox-core/src/world/sites.rs`
-* **Write Set:** `crates/zombiebox-core/src/world/relief.rs`, `crates/zombiebox-core/src/world.rs`, `crates/zombiebox-core/src/world/geography.rs`, `crates/zombiebox-core/tests/spatial_terrain.rs`
-* **Goal:**
-  1. Convert `Tile.elevation` (`u8`) into global continuous heights ($1/16$ unit/byte + deterministic seeded variation + 3-pass quantized smoothing).
-  2. Compute order-independent flat building pads (`foundation_z`) from stable parcel/site descriptors and blend surrounding 2–4 tiles.
-  3. Relax road-graph heights in sorted deterministic order to enforce max grade $\le 0.20$ on required roads, with bounded deterministic repair if anchors conflict.
-  4. Add 64-seed integration test: nonzero relief on seed 42, at least one sloped traversable road, flat pads, road grade compliance, and order-independent chunk queries.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --test spatial_terrain --locked
-  ```
+### `S02` — Spatial Supports, Collision & Kinematics
+* **Objective:** Implement physical support surface resolution, continuous collision detection, and swept kinematic movement.
+* **Key Guidelines:**
+  * Define traits and contracts (`SpatialWorld`, `SupportSurface`, `Ray3`, `Hit3`, `MoveResult`) for spatial queries.
+  * Implement support selection that resolves the nearest reachable ground or floor surface within reasonable step bounds, preventing false ground snaps onto elevated structures (like bridges) when passing underneath.
+  * Implement swept kinematic movement supporting gravity, step climbing, slope sliding, and continuous collision against dynamic geometry (doors, breached walls, stairs).
+  * Provide an adapter connecting `ActionGame` world state (live tiles, doors, multi-floor structures, terrain) to the spatial query system.
+* **Acceptance Criteria:**
+  * Kinematic movement smoothly handles sloped terrain, stairs, step-ups, and falls.
+  * High-speed sweeps and thin walls do not tunnel.
+  * Wall breaching or opening doors immediately updates spatial collision results.
+  * Synthetic and integration tests cover ramps, bridge underpasses, falls from collapsed floors, and raycasts.
 
-### `S01c` — Hydrology, Bridge Decks & `World` API Wiring
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S01b`
-* **Read Set:** `crates/zombiebox-core/src/world/relief.rs`, `crates/zombiebox-core/src/world.rs`
-* **Write Set:** `crates/zombiebox-core/src/world/relief.rs`, `crates/zombiebox-core/src/world.rs`, `crates/zombiebox-core/tests/spatial_terrain.rs`
-* **Goal:**
-  1. Compute constant water planes per connected lake and non-increasing downstream river profiles; ensure riverbed $\ge 0.25$ below water.
-  2. Compute elevated bridge deck corners ($\ge 0.25$ above water) with matching graded road approach edges.
-  3. Expose `World::terrain_at`, `World::terrain_cell`, `World::elevation_at`, and `World::foundation_z`.
-  4. Freeze deterministic hash test across seeds and verify cross-seam corner equality.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --locked
-  ```
-
-### `S02a` — Spatial Support/Collision Contracts & Synthetic Test Fixtures (TDD)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S01c`
-* **Read Set:** `crates/zombiebox-core/src/spatial/mod.rs`, `crates/zombiebox-core/src/spatial/terrain.rs`
-* **Write Set:** `crates/zombiebox-core/src/spatial/support.rs`, `crates/zombiebox-core/src/spatial/collision.rs`, `crates/zombiebox-core/tests/spatial_collision.rs`
-* **Goal:**
-  1. Define `SupportSurface`, `ColliderId`, `ColliderShape`, `Collider`, `Ray3`, `Hit3`, `MoveResult`, `SpatialWorld`, and `move_kinematic` signature (with `todo!()` bodies or minimal stubs).
-  2. Build a `MockSpatialWorld` in `tests/spatial_collision.rs` with deterministic unit tests covering:
-     * Flat ground + sloped ramp climb/descent (reject slope $> 0.7$).
-     * Bridge underpass (body under bridge must NOT snap to deck).
-     * Thin-wall high-speed sweep (no tunneling).
-     * Stair ramp continuous ascent/descent and landing threshold.
-     * Support removal -> `Airborne` + gravity fall -> landing on lower slab.
-     * Ceiling block when rising.
-     * Raycast & sphere-cast (for camera obstruction) hitting intact box/terrain.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --test spatial_collision --no-run --locked
-  ```
-
-### `S02b` — Support Resolver, Raycast & Sphere-Cast Implementation
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S02a`
-* **Read Set:** `crates/zombiebox-core/src/spatial/support.rs`, `crates/zombiebox-core/src/spatial/collision.rs`, `crates/zombiebox-core/tests/spatial_collision.rs`
-* **Write Set:** `crates/zombiebox-core/src/spatial/support.rs`, `crates/zombiebox-core/src/spatial/collision.rs`
-* **Goal:**
-  1. Implement reachable support selection (nearest foot `z` within step-up `0.2` / step-down `0.3` bounds, stable tie-break by `SupportId`).
-  2. Implement `raycast` (slab AABB + terrain/deck/stair triangle intersection, smallest non-negative `t`, stable tie-break by `ColliderId`).
-  3. Implement `sphere_cast` (expanded AABB + terrain margin) for camera obstruction.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --test spatial_collision ray sphere support --locked
-  ```
-
-### `S02c` — Kinematic Solver & Live `ActionGame` Spatial Adapter
-* **Tier:** `[Coordinator / Frontier]` *(kinematic sweep + live tile collider mapping)*
-* **Depends on:** `S02b`
-* **Read Set:** `crates/zombiebox-core/src/action/types.rs`, `crates/zombiebox-core/src/action/block.rs` (wall/door/stair structs only), `crates/zombiebox-core/src/action/county.rs` (bounds/tile lookup only)
-* **Write Set:** `crates/zombiebox-core/src/spatial/collision.rs`, `crates/zombiebox-core/src/action/spatial.rs`, `crates/zombiebox-core/src/action/mod.rs`, `crates/zombiebox-core/tests/spatial_collision.rs`
-* **Goal:**
-  1. Implement `move_kinematic` (swept circle/AABB vs wall boxes up to 3 slide iterations, gravity `4.0` units/s$^2$, step/slope/ceiling checks) so all `S02a` synthetic tests pass.
-  2. Define shared core wall-segment geometry helpers in `action/spatial.rs` so physics and future 3D building meshes share exact wall/door/window dimensions.
-  3. Implement `SpatialWorld` adapter for `ActionGame` (`ActionGame::spatial_world()`) reading live `TileRenderInfo`, doors, stairs, bridges, and terrain.
-  4. Add live Birch & County tests verifying door toggle / wall breach immediately updates collision queries.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --test spatial_collision --locked
-  ```
-
-### `S03a` — Action Types 3D Migration & Compatibility Shims
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S02c`
-* **Read Set:** `crates/zombiebox-core/src/action/types.rs`, `crates/zombiebox-core/src/lib.rs`
-* **Write Set:** `crates/zombiebox-core/src/action/types.rs`, `crates/zombiebox-core/src/lib.rs`
-* **Goal:**
-  1. Evolve `Pose`, `MonsterView`, `ProjectileView`, `LightSourceView`, and `ActionEvent` locations to carry authoritative `Vec3` positions (absolute `z` in world units) while retaining semantic `Floor`.
-  2. Add temporary compatibility helper methods (e.g. `xy()`) so downstream crates (`zombiebox-render`, `zombiebox-ffi`) continue compiling cleanly during `S03b–S03d`.
-* **Verification:**
-  ```sh
-  cargo check --workspace --locked
-  ```
-
-### `S03b` — Migrate Player, Block & County Movement to 3D
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S03a`
-* **Read Set:** `crates/zombiebox-core/src/action/mod.rs`, `crates/zombiebox-core/src/action/spatial.rs`
-* **Write Set:** `crates/zombiebox-core/src/action/mod.rs`, `crates/zombiebox-core/src/action/block.rs`, `crates/zombiebox-core/src/action/county.rs`, `crates/zombiebox-core/tests/county.rs`
-* **Goal:**
-  1. Own player `BodyState` in `ActionGame`; route player movement, stairs, vaults, teleports, and floor-collapse falls through `move_kinematic` and `SpatialWorld`.
-  2. Preserve exact flat Birch Street movement speed, quiet-walk threshold, and injury-on-landing semantics.
-  3. Add integration tests: uphill/downhill `z` change on seed 42, bridge-over-water crossing, stair floor transition, collapsed floor fall.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --locked
-  ```
-
-### `S03c` — Migrate Monster AI & Navigation (`action/ai.rs` isolated)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S03b`
-* **Read Set:** `crates/zombiebox-core/src/action/ai.rs`, `crates/zombiebox-core/src/action/spatial.rs`
-* **Write Set:** `crates/zombiebox-core/src/action/ai.rs`
-* **Goal:**
-  1. Migrate monster bodies to `BodyState` and route movement through `move_kinematic`.
-  2. Update grid/semantic-floor A* edge checks to require valid support, walkable grade/step/clearance, and 3D world-distance edge cost.
-  3. Update monster LOS checks to use 3D `raycast` with eye/target heights (do not reveal upper/lower floors across slopes).
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-core --locked
-  ```
-
-### `S03d` — Migrate Weapons, Projectiles & Events (`action/weapons.rs` isolated)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S03c`
-* **Read Set:** `crates/zombiebox-core/src/action/weapons.rs`, `crates/zombiebox-core/src/action/spatial.rs`
-* **Write Set:** `crates/zombiebox-core/src/action/weapons.rs`, minimal compile fixes in `crates/zombiebox-render/src/*` and `crates/zombiebox-ffi/src/*` if needed
-* **Goal:**
-  1. Convert weapon origins, targets, projectiles, blasts, and emitted `ActionEvent` locations to authoritative 3D `Vec3`.
-  2. Use swept 3D segment / `raycast` queries for bullets/rockets against actors and geometry (earliest hit wins).
-  3. Preserve legacy planar aiming behavior on flat Birch Street fixtures.
-  4. Ensure entire workspace compiles and all existing tests pass.
-* **Verification:**
-  ```sh
-  cargo test --workspace --locked
-  ```
+### `S03` — Core Simulation 3D Migration
+* **Objective:** Migrate player movement, entity states, monster AI, and weapons to authoritative 3D coordinates.
+* **Key Guidelines:**
+  * Update entity poses, views (`PlayerRenderState`, `MonsterView`, `ProjectileView`), and combat events to carry 3D `Vec3` positions while maintaining semantic floor information.
+  * Route player movement, window vaults, stair navigation, and structural fall damage through the 3D kinematic solver.
+  * Update monster pathfinding, movement, and line-of-sight checks to operate in 3D, respecting eye height and vertical obstruction.
+  * Update weapon firing origins, projectiles, and blast volumes to perform 3D ray and sweep queries against terrain, buildings, and actors.
+  * Provide compatibility shims where necessary so downstream crates compile during the transition.
+* **Acceptance Criteria:**
+  * Player and monsters move smoothly across varying terrain elevations and multi-floor buildings.
+  * Weapons fire and collide accurately in 3D space, with line-of-sight properly blocked by roofs, upper floors, and hills.
+  * Existing flat Birch Street combat and movement semantics remain fully preserved.
+  * All workspace tests pass.
 
 ---
 
 ## Phase 2: Desktop 3D Engine & Interactive Viewer (`zombiebox-render3d`)
 
-### `T01` — Coordinates & Camera Math (Pure CPU)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `S01a` *(can run in parallel with S01b–S03 if desired)*
-* **Read Set:** `docs/render3d-architecture.md` (§2)
-* **Write Set:** `crates/zombiebox-render3d/src/coords.rs`, `crates/zombiebox-render3d/src/camera.rs`, `crates/zombiebox-render3d/src/lib.rs`, `crates/zombiebox-render3d/tests/camera.rs`
-* **Goal:**
-  1. Implement `coords.rs` (`world_point`, `core_point`, `ground_point`, `floor_y`, `tile_corners`).
-  2. Implement `CameraMode` (5 modes), `Projection`, `CameraTarget`, `CameraConfig`, `Viewport`, `CameraFrame`, `Ray`, and `CameraRig` with exponential half-life damping and shortest-angle yaw wrap.
-  3. Implement `project`, `ray_from_pixel`, `ground_hit`, and `screen_stick_to_world` (exact legacy iso analog mapping + yaw-relative mapping for non-iso modes).
-  4. Write unit tests for `+X/+Z/floor` legacy deltas (`+20,+10`, `-20,+10`, `0,-34`), yaw 0/90/180/270, overhead finite matrices, unproject round-trip, analog magnitude, and teleport snap.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test camera --locked
-  ```
+### `T01` — Coordinates, Camera Rigs & Input Mapping
+* **Objective:** Establish coordinate transformations, camera projections, and analog stick input conversions.
+* **Key Guidelines:**
+  * Define conversions between simulation coordinates (`+z` up) and renderer coordinates (`+Y` up, CCW triangle winding).
+  * Implement camera rigs supporting standard modes: Isometric (2:1 projection matching legacy look), Overhead, Orbit, Chase, and FirstPerson.
+  * Calibrate the default isometric camera (`yaw = π/4`, `pitch = π/6`, ~28.28 px/unit) so world steps match legacy screen-space pixel displacements.
+  * Implement input mapping that translates screen-relative virtual sticks into world-space vectors for each camera mode.
+* **Acceptance Criteria:**
+  * Camera projections transform world points to expected screen positions across all presets.
+  * Input conversion accurately maps stick input to world movement directions for both isometric and perspective modes.
+  * Unit tests verify camera matrices, unproject raycasting, and smooth damping.
 
-### `T02` — Scene Snapshot & Chunk Invalidation Cache (Pure CPU)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T01`, `S03d`
-* **Read Set:** `crates/zombiebox-core/src/action/mod.rs` (public query methods only), `crates/zombiebox-core/src/action/types.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/scene/mod.rs`, `crates/zombiebox-render3d/src/scene/snapshot.rs`, `crates/zombiebox-render3d/src/scene/chunks.rs`, `crates/zombiebox-render3d/tests/scene.rs`, optional read-only `render_bounds()` / `render_terrain_version()` in `zombiebox-core`
-* **Goal:**
-  1. Implement `ChunkKey` (`div_euclid(16)`), `CellKey`, `TileSnapshot`, `FrameSnapshot`, `ChunkSnapshot`, `SceneDelta`, `TileLookup`, `NeighborTiles`, and `SceneState::sync(&ActionGame)`.
-  2. Compute deterministic per-chunk geometry fingerprints (no random `HashMap` order) with 1-tile halo propagation on edge changes.
-  3. Write tests: negative chunk coordinates, active-window shift, teleport/revisit, seed change reset, zero geometry rebuild on idle/light-only frame, dirty chunk on door toggle/destruction.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test scene --locked
-  ```
+### `T02` — Scene Management & Chunk Invalidation Cache
+* **Objective:** Synchronize simulation state into renderable scene snapshots with fine-grained chunk caching.
+* **Key Guidelines:**
+  * Define snapshot data structures (`TileSnapshot`, `ChunkSnapshot`, `FrameSnapshot`) that capture visible world state from `ActionGame`.
+  * Track per-chunk geometry fingerprints or revision counters so unchanged chunks are not rebuilt or re-uploaded.
+  * Implement halo invalidation: when a tile at a chunk boundary changes (e.g. wall destruction), invalidate the neighboring chunk to prevent visible seam artifacts.
+* **Acceptance Criteria:**
+  * Camera-only movement triggers zero static geometry rebuilds.
+  * Modifying dynamic world elements (opening a door, breaching a wall) dirties only the affected chunk and its immediate halo.
+  * Tests verify chunk keying across negative coordinates, active streaming windows, and dirty-tracking behavior.
 
-### `T03a` — Mesh Primitives, Builder & Winding Tests (Pure CPU)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T01`
-* **Read Set:** `docs/render3d-architecture.md` (§4)
-* **Write Set:** `crates/zombiebox-render3d/src/mesh/mod.rs`, `crates/zombiebox-render3d/src/mesh/primitives.rs`, `crates/zombiebox-render3d/src/materials.rs`, `crates/zombiebox-render3d/tests/geometry.rs`
-* **Goal:**
-  1. Implement `GeometryClass`, `Vertex` (with `Pod`/`Zeroable` & explicit stride/offset assertions), `MeshData`, `MeshLayer`, `ChunkMesh`, `Aabb`, and `MeshBuilder` (`quad`, `cuboid`, `cylinder`, `wedge`, `append_transformed` with inverse-transpose normals).
-  2. Implement starter `MaterialRegistry` (sRGB $\to$ linear conversion, stable material IDs).
-  3. Write unit tests verifying CCW outward winding on all primitives, normal transforms under non-uniform scale, and index bounds.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test geometry --locked
-  ```
+### `T03` — Mesh Primitives & GPU Render Pipeline
+* **Objective:** Implement foundational 3D mesh builders and the core `wgpu` rendering pipeline.
+* **Key Guidelines:**
+  * Build reusable low-poly mesh generators (quads, cuboids, cylinders, ramps) ensuring consistent vertex formats, normals, and CCW winding.
+  * Set up depth-tested render pipelines (`Depth32Float`, backface culling) with support for static chunk buffers and dynamic instance batches.
+  * Implement an internal low-resolution render target with a nearest-neighbor upscale pass to the presentation window, maintaining the game's retro aesthetic.
+  * Provide headless offscreen rendering capabilities for testing and preview CLI tools.
+* **Acceptance Criteria:**
+  * Correct triangle winding and depth testing verified by render tests.
+  * Headless preview example successfully renders test geometry and outputs clean PNGs across different aspect ratios.
 
-### `T03b` — `wgpu` Pipeline, Low-Res Upscale & Headless Preview
-* **Tier:** `[Coordinator / Frontier]` *(wgpu 26.0.1 pipelines, WGSL, 256-byte aligned readback)*
-* **Depends on:** `T02`, `T03a`
-* **Read Set:** `crates/zombiebox-render3d/examples/smoke_triangle.rs`, `crates/zombiebox-render3d/src/mesh/mod.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/gpu/*`, `crates/zombiebox-render3d/src/shaders/world.wgsl`, `crates/zombiebox-render3d/src/shaders/upscale.wgsl`, `crates/zombiebox-render3d/examples/preview.rs`, `crates/zombiebox-render3d/tests/gpu_smoke.rs`
-* **Goal:**
-  1. Implement `GpuRenderer` (`new_headless`, `new_surface`, `resize`, `render`, `readback_rgba`, `invalidate_scene`, `stats`), opaque depth-tested pipeline (`Depth32Float`, back-face cull), and nearest-neighbor full-screen upscale pass.
-  2. Implement chunk buffer residency keyed by geometry fingerprint (zero uploads on camera-only movement).
-  3. Write `gpu_smoke.rs`: render flat ground + two overlapping boxes, assert nearer box wins regardless of draw order, verify resize and padded readback.
-  4. Wire `examples/preview.rs` CLI (`--scenario`, `--seed`, `--camera`, `--size`, `--output`) to render test geometry from all 5 camera presets.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --features gpu --test gpu_smoke --locked
-  cargo run -p zombiebox-render3d --example preview --features gpu --locked -- --scenario birch --seed 42 --camera iso --size 960x540 --output /tmp/zb-t03-iso.png
-  ```
+### `T04` — 3D Terrain & Surface Meshing
+* **Objective:** Generate continuous 3D terrain meshes from county elevation data.
+* **Key Guidelines:**
+  * Mesh all surface types (grass, dirt, roads, pavement, water) using elevation data and the standardized diagonal triangle split.
+  * Emit road surfaces and markings with slight vertical offsets to eliminate z-fighting.
+  * Generate flat water planes at appropriate water elevations and separate bridge deck surfaces with approach ramps.
+  * Ensure adjacent chunk edges share exact boundary vertex positions and normals.
+* **Acceptance Criteria:**
+  * Terrain meshes render smoothly across varied topography without cracks or visual seams between chunks.
+  * Bridges, roads, and waterways visually align with their physical walkable surfaces.
+  * Visual inspection via preview captures confirms proper terrain rendering across multiple seeds.
 
-### `T04` — 3D Terrain Meshing
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T03b`, `S01c`
-* **Read Set:** `crates/zombiebox-core/src/action/types.rs` (`Surface` enum), `crates/zombiebox-render3d/src/mesh/mod.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/mesh/terrain.rs`, `crates/zombiebox-render3d/src/mesh/mod.rs`, `crates/zombiebox-render3d/tests/geometry.rs`
-* **Goal:**
-  1. Exhaustively map all `Surface` variants using authoritative `TerrainCell` corners and the exact `00 -> 11` diagonal split (converted to CCW renderer winding).
-  2. Emit road markings/curbs (with anti-z-fighting offset), water planes at authoritative `water_z`, separate bridge decks at `bridge_deck_z`, and zero geometry for `Air`.
-  3. Verify zero seam gaps across adjacent chunks on seed 42 (residential, bridge/river, mountain) and render preview PNGs.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test geometry --locked
-  cargo run -p zombiebox-render3d --example preview --features gpu --locked -- --scenario county --seed 42 --camera overhead --size 960x540 --output /tmp/zb-t04-overhead.png
-  ```
+### `T05` — 3D Buildings, Openings & Destruction
+* **Objective:** Procedurally generate 3D multi-floor building geometry, openings, stairs, and structural destruction.
+* **Key Guidelines:**
+  * Reference existing building generation logic in `crates/zombiebox-render/src/street.rs` to derive wall segments, door frames, window openings, and multi-floor cutaways.
+  * Mesh walls, doors (supporting open/closed states), windows (intact/broken), interior floor slabs, and stairs matching physical ramps.
+  * Support flat and pitched roofs, ensuring roofs clip cleanly to chunk boundaries and collapse when supporting walls are destroyed.
+  * Tag geometry into appropriate classes (e.g. ground, interior, wall lower/upper, roof) to support dynamic cutaway visibility.
+* **Acceptance Criteria:**
+  * Multi-floor houses and district buildings render with accurate dimensions, stairs, and openings.
+  * Breaching walls and damaging structures visually updates the 3D mesh.
+  * Roofs render properly and collapse cleanly when supports are removed.
 
-### `T05a` — Extract Building & Roof Spec from Legacy `street.rs`
-* **Tier:** `[Coordinator / Frontier]` *(reads 111 KB `street.rs` so lightweight agents don't have to)*
-* **Depends on:** `T04`
-* **Read Set:** `crates/zombiebox-render/src/street.rs`, `crates/zombiebox-core/src/action/spatial.rs`
-* **Write Set:** `docs/render3d-building-spec.md`
-* **Goal:**
-  1. Distill the exact wall ownership rules (`AlongX`, `AlongY`, `Corner`), door/window jamb/lintel dimensions, damage stages, stair placement, `BuildingStyle` palettes, and pitched/flat roof + collapse rules into a concise 1–2 page reference doc.
-* **Verification:** Coordinator review of `docs/render3d-building-spec.md`.
+### `T06` — Props, Caches & District Palettes
+* **Objective:** Add 3D prop models, loot caches, streetlamps, and environmental material palettes.
+* **Key Guidelines:**
+  * Create lightweight 3D models for county props (trees with trunks and canopies, streetlights, fences, rubble, and loot caches).
+  * Build a material registry mapping building and district styles to cohesive retro color palettes.
+  * Allow loot cache interaction (opened vs. unopened) to update efficiently via instance data or appearance states without forcing static chunk rebuilds.
+* **Acceptance Criteria:**
+  * All common props and caches render in appropriate district themes.
+  * Cache opening updates visual state smoothly.
+  * Visual tests confirm proper placement and orientation of props across residential, commercial, and rural districts.
 
-### `T05b` — Building Walls, Openings, Floors & Stairs
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T05a`
-* **Read Set:** `docs/render3d-building-spec.md`, `crates/zombiebox-core/src/action/spatial.rs`, `crates/zombiebox-render3d/src/mesh/mod.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/mesh/buildings.rs`, `crates/zombiebox-render3d/src/mesh/mod.rs`, `crates/zombiebox-render3d/tests/geometry.rs`
-* **Goal:**
-  1. Emit walls from core spatial wall-segment descriptors (split into `WallStub` + `WallUpper` classes for later cutaway), doors (open/closed hinge rotation), windows (intact/broken), interior floors/slabs (respecting collapsed holes), and stairs matching core ramps.
-  2. Test door toggle, broken window, breached wall, and collapsed upper slab on Birch Street.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test geometry --locked
-  ```
+### `T07` — Visibility, Cutaways & Shading
+* **Objective:** Implement room visibility rules, interior cutaways, dynamic lighting, and environmental effects.
+* **Key Guidelines:**
+  * Replicate gameplay visibility logic: hide unvisited interiors, cut away roofs and upper walls when the player is inside, and apply fog-of-war to unexplored areas.
+  * Implement screen-door dither or alpha-tested cutaway shading for upper walls and roofs so interior action remains readable.
+  * Integrate directional sunlight/moonlight, ambient dusk lighting, streetlamp point lights, and dynamic muzzle/explosion flashes into the shader pipeline.
+  * Ensure gameplay camera perspectives never reveal hidden interior content through camera rotation alone.
+* **Acceptance Criteria:**
+  * Entering buildings smoothly cuts away roofs and reveals interiors.
+  * Dusk lighting, streetlights, and weapon flashes illuminate the scene properly.
+  * Visibility rules prevent unintended peeking into unexplored rooms from orbit/free cameras.
 
-### `T05c` — Building Roofs, Chunk Clipping & Collapse
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T05b`
-* **Read Set:** `docs/render3d-building-spec.md`, `crates/zombiebox-render3d/src/mesh/buildings.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/mesh/buildings.rs`, `crates/zombiebox-render3d/tests/geometry.rs`
-* **Goal:**
-  1. Implement `emit_roof` for pitched (`has_pitched_roof()`) and flat styles, derived from live supported footprints and clipped cleanly to chunk ownership (no duplicate roofs across chunk seams).
-  2. Tag emitted roof geometry as `GeometryClass::Roof`; verify removed supporting cell updates/removes roof cleanly.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test geometry --locked
-  cargo run -p zombiebox-render3d --example preview --features gpu --locked -- --scenario birch --seed 42 --camera orbit --size 960x540 --output /tmp/zb-t05-orbit.png
-  ```
+### `T08` — Articulated Actors & Instanced Animation
+* **Objective:** Render 3D animated characters for survivor and infected archetypes using GPU instancing.
+* **Key Guidelines:**
+  * Build rigid-part character meshes (torso, head, limbs, equipped weapons) for survivor and zombie archetypes (Shamblers, Brisk, Bloaters, Shooters).
+  * Implement procedural skeletal or rigid-part gait animations driven by simulation movement and speed.
+  * Support hit reactions, aiming rotations, attack telegraphs, and corpse states.
+  * Render actors using efficient GPU instancing grouped by archetype.
+* **Acceptance Criteria:**
+  * Survivor and infected display clear, expressive locomotion and combat feedback.
+  * Aim direction and weapon attachments align accurately with 3D targeting.
+  * Instanced rendering maintains high frame rates with 100+ active actors on screen.
 
-### `T06` — Props, Caches, Lamps & District Material Palettes
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T05c`
-* **Read Set:** `docs/render3d-building-spec.md`, `crates/zombiebox-core/src/action/types.rs` (`PropKind`, `BuildingStyle`)
-* **Write Set:** `crates/zombiebox-render3d/src/mesh/props.rs`, `crates/zombiebox-render3d/src/materials.rs`, `crates/zombiebox-render3d/src/mesh/mod.rs`, `crates/zombiebox-render3d/tests/geometry.rs`
-* **Goal:**
-  1. Build low-poly local meshes (ground-contact origin) for every `PropKind` (including 3D trees with trunk + canopy), streetlights, rubble, and loot caches.
-  2. Populate full `MaterialRegistry` covering all `BuildingStyle` palettes.
-  3. Ensure cache open/unopened state updates via instance/appearance without triggering terrain mesh rebuilds.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test geometry --locked
-  ```
-
-### `T07a` — Visibility Policy, Cutaway State & Parity Matrix (Pure CPU)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T06`
-* **Read Set:** `crates/zombiebox-render/src/lib.rs` (cutaway/stipple logic only), `crates/zombiebox-render/src/lighting.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/scene/visibility.rs`, `crates/zombiebox-render3d/tests/parity.rs`
-* **Goal:**
-  1. Implement `RenderVisibilityPolicy` (`Gameplay`, `DebugReveal`), `CellAppearance`, `CutawayState`, and `cell_appearance()`.
-  2. Replicate legacy indoor/outdoor, F0/F1/F2 cutaway, lower-floor dimming, and `Hidden`/`Explored`/`Visible` shroud semantics.
-  3. Write unit tests verifying `Gameplay` never reveals `Hidden` interiors at any camera angle, and idle visibility updates do not mark geometry dirty.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --no-default-features --test parity --locked
-  ```
-
-### `T07b` — GPU Appearance Buffer, Dither Cutaway & Lighting Shader
-* **Tier:** `[Coordinator / Frontier]` *(WGSL shader + per-chunk appearance GPU buffer)*
-* **Depends on:** `T07a`
-* **Read Set:** `crates/zombiebox-render3d/src/scene/visibility.rs`, `crates/zombiebox-render3d/src/shaders/world.wgsl`, `crates/zombiebox-render3d/src/gpu/buffers.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/shaders/world.wgsl`, `crates/zombiebox-render3d/src/gpu/buffers.rs`, `crates/zombiebox-render3d/src/gpu/pipelines.rs`, `crates/zombiebox-render3d/src/gpu/draw.rs`
-* **Goal:**
-  1. Upload per-chunk `CellAppearance` buffers each frame (without rebuilding static chunk meshes).
-  2. Implement screen-door dither/alpha-test cutaway in `world.wgsl` for `Roof` and `WallUpper` classes (writes depth only for retained fragments).
-  3. Implement fixed world directional light + `dusk_level` ambient + per-cell light + bounded dynamic flash list + shroud tint + distance fog near active-window boundary.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --features gpu --locked
-  cargo run -p zombiebox-render3d --example preview --features gpu --locked -- --scenario birch --seed 42 --camera iso --size 960x540 --output /tmp/zb-t07-iso.png
-  ```
-
-### `T08` — 3D Articulated Actors & Instanced Rendering
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T07b`
-* **Read Set:** `crates/zombiebox-core/src/action/types.rs` (`PlayerRenderState`, `MonsterView`), `crates/zombiebox-render3d/src/gpu/buffers.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/mesh/actors.rs`, `crates/zombiebox-render3d/src/animation.rs`, `crates/zombiebox-render3d/src/gpu/draw.rs`, `crates/zombiebox-render3d/tests/geometry.rs`
-* **Goal:**
-  1. Build rigid-part humanoid meshes (`ActorRig`) with distinct proportions/palettes for Survivor, Shambler, Brisk, Bloater, and Shooter, plus hand-attached weapon primitives.
-  2. Implement `ActorAnimator` driven by simulation displacement (`observe_tick`), gait swing, hit reaction, telegraph, and corpse drop. Walking animation must not advance on camera-only rotation.
-  3. Render actors via GPU instancing grouped by part mesh; hide local player body only in `FirstPerson`.
-  4. Test 100-actor stress scene has bounded draw calls.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-render3d --features gpu --locked
-  ```
-
-### `T09` — Effects, `Presentation` Facade, Camera Obstruction & Desktop Viewer
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T08`
-* **Read Set:** `crates/zombiebox-render/src/vfx.rs` (timings/caps only), `crates/zombiebox-render3d/src/lib.rs`, `crates/zombiebox-render3d/src/camera.rs`
-* **Write Set:** `crates/zombiebox-render3d/src/effects.rs`, `crates/zombiebox-render3d/src/shaders/effects.wgsl`, `crates/zombiebox-render3d/src/lib.rs`, `crates/zombiebox-render3d/src/camera.rs`, `crates/zombiebox-render3d/examples/viewer.rs`, `crates/zombiebox-render3d/tests/parity.rs`
-* **Goal:**
-  1. Implement `EffectsState` (`observe_tick` once per sim step, deduplicated by tick, bounded pools for sparks, smoke, debris, blood, tracers, flashes, corpses) and 3D projectiles using authoritative `position.z`.
-  2. Wire `resolve_camera_eye` using `SpatialWorld::sphere_cast` for Chase/Orbit obstruction.
-  3. Complete `Presentation` facade (`observe_tick`, `prepare`, `notify_teleport`, `set_camera`, `screen_stick_to_world`, `mark_presented`).
-  4. Build interactive desktop `examples/viewer.rs` (keys `1–5` switch cameras live on the same run; arrows adjust yaw/pitch/zoom; live combat/movement; HUD stats).
-* **Verification (Desktop E2E Milestone!):**
-  ```sh
-  cargo test -p zombiebox-render3d --features gpu --locked
-  cargo run -p zombiebox-render3d --example viewer --features viewer --locked -- --seed 42
-  ```
-  *Coordinator manual check:* Walk, fight, open doors, cross hills/bridges, and switch all 5 camera modes live in `viewer` without run resets or visual defects.
+### `T09` — Effects, Obstruction & Interactive Desktop Viewer
+* **Objective:** Finalize dynamic visual effects, camera obstruction handling, and deliver a fully interactive desktop test application.
+* **Key Guidelines:**
+  * Implement particle systems and transient effects (muzzle flashes, tracers, impacts, blood, smoke, explosions) driven by simulation event feeds.
+  * Implement camera obstruction resolution (e.g. sphere-casting or dither fade) to prevent exterior walls or terrain from occluding the survivor in Chase or Orbit modes.
+  * Assemble the unified `Presentation` facade coordinating camera, scene, actors, and effects.
+  * Build an interactive desktop viewer executable (`examples/viewer.rs`) allowing live gameplay, real-time camera switching (keys 1–5), free orbit, and performance metric display.
+* **Acceptance Criteria:**
+  * Live desktop viewer runs smoothly with full combat, movement, scavenging, and real-time camera switching.
+  * Obstruction handling keeps the player visible when standing behind high walls or structures.
+  * Transient visual effects trigger cleanly from action events without leaking memory or dropping frames.
 
 ---
 
-## Phase 3: Host Integrations (Web & Android)
+## Phase 3: Host Integrations (Android & Web)
 
-### `T12` — Browser GPU Action Host (`zombiebox-web`)
-*(Pulled ahead of Android QA so desktop/browser e2e is verified before touching mobile)*
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T09`
-* **Read Set:** `crates/zombiebox-web/Cargo.toml`, `crates/zombiebox-web/src/main.rs`
-* **Write Set:** `crates/zombiebox-web/Cargo.toml`, `crates/zombiebox-web/src/main.rs`, minimal camera selector in `apps/web/action.js` if needed
-* **Goal:**
-  1. Replace per-session CPU `Renderer` in `zombiebox-web` with `Presentation` + shared headless `GpuRenderer` device/queue and per-run targets.
-  2. Preserve ZBF2 RGBA wire format, fixed ticks, input flags, audio masks, atlas, and `/legacy`.
-  3. Ensure GPU readback does not hold a global lock blocking unrelated sessions; return explicit error if no GPU adapter is present.
-* **Verification:**
-  ```sh
-  cargo test -p zombiebox-web --locked
-  ```
-  *Coordinator manual check:* Play seed 42 in browser via ZBF2 and switch cameras.
+### `T10` — Android Native Integration (FFI, JNI & SurfaceView)
+* **Objective:** Connect the 3D renderer to the Android native runtime.
+* **Key Guidelines:**
+  * Extend Rust FFI exports (`zombiebox-ffi`) to support 3D presentation, camera controls, and native surface attachment.
+  * Update JNI bindings to manage `ANativeWindow` references cleanly, initializing GPU devices asynchronously to avoid blocking the Android UI thread.
+  * Integrate with the mobile frontend via a native `SurfaceView` component, ensuring clean lifecycle handling during app backgrounding, surface destruction, and screen rotation.
+* **Acceptance Criteria:**
+  * Android native libraries (`arm64-v8a`, `x86_64`) build successfully with 3D GPU support.
+  * The native app launches, creates a GPU surface, renders the 3D scene, and responds to touch controls.
+  * Backgrounding and resuming the app preserves game state and surface lifecycle without crashing.
 
-### `T10a` — Additive Rust FFI & C Header (`zb_action_v3_*`)
-* **Tier:** `[Lightweight OK]`
-* **Depends on:** `T09`
-* **Read Set:** `crates/zombiebox-ffi/Cargo.toml`, `crates/zombiebox-ffi/src/action.rs`, `crates/zombiebox-ffi/include/zombiebox.h`, `crates/zombiebox-ffi/tests/host.c`
-* **Write Set:** `crates/zombiebox-ffi/Cargo.toml`, `crates/zombiebox-ffi/src/gpu_action.rs`, `crates/zombiebox-ffi/src/action.rs`, `crates/zombiebox-ffi/src/lib.rs`, `crates/zombiebox-ffi/include/zombiebox.h`, `crates/zombiebox-ffi/tests/host.c`
-* **Goal:**
-  1. Add optional `gpu3d` feature to `zombiebox-ffi`.
-  2. Add `ZbGpuStatus`, `ZbCameraMode`, `ZbCameraConfigV3`, and `zb_action_v3_*` exports (`attach_android_surface`, `resize`, `detach_surface`, `set_camera`, `frame`) while preserving `v1`/`v2` during migration.
-  3. Refactor `advance_v2` to take **world** vectors; `frame_v3` resolves screen stick via 3D `Presentation`, dispatches `observe_tick` once per step, and returns audio mask even on `SKIPPED` frames.
-* **Verification:**
-  ```sh
-  cargo check -p zombiebox-ffi --features gpu3d --locked
-  ./scripts/check-native.sh
-  ```
+### `T11` — Handset QA & Performance Tuning
+* **Objective:** Validate real-world performance, frame pacing, and visual stability on physical Android hardware.
+* **Key Guidelines:**
+  * Conduct playtesting sessions on target physical Android handsets across diverse scenarios (dense downtown, residential cutaways, large zombie hordes, rapid traversal).
+  * Measure frame intervals (targeting smooth 60 FPS / p95 $\le 16.7$ ms), memory footprint, thermal stability, and battery impact.
+  * Tune dynamic resolution scaling, render distances, and frustum culling as needed to meet performance targets without compromising visual clarity.
+* **Acceptance Criteria:**
+  * Stable frame pacing verified on physical hardware across extended play sessions.
+  * No memory leaks, GPU context loss crashes, or visual artifacts during scene transitions.
+  * Performance telemetry and test results documented in the progress ledger.
 
-### `T10b` — Android JNI, `ANativeWindow` Lifetime & Non-Blocking GPU Init
-* **Tier:** `[Coordinator / Frontier]` *(unsafe NDK window refs, `raw-window-handle`, async init thread)*
-* **Depends on:** `T10a`
-* **Read Set:** `apps/mobile/android/zombiebox_jni.c`, `apps/mobile/android/build-rust.sh`, `apps/mobile/android/app/src/main/java/game/zombiebox/mobile/NativeGame.java`
-* **Write Set:** `crates/zombiebox-ffi/src/gpu_action.rs`, `apps/mobile/android/zombiebox_jni.c`, `apps/mobile/android/build-rust.sh`, `apps/mobile/android/app/src/main/java/game/zombiebox/mobile/NativeGame.java`
-* **Goal:**
-  1. Wire JNI `attachSurfaceV3`, `resizeSurfaceV3`, `detachSurfaceV3`, `setCameraV3`, `frameV3`.
-  2. Acquire/release `ANativeWindow` ref cleanly; initialize `wgpu` adapter/device on a worker thread with generation IDs so UI callbacks never block and stale surfaces are discarded.
-  3. Update `build-rust.sh` to build `arm64-v8a` and `x86_64` with `--features gpu3d`.
-* **Verification:**
-  ```sh
-  ./apps/mobile/android/build-rust.sh
-  ```
-
-### `T10c` — `ZombieboxSurfaceView.kt` & React Native Camera Selector
-* **Tier:** `[Coordinator / Frontier]` *(43 KB Kotlin View + RN native component wiring)*
-* **Depends on:** `T10b`
-* **Read Set:** `apps/mobile/android/app/src/main/java/game/zombiebox/mobile/ZombieboxSurfaceView.kt`, `apps/mobile/specs/ZombieboxSurfaceNativeComponent.ts`, `apps/mobile/App.tsx`
-* **Write Set:** `apps/mobile/android/app/src/main/java/game/zombiebox/mobile/ZombieboxSurfaceView.kt`, `apps/mobile/specs/ZombieboxSurfaceNativeComponent.ts`, `apps/mobile/App.tsx`
-* **Goal:**
-  1. Refactor `ZombieboxSurfaceView` into a `FrameLayout` with a bottom `SurfaceView` (GPU) and top transparent controls/HUD overlay. Keep temporary CPU toggle until `T13`.
-  2. Wire `SurfaceHolder.Callback` without destroying `Runs` game state on surface detach/rotation/background/atlas teleport.
-  3. Add user-facing camera mode selector (all 5 modes) and explicit error/retry UI if GPU is unavailable.
-* **Verification:** Gradle Android debug build succeeds cleanly for both ABIs.
+### `T12` — Web GPU Action Host
+* **Objective:** Update the web server and browser client to support the 3D rendering pipeline.
+* **Key Guidelines:**
+  * Adapt `zombiebox-web` to utilize the 3D `Presentation` layer and headless GPU rendering for browser streaming sessions.
+  * Maintain compatibility with the web control harness and streaming protocol while providing access to camera switching.
+* **Acceptance Criteria:**
+  * Browser client successfully connects, streams frames rendered via the 3D engine, and accepts player inputs.
+  * Web test suite passes cleanly.
 
 ---
 
-## Phase 4: Physical Android QA & Single-Renderer Cutover
+## Phase 4: Single-Renderer Cutover
 
-### `T11` — Physical Android Handset QA & Performance Tuning
-* **Tier:** `[Coordinator / Frontier]`
-* **Depends on:** `T10c`
-* **Read Set:** `docs/render3d-progress.md`
-* **Write Set:** Measured bottleneck fixes only, `docs/render3d-progress.md`
-* **Goal:**
-  1. Run 10-minute physical handset test on seed 42 (residential, downtown, hospital, woods, bridge, F0–F2 interiors, 100 monsters, chunk crossings, teleports, background/resume, all 5 cameras).
-  2. Record adapter/driver, resolution, p50/p95 frame intervals (target p95 $\le 16.7$ ms), static upload count (0 on idle), and memory stability.
-  3. Tune render scale / culling / batching if needed (never shrink simulation or difficulty). Flip GPU to default once accepted.
-* **Verification:** Documented physical handset telemetry in `docs/render3d-progress.md`.
-
-### `T13` — Mandatory Single-Renderer Cutover
-* **Tier:** `[Lightweight OK]` *(mechanical cleanup after T11 & T12 gates pass)*
-* **Depends on:** `T11`, `T12`
-* **Read Set:** Workspace `Cargo.toml`, `crates/zombiebox-ffi/*`, `apps/mobile/*`, `docs/*`
-* **Write Set:** Delete `crates/zombiebox-render/`, remove legacy bitmap action ABI (`zb_action_v1_*` / `v2` bitmap frame), remove `AndroidBitmap_lockPixels` action path, remove temporary CPU renderer toggle and `S03a` shims, update `docs/architecture.md`, `docs/product-decisions.md`, `docs/goals.md`, `README.md`.
-* **Goal:** Leave `zombiebox-render3d` as the sole production action renderer on Android and Web. Update product docs to mark 3D prerequisite complete (do not check off future vehicle goals).
-* **Verification:**
-  ```sh
-  rg "zombiebox-render[^3]" crates/ apps/
-  rg "AndroidBitmap_lockPixels" apps/mobile/
-  cargo fmt --all -- --check
-  cargo test --workspace --locked
-  cargo clippy -p zombiebox-render3d --all-targets --features gpu --locked -- -D warnings
-  ./scripts/check-native.sh
-  ```
-  *Final gate:* Repeat quick physical handset + browser smoke test. Vehicles may begin after this gate passes.
+### `T13` — Legacy Cutover & Cleanup
+* **Objective:** Retire the legacy 2D CPU renderer and finalize `zombiebox-render3d` as the sole production action renderer.
+* **Key Guidelines:**
+  * Remove `crates/zombiebox-render/` and obsolete 2D bitmap FFI export paths.
+  * Clean up temporary compatibility shims, feature gates, and fallback toggles.
+  * Update project documentation (`README.md`, `architecture.md`, `product-decisions.md`) to reflect the completed 3D pipeline.
+* **Acceptance Criteria:**
+  * Workspace compiles cleanly with zero references to the deleted legacy renderer.
+  * All CI checks, tests, and native verification scripts pass.
+  * Sideloadable Android APK and web playtest run solely on the unified 3D renderer.

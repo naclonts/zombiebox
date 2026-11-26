@@ -1,58 +1,44 @@
 # Zombiebox 3D Migration — Progress Ledger
 
-**Baseline Commit:** *(fill in from `git rev-parse --short HEAD`)*  
-**Rust Toolchain:** `1.87.0`  
-**Pinned `wgpu` Version:** *(verify & lock in `T00a`)*  
-**Current Phase:** Phase 0 (`T00a`)
+* **Baseline Commit:** *(record commit hash)*  
+* **Toolchain / Environment:** Rust `1.87.0`, `wgpu 26.x`
+* **Current Phase:** Phase 0 (`T00`)
 
 ---
 
 ## Task Status
 
-| Task | Tier | Status | Commit | Notes / Blockers |
+| Milestone | Title | Status | Commit | Notes / Validation |
 |---|---|---|---|---|
-| `T00a` | Frontier | TODO | — | Baseline screenshots, `wgpu` pin, desktop triangle PNG |
-| `S01a` | Lightweight | TODO | — | Spatial primitives + 513×513 grid + triangle sampler |
-| `S01b` | Frontier | TODO | — | Relief, flat building pads, road grading (64 seeds) |
-| `S01c` | Lightweight | TODO | — | Lakes, rivers, bridge decks, `World` API |
-| `S02a` | Lightweight | TODO | — | Support/collision traits + synthetic TDD fixtures |
-| `S02b` | Lightweight | TODO | — | Support resolver, raycast, sphere-cast |
-| `S02c` | Frontier | TODO | — | Kinematic solver + live `ActionGame` spatial adapter |
-| `S03a` | Lightweight | TODO | — | `action/types.rs` 3D `Vec3` + compat shims |
-| `S03b` | Lightweight | TODO | — | Player/block/county 3D movement |
-| `S03c` | Lightweight | TODO | — | `action/ai.rs` 3D navigation & LOS |
-| `S03d` | Lightweight | TODO | — | `action/weapons.rs` 3D rays, projectiles & events |
-| `T01` | Lightweight | TODO | — | `coords.rs`, `camera.rs`, iso calibration tests |
-| `T02` | Lightweight | TODO | — | `scene/` snapshot & chunk invalidation cache |
-| `T03a` | Lightweight | TODO | — | `mesh/` primitives, builder, winding tests |
-| `T03b` | Frontier | TODO | — | `wgpu` pipelines, upscale, headless `preview` |
-| `T04` | Lightweight | TODO | — | 3D terrain meshing (all `Surface` variants) |
-| `T05a` | Frontier | TODO | — | Extract `docs/render3d-building-spec.md` from `street.rs` |
-| `T05b` | Lightweight | TODO | — | Building walls, openings, floors, stairs |
-| `T05c` | Lightweight | TODO | — | Building roofs, chunk clipping, collapse |
-| `T06` | Lightweight | TODO | — | Props, caches, lamps, district palettes |
-| `T07a` | Lightweight | TODO | — | CPU visibility policy, cutaway state, parity tests |
-| `T07b` | Frontier | TODO | — | GPU appearance buffer, dither cutaway, lighting |
-| `T08` | Lightweight | TODO | — | 3D rigid-part actors, gait animation, instancing |
-| `T09` | Lightweight | TODO | — | Effects, `Presentation`, camera obstruction, `viewer` |
-| `T12` | Lightweight | TODO | — | Browser GPU action host (`zombiebox-web` ZBF2) |
-| `T10a` | Lightweight | TODO | — | Additive Rust FFI `zb_action_v3_*` + C header |
-| `T10b` | Frontier | TODO | — | JNI, `ANativeWindow`, non-blocking GPU init |
-| `T10c` | Frontier | TODO | — | `ZombieboxSurfaceView.kt` FrameLayout + RN selector |
-| `T11` | Frontier | TODO | — | Physical Android 10-min QA & perf tuning |
-| `T13` | Lightweight | TODO | — | Delete `zombiebox-render` & legacy bitmap ABI |
+| `T00` | Baseline Capture & Desktop GPU Setup | TODO | — | Baseline reference captures & headless smoke test |
+| `S01` | Spatial Primitives, Terrain Grid & World Relief | TODO | — | Continuous elevation, flat building pads, road grading |
+| `S02` | Spatial Supports, Collision & Kinematics | TODO | — | Continuous support resolution, collision queries, kinematic sweep |
+| `S03` | Core Simulation 3D Migration | TODO | — | Player, entity poses, monster AI navigation, 3D weapons & events |
+| `T01` | Coordinates, Camera Rigs & Input Mapping | TODO | — | Projections, rigs, iso calibration, analog stick input mapping |
+| `T02` | Scene Management & Chunk Invalidation Cache | TODO | — | Scene snapshot synchronization & dirty chunk caching |
+| `T03` | Mesh Primitives & GPU Render Pipeline | TODO | — | `wgpu` pipeline, mesh builders, low-res target & retro upscale |
+| `T04` | 3D Terrain & Surface Meshing | TODO | — | County terrain, roads, water planes, and bridge decks |
+| `T05` | 3D Buildings, Openings & Destruction | TODO | — | Multi-floor buildings, walls, openings, stairs, roofs & collapse |
+| `T06` | Props, Caches & District Palettes | TODO | — | Props, streetlights, loot caches, material registries |
+| `T07` | Visibility, Cutaways & Shading | TODO | — | Interior cutaways, dither shading, lighting, and shroud rules |
+| `T08` | Articulated Actors & Instanced Animation | TODO | — | Character rigs, gait animation, combat telegraphs, GPU instancing |
+| `T09` | Effects, Obstruction & Interactive Desktop Viewer | TODO | — | Dynamic effects, camera obstruction, interactive viewer app |
+| `T10` | Android Native Integration | TODO | — | FFI, JNI surface management, Native SurfaceView |
+| `T11` | Handset QA & Performance Tuning | TODO | — | Physical Android device profiling, frame pacing, optimization |
+| `T12` | Web GPU Action Host | TODO | — | Browser streaming session support for 3D engine |
+| `T13` | Legacy Cutover & Cleanup | TODO | — | Deprecate legacy CPU renderer, clean up shims, final verification |
 
 ---
 
-## Frozen Decisions & Constants
+## Reference Constants & Decisions
 
-* **World Generator Version / Hash:** *(record in `S01c`)*
-* **Desktop Reference Adapter:** *(record in `T00a`)*
-* **Physical Android Device / Driver:** *(record in `T11`)*
-* **Baseline CPU Screenshots:** *(record exact CLI commands & paths in `T00a`)*
+* **County Generator Seed Reference:** Seed `42` for baseline visual and spatial review.
+* **Camera Defaults:** 2:1 isometric standard (`yaw = π/4`, `pitch = π/6`, vertical scale ~28.28 px/unit).
+* **Vertical Floor Height:** `FLOOR_H ≈ 1.388` world units.
+* **Target Frame Interval:** 60 FPS (p95 $\le 16.7$ ms) on target mobile hardware.
 
 ---
 
 ## Session Log
 
-*(Append a brief entry after each completed task: task ID, commands run, pass/fail summary, and any contract adjustments.)*
+*(Append brief progress entries as milestones complete: milestone ID, validation summary, and any architectural observations.)*
