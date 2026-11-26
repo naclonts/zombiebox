@@ -4,6 +4,7 @@ members = [
     "crates/zombiebox-core",
     "crates/zombiebox-ffi",
     "crates/zombiebox-render",
+    "crates/zombiebox-render3d",
     "crates/zombiebox-web",
 ]
 

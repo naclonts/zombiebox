@@ -7,3 +7,6 @@ publish = false
 
 [dependencies]
 zombiebox-core = { path = "../zombiebox-core" }
+
+[dev-dependencies]
+png = "0.18.1"

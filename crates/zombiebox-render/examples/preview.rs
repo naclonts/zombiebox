@@ -1,23 +1,63 @@
-//! Multi-scene visual showcase (`640×360` PPMs in `/tmp/`) and `800×360` p95 benchmark harness.
+//! Multi-scene visual showcase (`640×360` PPMs in `/tmp/` or `--baselines` PNGs) and `800×360` p95 benchmark harness.
 
+use std::fmt::Write as _;
 use std::fs;
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use zombiebox_core::{
-    ActionEvent, ActionGame, ActionInput, ActionOutcome, MonsterKind, Position, TileKind, Vec2,
-    Weapon,
+    ActionEvent, ActionGame, ActionInput, ActionOutcome, Ground, LandmarkKind, MonsterKind,
+    Position, Tile3D, TileKind, Vec2, WORLD_SIZE, Water, Weapon, World,
 };
 use zombiebox_render::Renderer;
 
 const TICK_MS: u64 = 16;
 
-fn write_ppm(path: &str, width: usize, height: usize, rgba: &[u8]) -> std::io::Result<()> {
+enum OutputTarget<'a> {
+    Ppm(&'a Path),
+    Png(&'a Path),
+}
+
+struct BaselineRecord {
+    file: String,
+    scenario: &'static str,
+    seed: u64,
+    pos_x: f32,
+    pos_y: f32,
+    floor: u8,
+    notes: String,
+}
+
+fn write_ppm(path: &Path, width: usize, height: usize, rgba: &[u8]) -> std::io::Result<()> {
     let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
     ppm.reserve(width * height * 3);
     for px in rgba.chunks_exact(4) {
         ppm.extend_from_slice(&px[..3]);
     }
     fs::write(path, ppm)
+}
+
+fn write_png_rgb(path: &Path, width: usize, height: usize, rgba: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let mut rgb = Vec::with_capacity(width * height * 3);
+    for px in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&px[..3]);
+    }
+    let file = fs::File::create(path)?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::High);
+    let mut png_writer = encoder.write_header().map_err(std::io::Error::other)?;
+    png_writer
+        .write_image_data(&rgb)
+        .map_err(std::io::Error::other)
 }
 
 fn step_and_observe(
@@ -67,7 +107,7 @@ fn walk_to_local(
 }
 
 fn render_and_save(
-    path: &str,
+    target: OutputTarget<'_>,
     game: &ActionGame,
     renderer: &mut Renderer,
     elapsed_ms: u64,
@@ -75,28 +115,38 @@ fn render_and_save(
     let w = renderer.width();
     let h = renderer.height();
     let rgba = renderer.render(game, elapsed_ms);
-    write_ppm(path, w, h, rgba)
+    match target {
+        OutputTarget::Ppm(path) => write_ppm(path, w, h, rgba),
+        OutputTarget::Png(path) => write_png_rgb(path, w, h, rgba),
+    }
 }
 
-fn scene_street() -> std::io::Result<()> {
+fn scene_street(target: OutputTarget<'_>) -> std::io::Result<BaselineRecord> {
     let mut game = ActionGame::residential(42);
     let mut renderer = Renderer::new(640, 360);
     let mut ms = 0u64;
     for _ in 0..10 {
         step_and_observe(&mut game, &mut renderer, &mut ms, ActionInput::default());
     }
-    render_and_save("/tmp/zombiebox-street.ppm", &game, &mut renderer, ms)?;
+    let pose = game.player_pose();
+    let zombies = game.hud().zombie_count;
+    render_and_save(target, &game, &mut renderer, ms)?;
     println!(
-        "[scene 1] /tmp/zombiebox-street.ppm  floor={} pos=({:.1},{:.1}) zombies={}",
-        game.player_pose().floor,
-        game.player_pose().position.x,
-        game.player_pose().position.y,
-        game.hud().zombie_count,
+        "[scene 1] floor={} pos=({:.1},{:.1}) zombies={}",
+        pose.floor, pose.position.x, pose.position.y, zombies,
     );
-    Ok(())
+    Ok(BaselineRecord {
+        file: "birch-street-exterior.png".to_string(),
+        scenario: "Birch Street Exterior",
+        seed: 42,
+        pos_x: pose.position.x,
+        pos_y: pose.position.y,
+        floor: pose.floor,
+        notes: format!("Dusk spawn on Birch Street, exterior houses & {zombies} infected"),
+    })
 }
 
-fn scene_interior() -> std::io::Result<()> {
+fn scene_interior(target: OutputTarget<'_>) -> std::io::Result<BaselineRecord> {
     let mut game = ActionGame::residential(42);
     let origin = game.block_bounds().expect("block bounds").0;
     let mut renderer = Renderer::new(640, 360);
@@ -184,18 +234,29 @@ fn scene_interior() -> std::io::Result<()> {
     let win_state = game
         .tile_render_info(Position::new(origin.x + 11, origin.y + 23), 0)
         .map(|t| t.kind);
-    render_and_save("/tmp/zombiebox-interior.ppm", &game, &mut renderer, ms)?;
+    let pose = game.player_pose();
+    render_and_save(target, &game, &mut renderer, ms)?;
     println!(
-        "[scene 2] /tmp/zombiebox-interior.ppm floor={} indoors={} equipped={:?} south_win={:?}",
-        game.player_pose().floor,
+        "[scene 2] floor={} indoors={} equipped={:?} south_win={:?}",
+        pose.floor,
         game.hud().indoors,
         game.hud().equipped,
         win_state,
     );
-    Ok(())
+    Ok(BaselineRecord {
+        file: "birch-street-interior.png".to_string(),
+        scenario: "Birch Street Interior (F0)",
+        seed: 42,
+        pos_x: pose.position.x,
+        pos_y: pose.position.y,
+        floor: pose.floor,
+        notes: format!(
+            "F0 living room cutaway, shattered south window ({win_state:?}), pistol cache"
+        ),
+    })
 }
 
-fn scene_upstairs() -> std::io::Result<()> {
+fn scene_upstairs(target: OutputTarget<'_>) -> std::io::Result<BaselineRecord> {
     let mut game = ActionGame::residential(42);
     let origin = game.block_bounds().expect("block bounds").0;
     let mut renderer = Renderer::new(640, 360);
@@ -359,18 +420,29 @@ fn scene_upstairs() -> std::io::Result<()> {
     let f1_win = game
         .tile_render_info(Position::new(origin.x + 11, origin.y + 23), 1)
         .map(|t| t.kind);
-    render_and_save("/tmp/zombiebox-upstairs.ppm", &game, &mut renderer, ms)?;
+    let pose = game.player_pose();
+    render_and_save(target, &game, &mut renderer, ms)?;
     println!(
-        "[scene 3] /tmp/zombiebox-upstairs.ppm floor={} f1_win={:?} prompt={:?} nearby_f0_monsters={}",
-        game.player_pose().floor,
+        "[scene 3] floor={} f1_win={:?} prompt={:?} nearby_f0_monsters={}",
+        pose.floor,
         f1_win,
         game.hud().interact_prompt,
         f0_outdoor_visible,
     );
-    Ok(())
+    Ok(BaselineRecord {
+        file: "birch-street-upstairs.png".to_string(),
+        scenario: "Birch Street Upstairs (F1)",
+        seed: 42,
+        pos_x: pose.position.x,
+        pos_y: pose.position.y,
+        floor: pose.floor,
+        notes: format!(
+            "F1 cutaway aiming out shattered window ({f1_win:?}), {f0_outdoor_visible} F0 yard threats below"
+        ),
+    })
 }
 
-fn scene_combat() -> std::io::Result<()> {
+fn scene_combat(target: OutputTarget<'_>) -> std::io::Result<BaselineRecord> {
     let mut game = ActionGame::residential(42);
     let origin = game.block_bounds().expect("block bounds").0;
     let mut renderer = Renderer::new(640, 360);
@@ -761,9 +833,10 @@ fn scene_combat() -> std::io::Result<()> {
         .filter(|m| m.telegraph_progress.is_some())
         .count();
 
-    render_and_save("/tmp/zombiebox-combat.ppm", &game, &mut renderer, ms)?;
+    let pose = game.player_pose();
+    render_and_save(target, &game, &mut renderer, ms)?;
     println!(
-        "[scene 4] /tmp/zombiebox-combat.ppm  equipped={:?} streetlight={:?} breached_east_wall={} bloaters_near={} shooters_near={} telegraphs={}",
+        "[scene 4] equipped={:?} streetlight={:?} breached_east_wall={} bloaters_near={} shooters_near={} telegraphs={}",
         game.hud().equipped,
         light_state,
         breached_walls,
@@ -771,7 +844,17 @@ fn scene_combat() -> std::io::Result<()> {
         shooters,
         telegraphing,
     );
-    Ok(())
+    Ok(BaselineRecord {
+        file: "birch-street-combat.png".to_string(),
+        scenario: "Birch Street Combat",
+        seed: 42,
+        pos_x: pose.position.x,
+        pos_y: pose.position.y,
+        floor: pose.floor,
+        notes: format!(
+            "Broken streetlight ({light_state:?}), {breached_walls} breached wall tiles, active rocket blast/telegraphs ({telegraphing})"
+        ),
+    })
 }
 
 fn benchmark_800x360(label: &str, stress_monsters: Option<usize>) {
@@ -820,11 +903,232 @@ fn benchmark_800x360(label: &str, stress_monsters: Option<usize>) {
     );
 }
 
+fn find_river_bridge(world: &World) -> Position {
+    let center = WORLD_SIZE / 2;
+    let mut best: Option<(usize, i64, Position)> = None;
+    for y in 16..(WORLD_SIZE - 16) {
+        for x in 16..(WORLD_SIZE - 16) {
+            let pos = Position::new(x, y);
+            let Some(tile) = world.tile_at(pos) else {
+                continue;
+            };
+            if tile.ground != Ground::Bridge || tile.water != Some(Water::River) {
+                continue;
+            }
+            let mut river_count = 0usize;
+            for dy in -3..=3 {
+                for dx in -3..=3 {
+                    if world
+                        .tile_at(Position::new(x + dx, y + dy))
+                        .is_some_and(|t| t.water == Some(Water::River))
+                    {
+                        river_count += 1;
+                    }
+                }
+            }
+            let dx = i64::from(x - center);
+            let dy = i64::from(y - center);
+            let dist2 = dx * dx + dy * dy;
+            let replace = match best {
+                None => true,
+                Some((best_count, best_dist2, _)) => {
+                    river_count > best_count || (river_count == best_count && dist2 < best_dist2)
+                }
+            };
+            if replace {
+                best = Some((river_count, dist2, pos));
+            }
+        }
+    }
+    best.expect("county has at least one river bridge").2
+}
+
+fn capture_county_scene(
+    world: &World,
+    out_dir: &Path,
+    file: &str,
+    scenario: &'static str,
+    teleport_to: Option<Tile3D>,
+    notes: &str,
+) -> std::io::Result<BaselineRecord> {
+    let mut game = ActionGame::county_with_world(world.clone());
+    if let Some(target) = teleport_to {
+        let dest = game.teleport(target);
+        assert!(
+            dest.is_some(),
+            "failed to teleport to {target:?} for {file}"
+        );
+    }
+    // Fresh Renderer after teleport so camera focus snaps immediately without panning.
+    let mut renderer = Renderer::new(640, 360);
+    let mut ms = 0u64;
+    for _ in 0..10 {
+        step_and_observe(&mut game, &mut renderer, &mut ms, ActionInput::default());
+        renderer.render(&game, ms);
+    }
+    let out_path = out_dir.join(file);
+    render_and_save(OutputTarget::Png(&out_path), &game, &mut renderer, ms)?;
+    let pose = game.player_pose();
+    println!(
+        "[baseline] {}  floor={} pos=({:.1},{:.1}) zombies={}",
+        out_path.display(),
+        pose.floor,
+        pose.position.x,
+        pose.position.y,
+        game.hud().zombie_count,
+    );
+    Ok(BaselineRecord {
+        file: file.to_string(),
+        scenario,
+        seed: world.seed(),
+        pos_x: pose.position.x,
+        pos_y: pose.position.y,
+        floor: pose.floor,
+        notes: notes.to_string(),
+    })
+}
+
+fn write_manifest(out_dir: &Path, records: &[BaselineRecord]) -> std::io::Result<()> {
+    let mut md = String::new();
+    writeln!(
+        md,
+        "# 2.5D Isometric Reference Baselines (`zombiebox-render`)"
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    writeln!(md, "* **Baseline Commit:** `daeff4a`").unwrap();
+    writeln!(
+        md,
+        "* **Reproduction Command:** `cargo run --locked --offline --release -p zombiebox-render --example preview -- --baselines docs/baselines/iso-2p5d`"
+    )
+    .unwrap();
+    writeln!(md).unwrap();
+    writeln!(
+        md,
+        "| File | Scenario | Seed | Player Pos (x, y) | Floor | Resolution | Notes |"
+    )
+    .unwrap();
+    writeln!(md, "|---|---|---:|---|---:|---|---|").unwrap();
+    for rec in records {
+        writeln!(
+            md,
+            "| `{}` | {} | {} | ({:.1}, {:.1}) | {} | 640×360 | {} |",
+            rec.file, rec.scenario, rec.seed, rec.pos_x, rec.pos_y, rec.floor, rec.notes
+        )
+        .unwrap();
+    }
+    fs::write(out_dir.join("manifest.md"), md)
+}
+
+fn run_baselines(out_dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(out_dir)?;
+
+    let mut records = Vec::with_capacity(11);
+    records.push(scene_street(OutputTarget::Png(
+        &out_dir.join("birch-street-exterior.png"),
+    ))?);
+    records.push(scene_interior(OutputTarget::Png(
+        &out_dir.join("birch-street-interior.png"),
+    ))?);
+    records.push(scene_upstairs(OutputTarget::Png(
+        &out_dir.join("birch-street-upstairs.png"),
+    ))?);
+    records.push(scene_combat(OutputTarget::Png(
+        &out_dir.join("birch-street-combat.png"),
+    ))?);
+
+    let world = World::new(42);
+    let landmarks = world.landmarks();
+    let find_landmark = |kind: LandmarkKind| -> Tile3D {
+        let landmark = landmarks
+            .iter()
+            .find(|l| l.kind == kind)
+            .unwrap_or_else(|| panic!("missing landmark {kind:?} in county seed 42"));
+        Tile3D::from_pos(landmark.entrance, 0)
+    };
+
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-spawn.png",
+        "County Spawn",
+        None,
+        "Default procedural residential spawn",
+    )?);
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-downtown.png",
+        "County Downtown",
+        Some(find_landmark(LandmarkKind::Downtown)),
+        "Downtown commercial/apartment entrance",
+    )?);
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-hospital.png",
+        "County Hospital",
+        Some(find_landmark(LandmarkKind::Hospital)),
+        "Hospital complex entrance",
+    )?);
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-police.png",
+        "County Police",
+        Some(find_landmark(LandmarkKind::Police)),
+        "Police station entrance",
+    )?);
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-army-base.png",
+        "County Army Base",
+        Some(find_landmark(LandmarkKind::ArmyBase)),
+        "Fortified army base entrance",
+    )?);
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-woods-cabin.png",
+        "County Woods Cabin",
+        Some(find_landmark(LandmarkKind::Cabin)),
+        "Secluded woodland cabin entrance",
+    )?);
+    let bridge_pos = find_river_bridge(&world);
+    records.push(capture_county_scene(
+        &world,
+        out_dir,
+        "county-s42-river-bridge.png",
+        "County River Bridge",
+        Some(Tile3D::from_pos(bridge_pos, 0)),
+        "River bridge crossing over open river channel",
+    )?);
+
+    write_manifest(out_dir, &records)?;
+    println!(
+        "[baseline] wrote {} PNGs and {}",
+        records.len(),
+        out_dir.join("manifest.md").display()
+    );
+    Ok(())
+}
+
 fn main() -> std::io::Result<()> {
-    scene_street()?;
-    scene_interior()?;
-    scene_upstairs()?;
-    scene_combat()?;
+    let mut args = std::env::args().skip(1);
+    if let Some(flag) = args.next()
+        && flag == "--baselines"
+    {
+        let out_dir = args
+            .next()
+            .map_or_else(|| PathBuf::from("docs/baselines/iso-2p5d"), PathBuf::from);
+        return run_baselines(&out_dir);
+    }
+
+    scene_street(OutputTarget::Ppm(Path::new("/tmp/zombiebox-street.ppm")))?;
+    scene_interior(OutputTarget::Ppm(Path::new("/tmp/zombiebox-interior.ppm")))?;
+    scene_upstairs(OutputTarget::Ppm(Path::new("/tmp/zombiebox-upstairs.ppm")))?;
+    scene_combat(OutputTarget::Ppm(Path::new("/tmp/zombiebox-combat.ppm")))?;
     benchmark_800x360("Birch Street (standard)", None);
     benchmark_800x360("Birch Street (100 stress)", Some(100));
     Ok(())
