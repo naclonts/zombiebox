@@ -59,6 +59,7 @@ export interface NativeProps extends ViewProps {
   readonly sfxMuted?: CodegenTypes.WithDefault<boolean, false>;
   readonly hapticsEnabled?: CodegenTypes.WithDefault<boolean, true>;
   readonly aimLookAhead?: CodegenTypes.WithDefault<boolean, true>;
+  readonly cameraMode?: string;
   readonly onHudChanged?: CodegenTypes.DirectEventHandler<Hud>;
   readonly onAtlasTeleport?: CodegenTypes.DirectEventHandler<AtlasTeleportEvent>;
 }

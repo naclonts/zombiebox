@@ -1,8 +1,14 @@
 //! CPU 3D mesh representation, WorldVertex, VertexMeta, and MeshBuilder (`T03`).
 
+pub mod actors;
+pub mod buildings;
 pub mod primitives;
+pub mod props;
+pub mod terrain;
 
 pub use primitives::*;
+pub use props::*;
+pub use terrain::*;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Mat4, Vec3};

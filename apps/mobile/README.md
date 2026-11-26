@@ -1,6 +1,6 @@
 # Android app
 
-The Android build runs the action game locally. The game surface is a native Android view that calls the Rust action runtime and software renderer through JNI. Rust renders RGBA pixels into an Android bitmap. React Native draws the HUD, menus, and action controls above the game surface.
+The Android build runs the action game locally. A native rendering worker calls the Rust action runtime and 3D renderer through JNI. `wgpu` presents to the Android `SurfaceView`. React Native draws the HUD, menus, and action controls above it.
 
 ## Build and sideload
 
@@ -34,18 +34,23 @@ You can also transfer `apps/mobile/build/zombiebox-android.apk` to the phone, op
 
 ## Verification
 
-- **County release APK and emulator.** The signed arm64-v8a and x86_64 release APK built successfully. On the API 35 x86_64 emulator in airplane mode, seed 42 opened in the residential district. Movement, pause and resume, direct deployment from the atlas, same-seed teleport to the hospital, return from the atlas, and Birch Street selection passed.
-- **County rendering on the host.** Seed 42 captures at `800 × 360` covered county spawn, downtown, the hospital, the army base, woods, and Birch Street. In a release build on an Intel i7-10750H, the p95 for stationary simulation and rendering ranged from 1.46 to 4.10 ms across those scenes. Host tests exercise cross-chunk movement and retention of cache and structural state across atlas teleports.
-- **Current implementation (host-verified).** The expanded Birch Street residential block (3 two-story destructible houses, 6 streetlights, 8 caches, 12 reactive infected across 4 archetypes, Axe/Pistol/Shotgun/Rocket Launcher/Medkit, dusk lighting & room visibility, `zb_action_v2` FFI/JNI, 3 twin-stick control schemes, procedural Genesis/PS1 `AudioTrack` SFX + Android haptics, and updated Fabric/React Native HUD & Settings) passed `zombiebox-core` tests (36/36), `zombiebox-render` tests (2/2), strict C11 syntax checks on `host.c` & `zombiebox_jni.c`, and mobile `npm run codegen` & `npm run typecheck`. At `800 × 360` on the build host (release), software rendering measured `p95 = 1.64 ms` on the full residential block and `p95 = 1.69 ms` with 100 stress zombies; four rendered scenes (`street`, `interior`, `upstairs`, `combat`) were visually verified.
-- **Release APK & emulator.** Signed sideload APK rebuilt cleanly at `apps/mobile/build/zombiebox-android.apk` (`:app:assembleRelease` succeeded across `arm64-v8a` and `x86_64` Rust/JNI, Kotlin/Java, Fabric Codegen, Hermes JS bundle, and `lintVitalRelease`). Emulator playthrough of the expanded Birch Street block is pending. (Prior one-house APK verification passed offline on an API 35 x86_64 emulator.)
+- **Pre-migration county release APK and emulator.** The signed arm64-v8a and x86_64 release APK built successfully. On the API 35 x86_64 emulator in airplane mode, seed 42 opened in the residential district. Movement, pause and resume, direct deployment from the atlas, same-seed teleport to the hospital, return from the atlas, and Birch Street selection passed.
+- **Pre-migration county rendering on the host.** Seed 42 captures at `800 × 360` covered county spawn, downtown, the hospital, the army base, woods, and Birch Street. In a release build on an Intel i7-10750H, the p95 for stationary simulation and rendering ranged from 1.46 to 4.10 ms across those scenes. Host tests exercise cross-chunk movement and retention of cache and structural state across atlas teleports.
+- **Pre-migration 2.5D implementation (host-verified).** The expanded Birch Street residential block (3 two-story destructible houses, 6 streetlights, 8 caches, 12 reactive infected across 4 archetypes, Axe/Pistol/Shotgun/Rocket Launcher/Medkit, dusk lighting & room visibility, `zb_action_v2` FFI/JNI, 3 twin-stick control schemes, procedural Genesis/PS1 `AudioTrack` SFX + Android haptics, and updated Fabric/React Native HUD & Settings) passed `zombiebox-core` tests (36/36), `zombiebox-render` tests (2/2), strict C11 syntax checks on `host.c` & `zombiebox_jni.c`, and mobile `npm run codegen` & `npm run typecheck`. At `800 × 360` on the build host (release), software rendering measured `p95 = 1.64 ms` on the full residential block and `p95 = 1.69 ms` with 100 stress zombies; four rendered scenes (`street`, `interior`, `upstairs`, `combat`) were visually verified.
+- **Pre-migration release APK & emulator.** Signed sideload APK rebuilt cleanly at `apps/mobile/build/zombiebox-android.apk` (`:app:assembleRelease` succeeded across `arm64-v8a` and `x86_64` Rust/JNI, Kotlin/Java, Fabric Codegen, Hermes JS bundle, and `lintVitalRelease`). Emulator playthrough of the expanded Birch Street block is pending. (Prior one-house APK verification passed offline on an API 35 x86_64 emulator.)
 - **County atlas emulator (2026-11-25).** The release APK (SHA-256 `93ccec00fcbf603276ea6743c784cd0a60d6d67ff2119259306ad0463bfe6c37`) was installed on an API 35 x86_64 emulator. With airplane mode enabled, the atlas opened from the menu, generated seed 42, started a walk and moved east, then generated seed 312 offline; Android Back returned to the menu. This was an atlas smoke test, not a Birch Street playthrough.
+- **3D release APK and emulator smoke.** Offline `assembleRelease` produced `apps/mobile/build/zombiebox-android.apk` (SHA-256 `c7e3c7362fb681e5f23b0f10ef20b0f6bdbee860479bf4256aac9370cbd511f9`) with `arm64-v8a` and `x86_64` JNI libraries. On an offline API 35 x86_64 emulator using SwiftShader at 2400×1080, seed 42 movement changed tile `(354, 163)` to `(352, 163)`. Aim input, the TOP camera, pause, Home, foreground and resume passed with the same HUD location. The offline atlas teleported the run to `(324, 175)` and returned to gameplay. A 118-sample run logged p50 100.98 ms, p95 153.52 ms and p99 172.24 ms at 67% resolution with concurrent host work; the next window reported p95 139.81 ms. This does not measure handset performance.
 - **Physical handset.** Birch Street playthrough, county rendering, touch/audio latency, and frame pacing on a modest Android handset are pending. [Handset completion checks](../../docs/product-decisions.md#planned-milestones-and-completion-checks)
+
+For 3D verification, see the [progress ledger](../../docs/render3d-progress.md#3d-cutover-verification). In an Android development session, `adb logcat -s Zombiebox3D` can show frame interval percentiles, CPU preparation and submission times, culling, and the active resolution tier.
 
 ### County field atlas
 
 Choose **County atlas** on the opening menu or **Map** during play. Enter a decimal seed or survey reference seed **42**. Select a landmark to inspect its site and floors, or use **Start walk** and the directional pad to explore. The plus and minus buttons change floors when standing on stairs. Choose **Play at this cell** to start at the selected spot. **Teleport here** moves the survivor within an active same-seed run and keeps their gear and world edits. Use **Back to game** or Android Back to leave the atlas at the current position. The APK bundles the atlas assets and generates each county locally.
 
 ## Controls and encounter
+
+Settings offers five camera views. Isometric is the default.
 
 - Drag the **left stick** to move briskly; light tilt (`<= 52%`) walks quietly without emitting footstep noise.
 - Use the **right stick** to aim and fire without moving your thumb to the center of the screen. Select your preferred scheme in **Settings**:
@@ -59,7 +64,7 @@ Choose **County atlas** on the opening menu or **Map** during play. Enter a deci
 
 ## What runs where
 
-The Android native host owns the run handle, frame callbacks, bitmap surface, touch sampling, and JNI calls. Rust advances the fixed-step clock and owns player and zombie positions, collision, aim, shots, ammo, health, and win/death state. JNI locks the Android `Bitmap` while the Rust software renderer draws the isometric block and sprites into its RGBA pixels. React Native renders the HUD and controls over that native surface.
+The Android host samples touch and forwards input to a worker that owns the run handle and the GPU surface. Rust advances the fixed-step clock and owns player and infected positions, collision, aim, ammo, health, and outcomes. The worker releases its window reference when the surface is destroyed and clears held input when play pauses.
 
 The county action run streams nearby terrain, buildings, caches, and infected from `zombiebox-core`. Android and the default browser playtest share the action simulation and renderer. The legacy browser route uses the original 20 Hz tile-command `Game`.
 
@@ -78,4 +83,4 @@ React Native is pinned to 0.88.0. The project's Android SDK values are platform 
 
 ## iOS
 
-iOS is a future port. The Rust core and renderer are platform-independent, but this repository does not yet include an iOS app, native view adapter, Metal presentation path, or an iOS device build. A future host can reuse the gameplay rules and adapt the framebuffer to a UIKit/Metal surface while providing equivalent movement, aim, and action controls.
+iOS is a future port. The Rust core and renderer are platform-independent, but this repository does not yet include an iOS app, native view adapter, Metal presentation path, or an iOS device build. A future host can reuse the gameplay rules and attach the renderer to a UIKit/Metal surface while providing equivalent movement, aim, and action controls.

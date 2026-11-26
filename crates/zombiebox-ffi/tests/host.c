@@ -4,34 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static void check_action_frame(void) {
-    enum { WIDTH = 160, HEIGHT = 90, STRIDE = WIDTH * 4 + 8 };
-    uint8_t pixels[STRIDE * HEIGHT];
-    memset(pixels, 42, sizeof pixels);
-
-    ZbAction *action = zb_action_v1_create(42);
-    assert(action);
-    assert(zb_action_v1_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 0,
-                              0, 0, 0, 0, false) == ((12 << 16) | 6));
-    assert(zb_action_v1_frame(action, pixels, WIDTH, HEIGHT, 1, 0,
-                              0, 0, 0, 0, false) == -1);
-    for (size_t y = 0; y < HEIGHT; ++y) {
-        for (size_t x = 0; x < WIDTH; ++x) {
-            assert(pixels[y * STRIDE + x * 4 + 3] == 255);
-        }
-        for (size_t x = WIDTH * 4; x < STRIDE; ++x) {
-            assert(pixels[y * STRIDE + x] == 42);
-        }
-    }
-    zb_action_v1_reset_clock(action);
-    zb_action_v1_destroy(action);
-}
-
-static void check_action_v2_frame(void) {
-    enum { WIDTH = 160, HEIGHT = 90, STRIDE = WIDTH * 4 + 8 };
-    uint8_t pixels[STRIDE * HEIGHT];
-    memset(pixels, 77, sizeof pixels);
-
+static void check_action_v2_update(void) {
     ZbAction *action = zb_action_v2_create(42);
     assert(action);
 
@@ -44,7 +17,7 @@ static void check_action_v2_frame(void) {
     memset(&out, 0, sizeof out);
 
     /* Frame 0 establishes the clock and populates initial Birch Street HUD. */
-    assert(zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 1000000000ULL,
+    assert(zb_action_v2_update(action, 1000000000ULL,
                               &input, &out));
     assert(out.health == 6);
     assert(out.max_health == 6);
@@ -58,18 +31,9 @@ static void check_action_v2_frame(void) {
     assert(out.objective_kind == ZB_OBJECTIVE_SCAVENGE);
     assert(out.audio_events == 0);
 
-    for (size_t y = 0; y < HEIGHT; ++y) {
-        for (size_t x = 0; x < WIDTH; ++x) {
-            assert(pixels[y * STRIDE + x * 4 + 3] == 255);
-        }
-        for (size_t x = WIDTH * 4; x < STRIDE; ++x) {
-            assert(pixels[y * STRIDE + x] == 77);
-        }
-    }
-
     /* Advance 20 ms with a fire pulse (unarmed shove) + look-ahead disabled. */
     input.action_flags = ZB_INPUT_FIRE_PULSE;
-    assert(zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 1020000000ULL,
+    assert(zb_action_v2_update(action, 1020000000ULL,
                               &input, &out));
     assert((out.audio_events & ZB_SFX_AXE_SWING) != 0);
 
@@ -80,7 +44,7 @@ static void check_action_v2_frame(void) {
     input.aim_y = 0.0f;
     input.action_flags = ZB_INPUT_INTERACT | ZB_INPUT_LOOK_AHEAD;
     input.select_weapon = ZB_WEAPON_AXE;
-    assert(zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 1040000000ULL,
+    assert(zb_action_v2_update(action, 1040000000ULL,
                               &input, &out));
     assert(out.health == 6);
     assert(out.equipped_weapon == ZB_WEAPON_NONE);
@@ -90,32 +54,28 @@ static void check_action_v2_frame(void) {
     memset(&input, 0, sizeof input);
     input.select_weapon = ZB_WEAPON_UNCHANGED;
     input.action_flags = ZB_INPUT_FIRE_PULSE;
-    assert(zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 2000000000ULL,
+    assert(zb_action_v2_update(action, 2000000000ULL,
                               &input, &out));
     assert(out.audio_events == 0);
     zb_action_v2_reset_clock(action);
 
     /* Re-establish clock with clean input, then advance 40 ms: no shove audio should fire. */
     input.action_flags = 0;
-    assert(zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 3000000000ULL,
+    assert(zb_action_v2_update(action, 3000000000ULL,
                               &input, &out));
-    assert(zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 3040000000ULL,
+    assert(zb_action_v2_update(action, 3040000000ULL,
                               &input, &out));
     assert((out.audio_events & ZB_SFX_AXE_SWING) == 0);
 
     /* Invalid argument handling. */
-    assert(!zb_action_v2_frame(NULL, pixels, WIDTH, HEIGHT, STRIDE, 3060000000ULL,
+    assert(!zb_action_v2_update(NULL, 3060000000ULL,
                                &input, &out));
-    assert(!zb_action_v2_frame(action, NULL, WIDTH, HEIGHT, STRIDE, 3060000000ULL,
-                               &input, &out));
-    assert(!zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 3060000000ULL,
+    assert(!zb_action_v2_update(action, 3060000000ULL,
                                NULL, &out));
-    assert(!zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 3060000000ULL,
+    assert(!zb_action_v2_update(action, 3060000000ULL,
                                &input, NULL));
-    assert(!zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, 1, 3060000000ULL,
-                               &input, &out));
     input.select_weapon = 99;
-    assert(!zb_action_v2_frame(action, pixels, WIDTH, HEIGHT, STRIDE, 3060000000ULL,
+    assert(!zb_action_v2_update(action, 3060000000ULL,
                                &input, &out));
 
     zb_action_v2_destroy(action);
@@ -123,10 +83,6 @@ static void check_action_v2_frame(void) {
 }
 
 static void check_action_v2_county_and_teleport(void) {
-    enum { WIDTH = 160, HEIGHT = 90, STRIDE = WIDTH * 4 + 8 };
-    uint8_t pixels[STRIDE * HEIGHT];
-    memset(pixels, 55, sizeof pixels);
-
     ZbAction *county = zb_action_v2_create_county(42);
     assert(county);
 
@@ -147,7 +103,7 @@ static void check_action_v2_county_and_teleport(void) {
     ZbActionFrameOutput out;
     memset(&out, 0, sizeof out);
 
-    assert(zb_action_v2_frame(county, pixels, WIDTH, HEIGHT, STRIDE, 1000000000ULL,
+    assert(zb_action_v2_update(county, 1000000000ULL,
                               &input, &out));
     assert(out.health == 6);
     assert(out.objective_kind == ZB_OBJECTIVE_SCAVENGE);
@@ -160,7 +116,7 @@ static void check_action_v2_county_and_teleport(void) {
     assert(resolved.x >= 0 && resolved.x < 512);
     assert(resolved.y >= 0 && resolved.y < 512);
 
-    assert(zb_action_v2_frame(county, pixels, WIDTH, HEIGHT, STRIDE, 1020000000ULL,
+    assert(zb_action_v2_update(county, 1020000000ULL,
                               &input, &out));
     assert(out.health == 6);
 
@@ -208,9 +164,8 @@ int main(void) {
     assert(!zb_v1_step(NULL, ZB_WAIT));
     zb_v1_destroy(run);
     zb_v1_destroy(NULL);
-    check_action_frame();
-    check_action_v2_frame();
+    check_action_v2_update();
     check_action_v2_county_and_teleport();
-    puts("C host created a Rust run, scavenged, moved east, read its HUD and exercised action v1 & v2.");
+    puts("C host created a Rust run, scavenged, moved east, read its HUD and exercised action timing, HUD, audio, and county teleportation.");
     return 0;
 }

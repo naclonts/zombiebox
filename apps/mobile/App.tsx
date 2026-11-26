@@ -2,6 +2,7 @@ import React, {useEffect, useRef, useState} from 'react';
 import {
   BackHandler,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -27,6 +28,12 @@ type Hud = Parameters<NonNullable<NativeProps['onHudChanged']>>[0]['nativeEvent'
 type Menu = 'start' | 'paused' | 'won' | 'dead';
 type ScenarioId = 'county' | 'birch';
 type ControlSchemeId = 'tap_stick' | 'outer_ring' | 'release_fire';
+type CameraMode = 'isometric' | 'overhead' | 'orbit' | 'chase' | 'first_person';
+const CAMERA_OPTIONS: ReadonlyArray<{id: CameraMode; label: string}> = [
+  {id: 'isometric', label: 'ISO'}, {id: 'overhead', label: 'TOP'},
+  {id: 'orbit', label: 'ORBIT'}, {id: 'chase', label: 'CHASE'},
+  {id: 'first_person', label: 'FIRST'},
+];
 
 const VOLUME_STEPS = [0, 25, 50, 75, 100] as const;
 
@@ -180,6 +187,7 @@ function Game() {
   const [sfxMuted, setSfxMuted] = useState<boolean>(false);
   const [hapticsEnabled, setHapticsEnabled] = useState<boolean>(true);
   const [aimLookAhead, setAimLookAhead] = useState<boolean>(true);
+  const [cameraMode, setCameraMode] = useState<CameraMode>('isometric');
 
   const activeMenu: Menu | null =
     menu ?? (hud?.won ? 'won' : hud?.dead ? 'dead' : null);
@@ -420,6 +428,7 @@ function Game() {
         sfxMuted={sfxMuted}
         hapticsEnabled={hapticsEnabled}
         aimLookAhead={aimLookAhead}
+        cameraMode={cameraMode}
         onHudChanged={event => setHud(event.nativeEvent)}
         onAtlasTeleport={event => {
           const e = event.nativeEvent;
@@ -882,7 +891,7 @@ function Game() {
             <View style={styles.settingsHeader}>
               <View>
                 <Text style={styles.location}>SETTINGS</Text>
-                <Text style={styles.settingsTitle}>Controls & Audio</Text>
+                <Text style={styles.settingsTitle}>Controls, Camera & Audio</Text>
               </View>
               <Pressable
                 accessibilityRole="button"
@@ -897,6 +906,22 @@ function Game() {
               </Pressable>
             </View>
 
+            <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsContent}>
+            <View style={styles.settingGroup}>
+              <Text style={styles.settingLabel}>CAMERA</Text>
+              <View style={styles.segmentRow}>
+                {CAMERA_OPTIONS.map(opt => (
+                  <Pressable key={opt.id} accessibilityRole="button"
+                    accessibilityLabel={`Camera ${opt.label}`}
+                    onPress={() => { playClick(); setCameraMode(opt.id); }}
+                    style={({pressed}) => [styles.segmentButton,
+                      cameraMode === opt.id && styles.segmentButtonSelected,
+                      pressed && styles.controlPressed]}>
+                    <Text style={[styles.segmentText, cameraMode === opt.id && styles.segmentTextSelected]}>{opt.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
             {/* Control Scheme */}
             <View style={styles.settingGroup}>
               <Text style={styles.settingLabel}>AIM & FIRE SCHEME</Text>
@@ -1028,6 +1053,7 @@ function Game() {
                 </Text>
               </Pressable>
             </View>
+            </ScrollView>
           </View>
         </View>
       )}
@@ -1406,6 +1432,7 @@ const styles = StyleSheet.create({
   settingsCard: {
     width: '100%',
     maxWidth: 480,
+    maxHeight: '100%',
     backgroundColor: '#171C21FA',
     borderWidth: 1,
     borderColor: outline,
@@ -1416,6 +1443,8 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   settingsCardCompact: {paddingHorizontal: 14, paddingVertical: 10, gap: 7},
+  settingsScroll: {flexShrink: 1},
+  settingsContent: {gap: 10, paddingBottom: 4},
   settingsHeader: {
     flexDirection: 'row',
     alignItems: 'center',

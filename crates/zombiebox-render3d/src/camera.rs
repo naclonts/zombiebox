@@ -21,7 +21,7 @@ pub const DEFAULT_ISO_PITCH: f32 = FRAC_PI_6;
 pub const DEFAULT_INTERNAL_SHORT_SIDE: u32 = 360;
 pub const DEFAULT_INTERNAL_LONG_SIDE: u32 = 1200;
 
-/// Proven damping half-lives calibrated to `zombiebox-render`.
+/// Proven damping half-lives calibrated to the isometric reference build.
 pub const DEFAULT_FOLLOW_HALFLIFE_S: f32 = 0.055;
 pub const DEFAULT_ELEVATION_HALFLIFE_S: f32 = 0.14;
 pub const DEFAULT_LOOK_HALFLIFE_S: f32 = 0.16;
@@ -99,7 +99,7 @@ pub fn compute_internal_resolution(
     UVec2::new(iw, ih)
 }
 
-/// Tool-weighted camera aim look-ahead distance in world units (matching `zombiebox-render`).
+/// Tool-weighted camera aim look-ahead distance in world units (matching the isometric reference build).
 #[must_use]
 pub const fn weapon_look_ahead_distance(weapon: Option<Weapon>) -> f32 {
     match weapon {

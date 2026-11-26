@@ -1606,6 +1606,18 @@ impl ActionGame {
         self.stage.tile_render_info(pos, floor)
     }
 
+    /// Read room discovery without sampling tile lighting or wall geometry.
+    pub fn tile_visibility(&self, tile: Tile3D) -> Option<TileVisibility> {
+        match &self.stage {
+            Stage::Residential(block) => block.tile_visibility(tile),
+            Stage::County(county) => county.tile_visibility(tile),
+        }
+    }
+
+    pub const fn tick_count(&self) -> u64 {
+        self.tick
+    }
+
     pub fn light_sources(&self) -> Vec<LightSourceView> {
         self.stage.light_sources()
     }

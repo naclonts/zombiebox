@@ -16,7 +16,7 @@ use zombiebox_core::{
     Command, Direction, Event, FloorTransition, Game, Ground, Material, Position, ProjectileKind,
     Tile3D, Vec2, WORLD_SIZE, Weapon, county_survey_json,
 };
-use zombiebox_render::{Renderer, screen_vector_to_world};
+use zombiebox_render3d::{CameraFrame, CameraMode, GpuContext, Presentation};
 
 const MAX_REQUEST: usize = 8192;
 const MAX_SESSIONS: usize = 256;
@@ -94,10 +94,10 @@ struct Session {
 
 struct ActionSession {
     game: ActionGame,
-    renderer: Option<Renderer>,
+    renderer: Option<Presentation>,
     last_frame: Option<u64>,
     partial_tick: u64,
-    elapsed_ns: u64,
+    last_dt: f32,
     pending_fire_pulse: bool,
     pending_interact: bool,
     pending_reload: bool,
@@ -112,7 +112,7 @@ impl ActionSession {
             renderer: None,
             last_frame: None,
             partial_tick: 0,
-            elapsed_ns: 0,
+            last_dt: 0.0,
             pending_fire_pulse: false,
             pending_interact: false,
             pending_reload: false,
@@ -124,6 +124,7 @@ impl ActionSession {
     fn reset_clock_and_latches(&mut self) {
         self.last_frame = None;
         self.partial_tick = 0;
+        self.last_dt = 0.0;
         self.pending_fire_pulse = false;
         self.pending_interact = false;
         self.pending_reload = false;
@@ -131,13 +132,11 @@ impl ActionSession {
         self.pending_select_weapon = None;
     }
 
-    fn ensure_renderer(&mut self, width: usize, height: usize) {
-        if self
-            .renderer
-            .as_ref()
-            .is_none_or(|r| r.width() != width || r.height() != height)
-        {
-            self.renderer = Some(Renderer::new(width, height));
+    fn ensure_renderer(&mut self, ctx: &GpuContext, width: u32, height: u32) {
+        if self.renderer.is_none() {
+            self.renderer = Some(Presentation::new(ctx, width, height));
+        } else if let Some(renderer) = &mut self.renderer {
+            renderer.camera_mut().set_display_surface(width, height);
         }
     }
 
@@ -148,7 +147,7 @@ impl ActionSession {
             .map_or(0, |previous| {
                 frame_time_ns.saturating_sub(previous).min(MAX_FRAME_NS)
             });
-        self.elapsed_ns += elapsed;
+        self.last_dt = elapsed as f32 / 1_000_000_000.0;
         self.partial_tick += elapsed * u64::from(ACTION_TICKS_PER_SECOND);
     }
 
@@ -194,7 +193,7 @@ impl ActionSession {
             });
             frame_audio |= events_to_sfx_mask(self.game.events());
             if let Some(renderer) = &mut self.renderer {
-                renderer.observe_events(&self.game, self.elapsed_ns / 1_000_000);
+                renderer.observe_tick(&self.game);
             }
         }
         frame_audio
@@ -208,6 +207,9 @@ struct HostState {
     action_sessions: HashMap<u64, ActionSession>,
     action_order: VecDeque<u64>,
     cached_county: Option<(u64, zombiebox_core::World)>,
+    gpu_context: Option<Arc<GpuContext>>,
+    gpu_attempted: bool,
+    gpu_error: Option<String>,
     next_id: u64,
 }
 
@@ -813,10 +815,9 @@ fn handle_action_teleport(
         .get_mut(&id)
         .expect("checked session existence");
     session.game = fresh;
-    session.elapsed_ns = 0;
     session.reset_clock_and_latches();
     if let Some(renderer) = &mut session.renderer {
-        renderer.notify_teleport();
+        renderer.reset();
     }
     let json = action_run_json(id, &session.game, false, dest != target);
     response_conn(200, "application/json", json.as_bytes(), keep_alive)
@@ -831,9 +832,9 @@ fn handle_action_reset_clock(id: u64, state: &mut HostState, keep_alive: bool) -
 }
 
 fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: bool) -> Vec<u8> {
-    let Some(session) = state.action_sessions.get_mut(&id) else {
+    if !state.action_sessions.contains_key(&id) {
         return response_conn(404, "text/plain", b"unknown run\n", keep_alive);
-    };
+    }
     let Ok(fields) = parse_form_fields(body) else {
         return response_conn(400, "text/plain", b"invalid form body\n", keep_alive);
     };
@@ -848,6 +849,7 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
     let mut flags: u32 = 0;
     let mut weapon: i32 = ZB_WEAPON_UNCHANGED;
     let mut advance: u8 = 0;
+    let mut camera: Option<u8> = None;
 
     for (k, v) in fields {
         match k {
@@ -910,6 +912,10 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
                 "1" => advance = 1,
                 _ => return response_conn(400, "text/plain", b"invalid advance\n", keep_alive),
             },
+            "camera" => match v.parse::<u8>() {
+                Ok(mode) if mode < CameraMode::COUNT as u8 => camera = Some(mode),
+                _ => return response_conn(400, "text/plain", b"invalid camera\n", keep_alive),
+            },
             _ => {}
         }
     }
@@ -921,14 +927,49 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
         return response_conn(400, "text/plain", b"invalid weapon\n", keep_alive);
     };
 
-    session.ensure_renderer(usize::from(w), usize::from(h));
+    if !state.gpu_attempted {
+        state.gpu_attempted = true;
+        match GpuContext::new_headless() {
+            Ok(ctx) => state.gpu_context = Some(Arc::new(ctx)),
+            Err(err) => state.gpu_error = Some(err.to_string()),
+        }
+    }
+    let Some(gpu_context) = state.gpu_context.clone() else {
+        let detail = state
+            .gpu_error
+            .as_deref()
+            .unwrap_or("unknown adapter error");
+        let message = format!("headless GPU unavailable: {detail}\n");
+        return response_conn(
+            503,
+            "text/plain; charset=utf-8",
+            message.as_bytes(),
+            keep_alive,
+        );
+    };
+    let session = state
+        .action_sessions
+        .get_mut(&id)
+        .expect("run checked above");
+    session.ensure_renderer(&gpu_context, u32::from(w), u32::from(h));
     if let Some(renderer) = &mut session.renderer {
-        renderer.set_look_ahead((flags & ZB_INPUT_LOOK_AHEAD) != 0);
+        renderer
+            .camera_mut()
+            .set_look_ahead((flags & ZB_INPUT_LOOK_AHEAD) != 0);
+        if let Some(mode) = camera.and_then(|mode| CameraMode::from_index(mode as usize)) {
+            renderer.camera_mut().set_mode(mode);
+        }
     }
 
     let audio_events = if advance == 1 {
-        let movement = stick(mx, my);
-        let aim = stick(ax, ay);
+        let camera_frame = session
+            .renderer
+            .as_ref()
+            .expect("renderer initialized")
+            .camera()
+            .current_frame();
+        let movement = stick(mx, my, &camera_frame);
+        let aim = stick(ax, ay, &camera_frame);
         session.step_frame(
             t_ns,
             movement,
@@ -941,13 +982,27 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
         0
     };
 
-    let elapsed_ms = session.elapsed_ns / 1_000_000;
-    let pixels = session
-        .renderer
-        .as_mut()
-        .expect("renderer initialized")
-        .render(&session.game, elapsed_ms);
-    let payload = encode_zbf2_frame(&session.game, w, h, audio_events, pixels);
+    let Some(renderer) = session.renderer.as_mut() else {
+        return response_conn(
+            500,
+            "text/plain; charset=utf-8",
+            b"3D presentation setup failed\n",
+            keep_alive,
+        );
+    };
+    let pixels = match renderer.render_offscreen(&gpu_context, &session.game, session.last_dt) {
+        Ok(image) => image.pixels,
+        Err(err) => {
+            let message = format!("GPU rendering failed: {err}\n");
+            return response_conn(
+                503,
+                "text/plain; charset=utf-8",
+                message.as_bytes(),
+                keep_alive,
+            );
+        }
+    };
+    let payload = encode_zbf2_frame(&session.game, w, h, audio_events, &pixels);
     response_conn(200, "application/octet-stream", &payload, keep_alive)
 }
 
@@ -1075,18 +1130,8 @@ fn parse_select_weapon(value: i32) -> Result<Option<Weapon>, ()> {
     Weapon::from_slot(slot).map(Some).ok_or(())
 }
 
-fn stick(x: f32, y: f32) -> Vec2 {
-    if !x.is_finite() || !y.is_finite() {
-        return Vec2::ZERO;
-    }
-    let strength = x.hypot(y).min(1.0);
-    let vector = screen_vector_to_world(x, y);
-    let length = vector.x.hypot(vector.y);
-    if length > 0.0 {
-        vector * (strength / length)
-    } else {
-        Vec2::ZERO
-    }
+fn stick(x: f32, y: f32, camera: &CameraFrame) -> Vec2 {
+    camera.map_stick_to_world(Vec2::new(x, y))
 }
 
 fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
@@ -1356,7 +1401,7 @@ mod tests {
     }
 
     #[test]
-    fn action_county_create_and_render_zbf2_frame() {
+    fn action_county_gpu_protocol_renders_and_switches_camera() {
         let mut state = HostState {
             next_id: 1,
             ..HostState::default()
@@ -1400,6 +1445,35 @@ mod tests {
         assert_eq!(f1_body.len(), 64 + 320 * 180 * 4);
         let tick = u64::from_le_bytes(f1_body[16..24].try_into().unwrap());
         assert_eq!(tick, 3);
+
+        let context = state
+            .gpu_context
+            .as_ref()
+            .expect("headless GPU initialized");
+        assert!(!context.adapter_info.name.is_empty());
+        let f2 = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&flags=32&weapon=-1&advance=0&camera=1",
+            &mut state,
+        );
+        let (f2_head, f2_body) = split_http_response(&f2);
+        assert!(f2_head.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(&f2_body[0..4], b"ZBF2");
+        assert_ne!(
+            &f1_body[64..],
+            &f2_body[64..],
+            "camera mode must change the rendered image"
+        );
+        assert_eq!(
+            state.action_sessions[&1]
+                .renderer
+                .as_ref()
+                .unwrap()
+                .camera()
+                .mode(),
+            CameraMode::Overhead
+        );
     }
 
     #[test]

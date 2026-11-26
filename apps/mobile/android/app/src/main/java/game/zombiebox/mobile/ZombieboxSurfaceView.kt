@@ -2,16 +2,20 @@ package game.zombiebox.mobile
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.Typeface
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Choreographer
 import android.view.MotionEvent
 import android.view.View
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import android.widget.FrameLayout
+import java.util.concurrent.CountDownLatch
 import android.view.ViewConfiguration
 import android.view.WindowInsets
 import androidx.core.view.ViewCompat
@@ -24,10 +28,18 @@ import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.UIManagerHelper
 import com.facebook.react.uimanager.events.Event
 import kotlin.math.hypot
-import kotlin.math.roundToInt
 
-// A single game survives view replacement. All calls are made on the Android UI thread.
+// All native run and surface operations are serialized on this worker.
 private object Runs {
+    private val thread = HandlerThread("ZombieboxRenderer").apply { start() }
+    val worker = Handler(thread.looper)
+    val main = Handler(Looper.getMainLooper())
+    fun post(block: () -> Unit) { worker.post(block) }
+    fun barrier(block: () -> Unit) {
+        val done = CountDownLatch(1)
+        worker.post { try { block() } finally { done.countDown() } }
+        done.await()
+    }
     private data class Run(val id: String, val seed: Long, val scenario: String, val handle: Long)
 
     private var current: Run? = null
@@ -39,6 +51,7 @@ private object Runs {
             current = Run(id, seed, scenario, createHandle(seed, scenario))
         }
         if (owner !== view) {
+            current?.let { if (it.handle != 0L) NativeGame.detachSurface(it.handle) }
             owner = view
             val h = handle(view)
             if (h != 0L) NativeGame.resetClockV2(h)
@@ -56,7 +69,10 @@ private object Runs {
     fun detach(view: ZombieboxSurfaceView) {
         if (owner === view) {
             val h = handle(view)
-            if (h != 0L) NativeGame.resetClockV2(h)
+            if (h != 0L) {
+                NativeGame.detachSurface(h)
+                NativeGame.resetClockV2(h)
+            }
             owner = null
         }
     }
@@ -72,7 +88,7 @@ internal enum class ControlScheme {
 }
 
 internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext) :
-    View(reactContext), LifecycleEventListener, ActivityEventListener {
+    FrameLayout(reactContext), LifecycleEventListener, ActivityEventListener {
     var runId: String? = null
     var seed: Long? = null
     var scenario: String = "county"
@@ -83,6 +99,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     var sfxMuted: Boolean = false
     var hapticsEnabled: Boolean = true
     var aimLookAhead: Boolean = true
+    var cameraMode: String = "isometric"
+    private var appliedCameraMode: String? = null
 
     private var appliedRunId: String? = null
     private var appliedSeed: Long? = null
@@ -115,10 +133,15 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             }
         }
     }
-    private var buffers = emptyArray<Bitmap>()
-    private var frontBuffer = 0
-    private val gameArea = Rect()
-    private val bitmapPaint = Paint().apply { isFilterBitmap = false }
+    private val surfaceView = SurfaceView(reactContext)
+    private var surfaceAvailable = false
+    private var surfaceReady = false
+    private var requestedWidth = 0
+    private var requestedHeight = 0
+    private var runReady = false
+    private var generation = 0
+    private var runGeneration = 0
+    private var framePending = false
     private val controlPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val density = resources.displayMetrics.density
     private val touchSlop = ViewConfiguration.get(reactContext).scaledTouchSlop.toFloat()
@@ -137,6 +160,49 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     init {
         // React Native exposes HUD, hotbar, interact, settings, and pause above this view.
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        setWillNotDraw(false)
+        addView(surfaceView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) { surfaceAvailable = true; attachSurface() }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                if (width > 0 && height > 0) attachSurface()
+            }
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                surfaceAvailable = false
+                surfaceReady = false
+                requestedWidth = 0
+                requestedHeight = 0
+                generation++
+                stopFrames()
+                Runs.barrier { val handle = Runs.handle(this@ZombieboxSurfaceView); if (handle != 0L) NativeGame.detachSurface(handle) }
+            }
+        })
+    }
+
+    private fun attachSurface() {
+        if (!surfaceAvailable || !runReady || width <= 0 || height <= 0) return
+        if (requestedWidth == width && requestedHeight == height) return
+        requestedWidth = width
+        requestedHeight = height
+        val token = ++generation
+        surfaceReady = false
+        val surface = surfaceView.holder.surface
+        val w = width
+        val h = height
+        val mode = cameraModeIndex(cameraMode)
+        Runs.post {
+            val handle = Runs.handle(this)
+            val ok = handle != 0L && surface.isValid && NativeGame.attachSurface(handle, surface, w, h)
+            if (ok) NativeGame.setCameraMode(handle, mode)
+            Runs.main.post {
+                if (generation == token && surfaceAvailable) {
+                    surfaceReady = ok
+                    if (!ok) { requestedWidth = 0; requestedHeight = 0 }
+                    if (ok) render(System.nanoTime(), false)
+                    updateFrames()
+                }
+            }
+        }
     }
 
     fun applyProps() {
@@ -146,18 +212,43 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         if (!isAttachedToWindow) return
         val id = runId
         val seedValue = seed
+        if (appliedCameraMode != cameraMode) {
+            appliedCameraMode = cameraMode
+            val mode = cameraModeIndex(cameraMode)
+            Runs.post {
+                val handle = Runs.handle(this)
+                if (handle != 0L) NativeGame.setCameraMode(handle, mode)
+                Runs.main.post { if (isAttachedToWindow) render(System.nanoTime(), false) }
+            }
+        }
         if (!id.isNullOrEmpty() && seedValue != null &&
             (appliedRunId != id || appliedSeed != seedValue || appliedScenario != scenario)
         ) {
             stopFrames()
-            Runs.detach(this)
-            Runs.attach(this, id, seedValue, scenario)
+            runReady = false
+            surfaceReady = false
+            requestedWidth = 0
+            requestedHeight = 0
+            generation++
+            val token = ++runGeneration
+            val requestedScenario = scenario
+            Runs.post {
+                Runs.detach(this)
+                Runs.attach(this, id, seedValue, requestedScenario)
+                val ready = Runs.handle(this) != 0L
+                Runs.main.post {
+                    if (runGeneration == token && isAttachedToWindow) {
+                        runReady = ready
+                        attachSurface()
+                        updateFrames()
+                    }
+                }
+            }
             appliedRunId = id
             appliedSeed = seedValue
             appliedScenario = scenario
             hasLastHud = false
             currentInteractKind = 0
-            render(System.nanoTime(), false)
         }
         updateAudioLifecycle()
         updateFrames()
@@ -165,27 +256,23 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     }
 
     fun openCounty() {
-        val handle = Runs.handle(this)
-        val locBuf = IntArray(5)
-        if (handle != 0L) {
-            NativeGame.locationV2(handle, locBuf)
-        }
-        val isDead = hasLastHud && ((lastHudOut[7] and 2) != 0)
-        val active = runStarted && scenario == "county" && !isDead && handle != 0L
+        val token = runGeneration
+        val active = runStarted && scenario == "county" && !(hasLastHud && (lastHudOut[7] and 2) != 0) && runReady
         val seedStr = seed?.toULong()?.toString() ?: "42"
-        val activity = reactContext.currentActivity
-        val intent = Intent(activity ?: reactContext, CountyActivity::class.java).apply {
-            putExtra("seed", seedStr)
-            putExtra("active", active)
-            putExtra("px", locBuf[0])
-            putExtra("py", locBuf[1])
-            putExtra("pf", locBuf[2])
-        }
-        if (activity != null) {
-            activity.startActivityForResult(intent, REQUEST_COUNTY_ATLAS)
-        } else {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            reactContext.startActivity(intent)
+        Runs.post {
+            val loc = IntArray(5)
+            val handle = Runs.handle(this)
+            if (handle != 0L) NativeGame.locationV2(handle, loc)
+            Runs.main.post {
+                if (token != runGeneration || !isAttachedToWindow) return@post
+                val activity = reactContext.currentActivity
+                val intent = Intent(activity ?: reactContext, CountyActivity::class.java).apply {
+                    putExtra("seed", seedStr); putExtra("active", active)
+                    putExtra("px", loc[0]); putExtra("py", loc[1]); putExtra("pf", loc[2])
+                }
+                if (activity != null) activity.startActivityForResult(intent, REQUEST_COUNTY_ATLAS)
+                else { intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); reactContext.startActivity(intent) }
+            }
         }
     }
 
@@ -193,52 +280,38 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         if (requestCode != REQUEST_COUNTY_ATLAS || resultCode != Activity.RESULT_OK || data == null) return
         val seedStr = data.getStringExtra("seed") ?: return
         val seedLong = seedStr.toULongOrNull()?.toLong() ?: return
-        val tx = data.getIntExtra("x", 0)
-        val ty = data.getIntExtra("y", 0)
-        val tf = data.getIntExtra("floor", 0)
-
-        val isDead = hasLastHud && ((lastHudOut[7] and 2) != 0)
-        val canPreserve =
-            runStarted && scenario == "county" && appliedSeed == seedLong && !isDead && Runs.handle(this) != 0L
-        val resolved = IntArray(4)
-
-        if (canPreserve) {
-            if (!NativeGame.teleportV2(Runs.handle(this), tx, ty, tf, resolved)) return
-        } else {
-            val newHandle = NativeGame.createCountyV2(seedLong)
-            if (newHandle == 0L) return
-            if (!NativeGame.teleportV2(newHandle, tx, ty, tf, resolved)) {
-                NativeGame.destroyV2(newHandle)
-                return
+        val tx = data.getIntExtra("x", 0); val ty = data.getIntExtra("y", 0); val tf = data.getIntExtra("floor", 0)
+        val preserve = runStarted && scenario == "county" && appliedSeed == seedLong &&
+            !(hasLastHud && (lastHudOut[7] and 2) != 0) && runReady
+        val targetId = runId ?: "1"
+        stopFrames()
+        surfaceReady = false
+        requestedWidth = 0
+        requestedHeight = 0
+        generation++
+        val token = ++runGeneration
+        Runs.post {
+            val resolved = IntArray(4)
+            val oldHandle = Runs.handle(this)
+            val handle = if (preserve) oldHandle else NativeGame.createCountyV2(seedLong)
+            val ok = handle != 0L && NativeGame.teleportV2(handle, tx, ty, tf, resolved)
+            if (ok && !preserve) Runs.replaceWithCounty(this, targetId, seedLong, handle)
+            else if (!ok && !preserve && handle != 0L) NativeGame.destroyV2(handle)
+            Runs.main.post {
+                if (token != runGeneration || !isAttachedToWindow) return@post
+                if (ok) {
+                    if (!preserve) {
+                        seed = seedLong; scenario = "county"; runStarted = true
+                        appliedSeed = seedLong; appliedScenario = "county"; appliedRunId = targetId
+                    }
+                    runReady = true; hasLastHud = false; currentInteractKind = 0
+                    if (id != NO_ID) UIManagerHelper.getEventDispatcher(reactContext)?.dispatchEvent(
+                        AtlasTeleportEvent(UIManagerHelper.getSurfaceId(reactContext), id, seedStr,
+                            resolved[0], resolved[1], resolved[2], preserve,
+                            resolved[0] != tx || resolved[1] != ty || resolved[2] != tf))
+                }
+                attachSurface(); updateFrames()
             }
-            val targetId = runId ?: "1"
-            stopFrames()
-            Runs.replaceWithCounty(this, targetId, seedLong, newHandle)
-            this.seed = seedLong
-            this.scenario = "county"
-            this.runStarted = true
-            this.appliedSeed = seedLong
-            this.appliedScenario = "county"
-            this.appliedRunId = targetId
-        }
-
-        hasLastHud = false
-        currentInteractKind = 0
-        render(System.nanoTime(), false)
-
-        if (id != NO_ID) {
-            UIManagerHelper.getEventDispatcher(reactContext)?.dispatchEvent(
-                AtlasTeleportEvent(
-                    UIManagerHelper.getSurfaceId(reactContext),
-                    id,
-                    seedStr,
-                    resolved[0],
-                    resolved[1],
-                    resolved[2],
-                    canPreserve,
-                    resolved[0] != tx || resolved[1] != ty || resolved[2] != tf,
-                ),
-            )
         }
     }
 
@@ -281,7 +354,13 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         reactContext.removeLifecycleEventListener(this)
         stopFrames()
         audioEngine.suspend()
-        Runs.detach(this)
+        generation++
+        runGeneration++
+        runReady = false
+        surfaceReady = false
+        requestedWidth = 0
+        requestedHeight = 0
+        Runs.post { val handle = Runs.handle(this); if (handle != 0L) NativeGame.detachSurface(handle); Runs.detach(this) }
         appliedRunId = null
         appliedSeed = null
         appliedScenario = null
@@ -316,22 +395,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
-        gameArea.set(0, 0, width, height)
         layoutSticks(ViewCompat.getRootWindowInsets(this))
-        if (width <= 0 || height <= 0) {
-            buffers = emptyArray()
-        } else {
-            val scale = minOf(1f, 360f / minOf(width, height), 1200f / maxOf(width, height))
-            val pixelWidth = (width * scale).roundToInt().coerceAtLeast(1)
-            val pixelHeight = (height * scale).roundToInt().coerceAtLeast(1)
-            buffers = Array(2) {
-                Bitmap.createBitmap(pixelWidth, pixelHeight, Bitmap.Config.ARGB_8888).apply {
-                    setHasAlpha(false)
-                }
-            }
-            frontBuffer = 0
-            render(System.nanoTime(), false)
-        }
+        if (width > 0 && height > 0) attachSurface()
         updateFrames()
     }
 
@@ -359,7 +424,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         isAttachedToWindow && windowVisibility == VISIBLE && hasWindowFocus() && resumed
 
     private fun canPlay(): Boolean =
-        canAudioRun() && !paused && buffers.isNotEmpty() && Runs.handle(this) != 0L
+        canAudioRun() && !paused && surfaceReady && runReady
 
     private fun updateAudioLifecycle() {
         if (canAudioRun()) {
@@ -383,8 +448,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     private fun stopFrames() {
         if (drawing) {
             choreographer.removeFrameCallback(frameCallback)
-            val handle = Runs.handle(this)
-            if (handle != 0L) NativeGame.resetClockV2(handle)
+            Runs.post { val handle = Runs.handle(this); if (handle != 0L) NativeGame.resetClockV2(handle) }
             drawing = false
         }
         clearInput()
@@ -402,9 +466,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     }
 
     private fun render(now: Long, advance: Boolean) {
-        val handle = Runs.handle(this)
-        if (handle == 0L || buffers.isEmpty()) return
-        if (!advance) NativeGame.resetClockV2(handle)
+        if (!surfaceReady || framePending) return
 
         val nowMs = SystemClock.uptimeMillis()
         var actionFlags = if (aimLookAhead) INPUT_LOOK_AHEAD else 0
@@ -426,41 +488,36 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             aimY = 0f
         }
 
-        val nextBuffer = (frontBuffer + 1) % buffers.size
-        val ok = NativeGame.frameV2(
-            handle,
-            buffers[nextBuffer],
-            now,
-            if (advance) moveStick.x else 0f,
-            if (advance) moveStick.y else 0f,
-            aimX,
-            aimY,
-            actionFlags,
-            selectWeapon,
-            frameOut,
-        )
+        val mx = if (advance) moveStick.x else 0f
+        val my = if (advance) moveStick.y else 0f
+        val flags = actionFlags
+        val selected = selectWeapon
+        val token = generation
+        framePending = true
         if (advance) {
-            interactQueued = false
-            reloadQueued = false
-            healQueued = false
+            interactQueued = false; reloadQueued = false; healQueued = false
             pendingSelectWeapon = WEAPON_UNCHANGED
-        } else {
-            NativeGame.resetClockV2(handle)
         }
-
-        if (ok) {
-            frontBuffer = nextBuffer
-            currentInteractKind = (frameOut[6] ushr 16) and 0xff
-            if (advance) {
-                val audioMask = (frameOut[9].toLong() and 0xFFFF_FFFFL) or
-                    (frameOut[10].toLong() shl 32)
-                if (audioMask != 0L) {
-                    audioEngine.triggerSimEvents(audioMask)
+        Runs.post {
+            val output = IntArray(12)
+            val handle = Runs.handle(this)
+            if (!advance && handle != 0L) NativeGame.resetClockV2(handle)
+            val ok = handle != 0L && NativeGame.frameSurface(handle, now, mx, my, aimX, aimY, flags, selected, output)
+            if (!advance && handle != 0L) NativeGame.resetClockV2(handle)
+            Runs.main.post {
+                framePending = false
+                if (token == generation && ok) {
+                    output.copyInto(frameOut)
+                    currentInteractKind = (frameOut[6] ushr 16) and 0xff
+                    if (advance && canAudioRun()) {
+                        val mask = (frameOut[9].toLong() and 0xFFFF_FFFFL) or (frameOut[10].toLong() shl 32)
+                        if (mask != 0L) audioEngine.triggerSimEvents(mask)
+                    }
+                    emitHudIfChanged()
                 }
+                invalidate()
             }
-            emitHudIfChanged()
         }
-        invalidate()
     }
 
     private fun emitHudIfChanged() {
@@ -489,14 +546,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         )
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        val bitmap = buffers.getOrNull(frontBuffer)
-        if (bitmap != null) {
-            canvas.drawBitmap(bitmap, null, gameArea, bitmapPaint)
-        } else {
-            canvas.drawColor(Color.rgb(21, 28, 25))
-        }
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
         if (!paused) {
             val nowMs = SystemClock.uptimeMillis()
             drawMoveStick(canvas)
@@ -1089,6 +1140,14 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             "outer_ring" -> ControlScheme.OUTER_RING
             "release_fire" -> ControlScheme.RELEASE_FIRE
             else -> ControlScheme.TAP_STICK
+        }
+
+        private fun cameraModeIndex(value: String): Int = when (value) {
+            "overhead" -> 1
+            "orbit" -> 2
+            "chase" -> 3
+            "first_person" -> 4
+            else -> 0
         }
     }
 }

@@ -45,8 +45,6 @@ fn find_tile_path_on_floor(game: &ActionGame, start: Tile3D, goal: Tile3D) -> Op
                     TileKind::Empty
                         | TileKind::Rubble
                         | TileKind::StairsUp
-                        | TileKind::StairsDown
-                        | TileKind::StairsBoth
                         | TileKind::BrokenStreetlight
                         | TileKind::Door { .. }
                 );
@@ -198,10 +196,7 @@ fn county_hill_los_and_terrain_hitscan_rocket_interception() {
     assert_eq!(game.hud().equipped, Some(Weapon::Pistol));
 
     // 2. Acquire RocketLauncher from ArmyBase, GunStore, or Police.
-    let mut got_rocket = game
-        .caches()
-        .iter()
-        .any(|c| !c.opened && c.loot.weapon == Some(Weapon::RocketLauncher));
+    let mut got_rocket = game.inventory().has_weapon(Weapon::RocketLauncher);
     if !got_rocket {
         for b in &sites.buildings {
             if matches!(b.kind, BuildingKind::ArmyBase | BuildingKind::Precinct) {
@@ -217,8 +212,10 @@ fn county_hill_los_and_terrain_hitscan_rocket_interception() {
                         interact: true,
                         ..ActionInput::default()
                     });
-                    got_rocket = true;
-                    break;
+                    got_rocket = game.inventory().has_weapon(Weapon::RocketLauncher);
+                    if got_rocket {
+                        break;
+                    }
                 }
             }
         }
@@ -432,6 +429,12 @@ fn county_hill_los_and_terrain_hitscan_rocket_interception() {
             ..ActionInput::default()
         });
     }
+    assert_eq!(
+        game.hud().equipped,
+        Some(Weapon::RocketLauncher),
+        "rocket cache must be looted before testing"
+    );
+    assert!(game.hud().active_mag > 0, "rocket must be loaded");
     game.step(ActionInput {
         aim: Some(aim_dir),
         fire: true,
@@ -508,27 +511,27 @@ fn multi_floor_3d_shooting_slab_occlusion_and_fall_injury_curve() {
     );
 
     // Climb House 1 stairs to F1.
-    let h1_origin = Position::new(h1.x, h1.y);
-    let stair_f0 = Tile3D::new(h1_origin.x + 12, h1_origin.y + 21, 0);
+    let block_origin = game.block_bounds().expect("block bounds").0;
+    let stair_f0 = Tile3D::new(block_origin.x + 12, block_origin.y + 21, 0);
     assert!(walk_path_on_floor(&mut game, stair_f0, 45));
-    for _ in 0..10 {
-        game.step(ActionInput {
-            movement: Vec2::new(0.0, -1.0),
-            ..ActionInput::default()
-        });
-    }
-    for _ in 0..10 {
-        game.step(ActionInput {
-            movement: Vec2::new(0.0, -1.0),
-            ..ActionInput::default()
-        });
+    for _ in 0..30 {
+        if game.player_pose().floor == 1 {
+            break;
+        }
+        game.step(ActionInput::default());
     }
     assert_eq!(game.player_pose().floor, 1);
 
     // Walk next to House 1 F1 south window and shoot downward out onto Floor 0 yard.
     let f1_win = Tile3D::new(h1.x + 2, h1.y + h1.height - 1, 1);
     let f1_win_inside = Tile3D::new(f1_win.x, f1_win.y - 2, 1);
-    assert!(walk_path_on_floor(&mut game, f1_win_inside, 45));
+    assert!(
+        walk_path_on_floor(&mut game, f1_win_inside, 45),
+        "player {:?}, target {:?}, outcome {:?}",
+        game.player_tile(),
+        f1_win_inside,
+        game.outcome()
+    );
 
     // Step slightly closer toward the window so DropWindow is within reach after shattering.
     for _ in 0..6 {
@@ -562,7 +565,25 @@ fn multi_floor_3d_shooting_slab_occlusion_and_fall_injury_curve() {
 
     // 1-story hang-drop from F1 broken window lands safely on F0 with 0 damage.
     let hp_before_f1_drop = game.hud().health;
-    assert_eq!(game.hud().interact_prompt, InteractPrompt::DropWindow);
+    for _ in 0..20 {
+        if game.hud().interact_prompt == InteractPrompt::DropWindow {
+            break;
+        }
+        game.step(ActionInput {
+            movement: Vec2::new(0.0, 1.0),
+            aim: Some(Vec2::new(0.0, 1.0)),
+            ..ActionInput::default()
+        });
+    }
+    assert_eq!(
+        game.hud().interact_prompt,
+        InteractPrompt::DropWindow,
+        "player {:?}, window {:?}, kind {:?}, outcome {:?}",
+        game.player_body().position,
+        f1_win,
+        game.tile_render_info(f1_win.pos(), 1).map(|v| v.kind),
+        game.outcome()
+    );
     game.step(ActionInput {
         interact: true,
         ..ActionInput::default()
@@ -800,6 +821,14 @@ fn monster_3d_stair_pursuit_and_uneven_county_combat() {
                 if span == 0 || span >= 20 {
                     continue;
                 }
+                let exit = Position::new(x + dx * span, y + dy * span);
+                if ![prev, exit].into_iter().all(|q| {
+                    world
+                        .tile_at(q)
+                        .is_some_and(|t| t.ground.is_road() && t.water.is_none())
+                }) {
+                    continue;
+                }
                 let ok = (-2..=span + 2).all(|k| {
                     let q = Position::new(x + dx * k, y + dy * k);
                     let mut cols = Vec::new();
@@ -816,7 +845,14 @@ fn monster_3d_stair_pursuit_and_uneven_county_combat() {
                             zombiebox_core::ColliderKind::Prop { .. }
                                 | zombiebox_core::ColliderKind::Wall { .. }
                                 | zombiebox_core::ColliderKind::ClosedDoor { .. }
-                        )
+                        ) || matches!(c.kind, zombiebox_core::ColliderKind::BridgeParapet { .. })
+                            && if dx != 0 {
+                                c.bounds.min.y < q.y as f32 + PLAYER_SHAPE.radius
+                                    && c.bounds.max.y > q.y as f32 - PLAYER_SHAPE.radius
+                            } else {
+                                c.bounds.min.x < q.x as f32 + PLAYER_SHAPE.radius
+                                    && c.bounds.max.x > q.x as f32 - PLAYER_SHAPE.radius
+                            }
                     });
                     world.tile_at(q).is_some_and(|t| {
                         (t.ground.walkable() || world.bridge_deck_at(pos_center(q)).is_some())
@@ -837,7 +873,14 @@ fn monster_3d_stair_pursuit_and_uneven_county_combat() {
     }
     let (bridge_start, bridge_dir, bridge_tiles) =
         bridge_run.expect("County seed 42 must have a walkable road-bridge-road crossing");
-    assert!(county.teleport(Tile3D::from_pos(bridge_start, 0)).is_some());
+    let approach = Position::new(
+        bridge_start.x - bridge_dir.x as i32,
+        bridge_start.y - bridge_dir.y as i32,
+    );
+    assert_eq!(
+        county.teleport(Tile3D::from_pos(approach, 0)),
+        Some(Tile3D::from_pos(approach, 0))
+    );
     assert!(matches!(
         county.player_body().motion,
         MotionState::Grounded(SupportId::Terrain)
@@ -868,6 +911,18 @@ fn monster_3d_stair_pursuit_and_uneven_county_combat() {
     assert!(
         saw_terrain_after_bridge,
         "player must walk cleanly off bridge back onto SupportId::Terrain"
+    );
+    // Continue until the whole body clears the slab, not merely its center.
+    let exit_pos = county.player_body().position.xy();
+    for _ in 0..15 {
+        county.step(ActionInput {
+            movement: bridge_dir,
+            ..ActionInput::default()
+        });
+    }
+    assert!(
+        (county.player_body().position.xy() - exit_pos).dot(bridge_dir) > PLAYER_SHAPE.radius,
+        "player must continue past the bridge edge after returning to terrain"
     );
 
     // Sloped road aim_dir.z alignment (uphill > 0, downhill < 0).

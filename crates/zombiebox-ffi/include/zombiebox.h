@@ -49,27 +49,6 @@ void zb_survey_v1_free(char *survey);
 /* Action-game run and renderer. Call on one thread for the lifetime of the run. */
 typedef struct ZbAction ZbAction;
 
-enum ZbActionStatus {
-    ZB_ACTION_ARMED = 1u << 24,
-    ZB_ACTION_NEAR_LOOT = 1u << 25,
-    ZB_ACTION_WON = 1u << 26,
-    ZB_ACTION_DEAD = 1u << 27
-};
-
-ZbAction *zb_action_v1_create(uint64_t seed);
-void zb_action_v1_destroy(ZbAction *run);
-/* Suspend the run between display callbacks and discard pending touch input. */
-void zb_action_v1_reset_clock(ZbAction *run);
-/* Draw RGBA8888 into a host-owned buffer of height*stride bytes. The monotonic
- * timestamp is in nanoseconds. Stick vectors are screen-relative (+Y down).
- * use_item is a single press, retained until the next simulation tick.
- * Returns health, ammo and zombie count in the first three bytes of the result,
- * followed by ZbActionStatus bits, or -1 for invalid arguments. */
-int64_t zb_action_v1_frame(ZbAction *run, uint8_t *pixels, uint32_t width,
-                           uint32_t height, size_t stride, uint64_t frame_time_ns,
-                           float move_x, float move_y, float aim_x, float aim_y,
-                           bool use_item);
-
 /* Action v2 interface: multi-weapon hotbar, contextual interact, audio/haptics
  * event bitmask, look-ahead camera toggle, and full multi-level block HUD. */
 enum ZbWeapon {
@@ -218,12 +197,28 @@ ZbAction *zb_action_v2_create_county(uint64_t seed);
 void zb_action_v2_destroy(ZbAction *run);
 /* Suspend the run between display callbacks and discard all latched input. */
 void zb_action_v2_reset_clock(ZbAction *run);
-/* Step simulation (60 Hz fixed step), render RGBA8888 into pixels, and write
- * the current HUD + frame audio bitmask into out. Returns false on invalid args. */
-bool zb_action_v2_frame(ZbAction *run, uint8_t *pixels, uint32_t width,
-                        uint32_t height, size_t stride, uint64_t frame_time_ns,
-                        const ZbActionFrameInput *input,
-                        ZbActionFrameOutput *out);
+/* Step the 60 Hz simulation and return HUD and audio events. This entry point
+ * accepts simulation-space directions. The surface entry point maps screen input. */
+bool zb_action_v2_update(ZbAction *run, uint64_t frame_time_ns,
+                         const ZbActionFrameInput *input, ZbActionFrameOutput *out);
+
+#ifdef __ANDROID__
+typedef struct {
+    uint64_t frame_number, frame_interval_ns, prepare_ns, render_ns, triangles;
+    uint32_t chunks_drawn, chunks_culled, instances_drawn, resolution_percent;
+} ZbFrameTiming;
+typedef struct { uint64_t p50_ns, p95_ns, p99_ns; uint32_t samples; } ZbFramePercentiles;
+/* The renderer retains its own ANativeWindow reference. Calls on a
+ * run, including surface lifecycle and frames, must be serialized. */
+bool zb_action_v2_attach_window(ZbAction *run, void *window, uint32_t width, uint32_t height);
+void zb_action_v2_detach_window(ZbAction *run);
+bool zb_action_v2_resize_window(ZbAction *run, uint32_t width, uint32_t height);
+bool zb_action_v2_camera_mode(ZbAction *run, uint8_t mode);
+bool zb_action_v2_frame_surface(ZbAction *run, uint64_t frame_time_ns,
+                                const ZbActionFrameInput *input, ZbActionFrameOutput *out);
+bool zb_action_v2_frame_timing(const ZbAction *run, ZbFrameTiming *out);
+bool zb_action_v2_frame_percentiles(const ZbAction *run, ZbFramePercentiles *out);
+#endif
 /* Read the survivor's current world tile, mode, and district code. */
 bool zb_action_v2_location(const ZbAction *run, ZbActionLocation *out);
 /* Move the survivor in an active County run to (x, y, floor) or a nearby

@@ -25,10 +25,13 @@ struct SceneLighting {
     fog_color_and_density: vec4<f32>,
     counts_and_flags: vec4<u32>,
     point_lights: array<PointLight, 32>,
+    visibility_grid: vec4<i32>,
+    player_position: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var<uniform> lighting: SceneLighting;
+@group(0) @binding(2) var visibility: texture_2d<u32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -100,15 +103,50 @@ fn bayer4x4(x: u32, y: u32) -> u32 {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let flags = (in.v_meta.x >> 16u) & 0xFFu;
-    let opacity_u8 = in.inst_fx.y & 0xFFu;
+    let tag = in.v_meta.x & 0xFFu;
+    let floor_index = (in.v_meta.x >> 8u) & 0xFFu;
+    let building = in.v_meta.y & 0xFFFFu;
+    let active_floor = lighting.counts_and_flags.z;
+    var opacity_u8 = in.inst_fx.y & 0xFFu;
+    var explored = false;
+    var shrouded = false;
+    if (lighting.counts_and_flags.y & 4u) != 0u {
+        if building != 0u && (flags & 8u) == 0u {
+            let view_side = camera.eye_pos.xz - lighting.player_position.xz;
+            let offset = in.world_pos.xz - lighting.player_position.xz;
+            let front_wall = tag == 6u && length(offset) < 5.0 && dot(view_side, offset) > 0.0;
+            if tag == 8u || floor_index > active_floor || front_wall {
+                let table_pos = vec2<i32>(i32(building & 255u), i32(building >> 8u));
+                opacity_u8 = min(opacity_u8, textureLoad(visibility, table_pos, 0).r);
+            }
+        }
+
+        if tag == 4u || (tag == 9u && (flags & 4u) != 0u) {
+            let grid = lighting.visibility_grid;
+            let tile = vec2<i32>(floor(in.world_pos.xz + vec2(0.5))) - grid.xy;
+            var state = 0u;
+            if i32(floor_index) < grid.w && all(tile >= vec2(0)) && all(tile < vec2(grid.z)) {
+                state = textureLoad(visibility, vec2(tile.x, tile.y + 256 + i32(floor_index) * grid.z), 0).r;
+            }
+            shrouded = state == 0u;
+            explored = state == 1u;
+        }
+    }
 
     if (lighting.counts_and_flags.y & 1u) != 0u && opacity_u8 < 255u {
         let px = u32(in.clip_position.x) & 3u;
         let py = u32(in.clip_position.y) & 3u;
         let bayer = bayer4x4(px, py);
-        if (opacity_u8 * 16u) <= (bayer * 255u) {
+        if (opacity_u8 * 16u) <= (bayer * 255u + 127u) {
             discard;
         }
+    }
+
+    if shrouded {
+        if tag == 9u {
+            discard;
+        }
+        return vec4<f32>(lighting.shroud_and_dim.rgb * 0.33, 1.0);
     }
 
     let alpha = in.color.a;
@@ -138,7 +176,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let pl_radius = pl.pos_and_radius.w;
             let light_vec = pl_pos - in.world_pos;
             let dist = length(light_vec);
-            if dist < pl_radius {
+            let light_floor = pl.color_and_floor.w;
+            if dist < pl_radius && (floor_index == 255u || light_floor < 0.0 || f32(floor_index) == light_floor) {
                 let L = light_vec / max(dist, 1e-4);
                 let att = pow(clamp(1.0 - dist / pl_radius, 0.0, 1.0), 2.0) * max(dot(N, L), 0.25);
                 point_sum = point_sum + pl.color_and_floor.rgb * att;
@@ -156,6 +195,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let emissive_u8 = (in.inst_fx.x >> 8u) & 0xFFu;
     if emissive_u8 > 0u {
         lit_rgb = lit_rgb + vec3<f32>(f32(emissive_u8) / 255.0);
+    }
+
+    if explored {
+        let luminance = dot(lit_rgb, vec3(0.299, 0.587, 0.114));
+        lit_rgb = mix(lit_rgb, vec3(luminance), 0.45) * 0.45;
+    }
+    if (lighting.counts_and_flags.y & 2u) != 0u && floor_index < active_floor {
+        lit_rgb *= lighting.shroud_and_dim.w;
     }
 
     let fog_density = lighting.fog_color_and_density.w;

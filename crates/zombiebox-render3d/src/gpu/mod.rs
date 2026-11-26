@@ -3,6 +3,7 @@
 pub mod buffers;
 pub mod pipeline;
 pub mod uniforms;
+mod visibility;
 
 pub use buffers::*;
 pub use pipeline::*;
@@ -93,7 +94,8 @@ impl GpuContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("zombiebox_render3d_device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 trace: wgpu::Trace::Off,

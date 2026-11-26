@@ -77,6 +77,11 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
         view.aimLookAhead = aimLookAhead
     }
 
+    @ReactProp(name = "cameraMode")
+    override fun setCameraMode(view: ZombieboxSurfaceView, cameraMode: String?) {
+        view.cameraMode = cameraMode ?: "isometric"
+    }
+
     override fun openCounty(view: ZombieboxSurfaceView) = view.openCounty()
 
     override fun requestInteract(view: ZombieboxSurfaceView) = view.requestInteract()

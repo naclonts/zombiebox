@@ -7,4 +7,4 @@ publish = false
 
 [dependencies]
 zombiebox-core = { path = "../zombiebox-core" }
-zombiebox-render = { path = "../zombiebox-render" }
+zombiebox-render3d = { path = "../zombiebox-render3d", features = ["gpu"] }

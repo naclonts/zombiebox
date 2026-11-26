@@ -18,7 +18,7 @@ This document outlines the architectural conventions and technical guidelines fo
 * **`zombiebox-core`**: Focuses purely on simulation state, geography, and spatial kinematics. It should remain free of GPU dependencies, windowing crates, or rendering APIs.
 * **`zombiebox-render3d`**: Handles scene synchronization, mesh generation, camera control, and GPU rendering. It should remain decoupled from platform hosts (Android/Web) and legacy CPU rendering.
 * **Feature Flags**: It is helpful to gate GPU and windowing code behind features (e.g. `gpu` for `wgpu`, `viewer` for desktop `winit`), allowing core data types and math to be tested quickly on CPU without requiring a GPU adapter.
-* **Migration Strategy**: The existing CPU renderer (`zombiebox-render`) serves as a reference during development. The end goal is to replace it with `zombiebox-render3d` across desktop, web, and mobile once validated.
+* **Migration Strategy**: The captured 2.5D scenes serve as references for the shared 3D renderer on desktop, web, and Android. [Baseline captures](baselines/iso-2p5d/manifest.md)
 
 ### Suggested Module Organization (`crates/zombiebox-render3d/`)
 

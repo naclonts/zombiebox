@@ -11,6 +11,7 @@ pub mod shading_flags {
     pub const ENABLE_BAYER_DITHER: u32 = 1 << 0;
     /// Enables lower-floor dimming when `vertex.floor < active_floor` (`T07`, off by default in `T03`).
     pub const ENABLE_LOWER_FLOOR_DIM: u32 = 1 << 1;
+    pub const ENABLE_WORLD_VISIBILITY: u32 = 1 << 2;
 }
 
 /// 32-byte point light (streetlamp, porch lamp, survivor halo, muzzle/explosion flash).
@@ -38,7 +39,7 @@ impl PointLightGpu {
     }
 }
 
-/// 1,136-byte scene lighting & atmosphere uniform buffer (`@group(0) @binding(1)`).
+/// Scene lighting & atmosphere uniform buffer (`@group(0) @binding(1)`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct SceneLightingUniforms {
@@ -57,6 +58,8 @@ pub struct SceneLightingUniforms {
     /// `[point_light_count, shading_flags, active_floor_u32, _pad]`.
     pub counts_and_flags: [u32; 4],
     pub point_lights: [PointLightGpu; MAX_POINT_LIGHTS],
+    pub visibility_grid: [i32; 4],
+    pub player_position: [f32; 4],
 }
 
 impl Default for SceneLightingUniforms {
@@ -78,6 +81,8 @@ impl SceneLightingUniforms {
             fog_color_and_density: [18.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 0.0],
             counts_and_flags: [0, shading_flags::ENABLE_BAYER_DITHER, 0, 0],
             point_lights: [PointLightGpu::default(); MAX_POINT_LIGHTS],
+            visibility_grid: [0; 4],
+            player_position: [0.0; 4],
         }
     }
 
@@ -92,7 +97,77 @@ impl SceneLightingUniforms {
             fog_color_and_density: [18.0 / 255.0, 20.0 / 255.0, 30.0 / 255.0, 0.0],
             counts_and_flags: [0, 0, 0, 0],
             point_lights: [PointLightGpu::default(); MAX_POINT_LIGHTS],
+            visibility_grid: [0; 4],
+            player_position: [0.0; 4],
         }
+    }
+
+    #[must_use]
+    pub fn for_scene(scene: &crate::scene::DynamicSceneState, camera: &crate::CameraFrame) -> Self {
+        use crate::coords::sim_to_render_point;
+        use zombiebox_core::LightKind;
+
+        let mut result = Self::dusk_default();
+        let daylight = 1.0 - scene.dusk_level.clamp(0.0, 1.0);
+        result.sun_dir_and_intensity[3] += daylight * 0.18;
+        let grid = &scene.local_visibility;
+        result.visibility_grid = [
+            grid.origin.x,
+            grid.origin.y,
+            grid.side as i32,
+            i32::from(grid.floor_count),
+        ];
+        result.player_position = sim_to_render_point(scene.player.foot_pos)
+            .extend(1.0)
+            .to_array();
+        result.counts_and_flags[1] |=
+            shading_flags::ENABLE_WORLD_VISIBILITY | shading_flags::ENABLE_LOWER_FLOOR_DIM;
+        result.counts_and_flags[2] = u32::from(scene.active_floor);
+        let mut candidates = Vec::with_capacity(scene.lights.len() + scene.dynamic_flashes.len());
+        for light in &scene.lights {
+            if !light.view.active {
+                continue;
+            }
+            let color = match light.view.kind {
+                LightKind::Streetlight => [1.0, 0.79, 0.49],
+                LightKind::Porch => [1.0, 0.69, 0.40],
+                LightKind::Cache => [0.62, 0.91, 0.71],
+            };
+            let mut point = PointLightGpu::new(
+                sim_to_render_point(light.position),
+                light.view.radius,
+                color,
+                f32::from(light.view.intensity) / 72.0,
+            );
+            if light.view.kind != LightKind::Streetlight {
+                point.color_and_floor[3] = f32::from(light.view.floor);
+            }
+            candidates.push(point);
+        }
+        for flash in &scene.dynamic_flashes {
+            let mut point = PointLightGpu::new(
+                sim_to_render_point(flash.position),
+                flash.radius,
+                [1.0, 0.66, 0.35],
+                f32::from(flash.intensity) / 60.0,
+            );
+            point.color_and_floor[3] = f32::from(flash.floor);
+            candidates.push(point);
+        }
+        let score = |light: &PointLightGpu| {
+            let [x, y, z, radius] = light.pos_and_radius;
+            let position = Vec3::new(x, y, z);
+            let distance = camera.focus.distance(position);
+            let luminance = light.color_and_floor[0].max(light.color_and_floor[1]);
+            luminance * radius / (1.0 + distance)
+        };
+        candidates.retain(|light| {
+            let [x, y, z, radius] = light.pos_and_radius;
+            camera.focus.distance_squared(Vec3::new(x, y, z)) <= (18.0 + radius).powi(2)
+        });
+        candidates.sort_by(|a, b| score(b).total_cmp(&score(a)));
+        result.set_point_lights(&candidates);
+        result
     }
 
     pub fn set_point_lights(&mut self, lights: &[PointLightGpu]) {

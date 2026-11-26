@@ -10,4 +10,9 @@ crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
 zombiebox-core = { path = "../zombiebox-core" }
-zombiebox-render = { path = "../zombiebox-render" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+zombiebox-render3d = { path = "../zombiebox-render3d", features = ["gpu"] }
+raw-window-handle = "0.6.2"
+wgpu = "30.0.1"
+pollster = "0.4.0"

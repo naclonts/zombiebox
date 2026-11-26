@@ -1,10 +1,9 @@
-use std::{mem, slice};
+use std::mem;
 
 use zombiebox_core::{
     ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionOutcome, FloorTransition,
-    Material, ProjectileKind, Tile3D, Vec2, Vec3, Weapon,
+    Material, ProjectileKind, Tile3D, Vec2, Weapon,
 };
-use zombiebox_render::{Renderer, screen_vector_to_world};
 
 const TICK_UNIT: u64 = 1_000_000_000;
 const MAX_FRAME_NS: u64 = 50_000_000;
@@ -17,6 +16,7 @@ const ZB_INPUT_FIRE_HOLD: u32 = 1 << 1;
 const ZB_INPUT_INTERACT: u32 = 1 << 2;
 const ZB_INPUT_RELOAD: u32 = 1 << 3;
 const ZB_INPUT_HEAL: u32 = 1 << 4;
+#[cfg(target_os = "android")]
 const ZB_INPUT_LOOK_AHEAD: u32 = 1 << 5;
 
 const ZB_V2_WON: u16 = 1 << 0;
@@ -111,11 +111,10 @@ pub struct ZbActionLocation {
 
 pub struct ZbAction {
     game: ActionGame,
-    renderer: Option<Renderer>,
+    #[cfg(target_os = "android")]
+    gpu: Option<action3d::SurfaceState>,
     last_frame: Option<u64>,
     partial_tick: u64,
-    elapsed_ns: u64,
-    pending_use: bool,
     pending_fire_pulse: bool,
     pending_interact: bool,
     pending_reload: bool,
@@ -127,11 +126,10 @@ impl ZbAction {
     fn with_game(game: ActionGame) -> Self {
         Self {
             game,
-            renderer: None,
+            #[cfg(target_os = "android")]
+            gpu: None,
             last_frame: None,
             partial_tick: 0,
-            elapsed_ns: 0,
-            pending_use: false,
             pending_fire_pulse: false,
             pending_interact: false,
             pending_reload: false,
@@ -162,21 +160,14 @@ impl ZbAction {
     fn reset_clock_and_latches(&mut self) {
         self.last_frame = None;
         self.partial_tick = 0;
-        self.pending_use = false;
         self.pending_fire_pulse = false;
         self.pending_interact = false;
         self.pending_reload = false;
         self.pending_heal = false;
         self.pending_select_weapon = None;
-    }
-
-    fn ensure_renderer(&mut self, width: usize, height: usize) {
-        if self
-            .renderer
-            .as_ref()
-            .is_none_or(|renderer| renderer.width() != width || renderer.height() != height)
-        {
-            self.renderer = Some(Renderer::new(width, height));
+        #[cfg(target_os = "android")]
+        if let Some(gpu) = &mut self.gpu {
+            gpu.presentation.interrupt_frame_timing();
         }
     }
 
@@ -187,35 +178,7 @@ impl ZbAction {
             .map_or(0, |previous| {
                 frame_time_ns.saturating_sub(previous).min(MAX_FRAME_NS)
             });
-        self.elapsed_ns += elapsed;
         self.partial_tick += elapsed * u64::from(ACTION_TICKS_PER_SECOND);
-    }
-
-    fn advance_v1(
-        &mut self,
-        frame_time_ns: u64,
-        movement: Vec2,
-        aim: Option<Vec2>,
-        use_item: bool,
-    ) {
-        self.advance_clock(frame_time_ns);
-        self.pending_use |= use_item;
-
-        while self.partial_tick >= TICK_UNIT {
-            self.partial_tick -= TICK_UNIT;
-            let use_item = mem::take(&mut self.pending_use);
-            let interact = use_item && self.game.near_loot();
-            self.game.step(ActionInput {
-                movement,
-                aim,
-                fire: use_item && !interact,
-                interact,
-                ..ActionInput::default()
-            });
-            if let Some(renderer) = &mut self.renderer {
-                renderer.observe_events(&self.game, self.elapsed_ns / 1_000_000);
-            }
-        }
     }
 
     fn advance_v2(
@@ -259,22 +222,12 @@ impl ZbAction {
                 quiet_walk: false,
             });
             frame_audio |= events_to_sfx_mask(self.game.events());
-            if let Some(renderer) = &mut self.renderer {
-                renderer.observe_events(&self.game, self.elapsed_ns / 1_000_000);
+            #[cfg(target_os = "android")]
+            if let Some(gpu) = &mut self.gpu {
+                gpu.presentation.observe_tick(&self.game);
             }
         }
         frame_audio
-    }
-
-    fn status_v1(&self) -> i64 {
-        let hud = self.game.hud();
-        i64::from(hud.health)
-            | i64::from(hud.ammo.min(255)) << 8
-            | (hud.zombie_count.min(255) as i64) << 16
-            | i64::from(hud.armed) << 24
-            | i64::from(self.game.near_loot()) << 25
-            | i64::from(hud.outcome == ActionOutcome::Won) << 26
-            | i64::from(hud.outcome == ActionOutcome::Dead) << 27
     }
 
     fn output_v2(&self, audio_events: u64) -> ZbActionFrameOutput {
@@ -338,41 +291,6 @@ impl ZbAction {
             objective_kind: hud.objective_kind as u8,
         }
     }
-
-    fn blit_to(&mut self, output: &mut [u8], width: usize, stride: usize) {
-        let renderer = self.renderer.as_mut().expect("framebuffer is initialized");
-        let frame = renderer.render(&self.game, self.elapsed_ns / 1_000_000);
-        let row_bytes = width * 4;
-        if stride == row_bytes {
-            output.copy_from_slice(frame);
-        } else {
-            for (dst, src) in output
-                .chunks_exact_mut(stride)
-                .zip(frame.chunks_exact(row_bytes))
-            {
-                dst[..row_bytes].copy_from_slice(src);
-            }
-        }
-    }
-}
-
-fn validate_framebuffer(
-    pixels: *mut u8,
-    width: u32,
-    height: u32,
-    stride: usize,
-) -> Option<(usize, usize, usize)> {
-    let (width, height) = (width as usize, height as usize);
-    let buffer_len = stride.checked_mul(height)?;
-    if pixels.is_null()
-        || !(1..=2048).contains(&width)
-        || !(1..=2048).contains(&height)
-        || stride < width * 4
-        || buffer_len > isize::MAX as usize
-    {
-        return None;
-    }
-    Some((width, height, buffer_len))
 }
 
 fn parse_select_weapon(value: i32) -> Result<Option<Weapon>, ()> {
@@ -475,69 +393,6 @@ fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn zb_action_v1_create(seed: u64) -> *mut ZbAction {
-    Box::into_raw(Box::new(ZbAction::new(seed)))
-}
-
-/// # Safety
-/// A non-null run must come from zb_action_v1_create and have no active users.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zb_action_v1_destroy(run: *mut ZbAction) {
-    if !run.is_null() {
-        drop(unsafe { Box::from_raw(run) });
-    }
-}
-
-/// # Safety
-/// A non-null run must be live and exclusively accessible for this call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zb_action_v1_reset_clock(run: *mut ZbAction) {
-    if let Some(run) = unsafe { run.as_mut() } {
-        run.reset_clock_and_latches();
-    }
-}
-
-/// # Safety
-/// A non-null run must be live and exclusively accessible. A non-null buffer must
-/// point to writable storage for stride * height bytes, disjoint from the run.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zb_action_v1_frame(
-    run: *mut ZbAction,
-    pixels: *mut u8,
-    width: u32,
-    height: u32,
-    stride: usize,
-    frame_time_ns: u64,
-    move_x: f32,
-    move_y: f32,
-    aim_x: f32,
-    aim_y: f32,
-    use_item: bool,
-) -> i64 {
-    let Some((width, height, buffer_len)) = validate_framebuffer(pixels, width, height, stride)
-    else {
-        return -1;
-    };
-    let Some(run) = (unsafe { run.as_mut() }) else {
-        return -1;
-    };
-    run.ensure_renderer(width, height);
-
-    let movement = stick(move_x, move_y);
-    let aim = stick(aim_x, aim_y);
-    run.advance_v1(
-        frame_time_ns,
-        movement,
-        (aim != Vec2::ZERO).then_some(aim),
-        use_item,
-    );
-
-    let output = unsafe { slice::from_raw_parts_mut(pixels, buffer_len) };
-    run.blit_to(output, width, stride);
-    run.status_v1()
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn zb_action_v2_create(seed: u64) -> *mut ZbAction {
     Box::into_raw(Box::new(ZbAction::new(seed)))
 }
@@ -565,55 +420,36 @@ pub unsafe extern "C" fn zb_action_v2_reset_clock(run: *mut ZbAction) {
     }
 }
 
+/// Advance a run with simulation-space stick inputs without a display surface.
+///
 /// # Safety
-/// Non-null pointers must be valid, properly aligned, and disjoint for this call.
-/// `pixels` must point to writable storage for `stride * height` bytes.
+/// Non-null pointers must be valid, properly aligned and disjoint during the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zb_action_v2_frame(
+pub unsafe extern "C" fn zb_action_v2_update(
     run: *mut ZbAction,
-    pixels: *mut u8,
-    width: u32,
-    height: u32,
-    stride: usize,
     frame_time_ns: u64,
     input: *const ZbActionFrameInput,
     out: *mut ZbActionFrameOutput,
 ) -> bool {
-    let Some((width, height, buffer_len)) = validate_framebuffer(pixels, width, height, stride)
-    else {
-        return false;
-    };
-    let Some(run) = (unsafe { run.as_mut() }) else {
-        return false;
-    };
-    let Some(input) = (unsafe { input.as_ref() }) else {
+    let (Some(run), Some(input)) = (unsafe { run.as_mut() }, unsafe { input.as_ref() }) else {
         return false;
     };
     if out.is_null() {
         return false;
     }
-    let Ok(select_weapon) = parse_select_weapon(input.select_weapon) else {
+    let Ok(weapon) = parse_select_weapon(input.select_weapon) else {
         return false;
     };
-
-    run.ensure_renderer(width, height);
-    if let Some(renderer) = &mut run.renderer {
-        renderer.set_look_ahead((input.action_flags & ZB_INPUT_LOOK_AHEAD) != 0);
-    }
-
-    let movement = stick(input.move_x, input.move_y);
-    let aim = stick(input.aim_x, input.aim_y);
-    let audio_events = run.advance_v2(
+    let movement = world_stick(input.move_x, input.move_y);
+    let aim = world_stick(input.aim_x, input.aim_y);
+    let audio = run.advance_v2(
         frame_time_ns,
         movement,
         (aim != Vec2::ZERO).then_some(aim),
         input.action_flags,
-        select_weapon,
+        weapon,
     );
-
-    let output = unsafe { slice::from_raw_parts_mut(pixels, buffer_len) };
-    run.blit_to(output, width, stride);
-    unsafe { out.write(run.output_v2(audio_events)) };
+    unsafe { out.write(run.output_v2(audio)) };
     true
 }
 
@@ -655,8 +491,9 @@ pub unsafe extern "C" fn zb_action_v2_teleport(
         return false;
     };
     run.reset_clock_and_latches();
-    if let Some(renderer) = &mut run.renderer {
-        renderer.notify_teleport();
+    #[cfg(target_os = "android")]
+    if let Some(gpu) = &mut run.gpu {
+        gpu.presentation.notify_teleport();
     }
     if !out_resolved.is_null() {
         unsafe { out_resolved.write(run.location_for(dest)) };
@@ -664,24 +501,22 @@ pub unsafe extern "C" fn zb_action_v2_teleport(
     true
 }
 
-fn stick(x: f32, y: f32) -> Vec2 {
+#[cfg(target_os = "android")]
+#[path = "action3d.rs"]
+mod action3d;
+
+fn world_stick(x: f32, y: f32) -> Vec2 {
     if !x.is_finite() || !y.is_finite() {
         return Vec2::ZERO;
     }
-    let strength = x.hypot(y).min(1.0);
-    let vector = screen_vector_to_world(x, y);
-    let length = vector.x.hypot(vector.y);
-    if length > 0.0 {
-        vector * (strength / length)
-    } else {
-        Vec2::ZERO
-    }
+    let magnitude = x.hypot(y).max(1.0);
+    Vec2::new(x / magnitude, y / magnitude)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zombiebox_core::{CacheLoot, MonsterId, MonsterKind, ProjectileId};
+    use zombiebox_core::{CacheLoot, MonsterId, MonsterKind, ProjectileId, Vec3};
 
     #[test]
     fn parse_select_weapon_validates_bounds() {

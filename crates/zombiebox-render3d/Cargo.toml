@@ -34,3 +34,13 @@ required-features = ["gpu"]
 name = "preview3d"
 path = "examples/preview3d.rs"
 required-features = ["gpu"]
+
+[[example]]
+name = "viewer"
+path = "examples/viewer.rs"
+required-features = ["viewer"]
+
+[[example]]
+name = "check3d"
+path = "examples/check3d.rs"
+required-features = ["gpu"]

@@ -73,7 +73,8 @@ pub struct GpuRenderer {
     config: RenderPipelineConfig,
     world_pipeline: wgpu::RenderPipeline,
     upscale_pipeline_cache: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
-    bind_group_layout: wgpu::BindGroupLayout,
+    world_bind_group: wgpu::BindGroup,
+    visibility: super::visibility::VisibilityTexture,
     upscale_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
 
@@ -239,6 +240,16 @@ impl GpuRenderer {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Uint,
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -385,11 +396,32 @@ impl GpuRenderer {
                     usage: wgpu::BufferUsages::VERTEX,
                 });
 
+        let visibility = super::visibility::VisibilityTexture::new(&ctx.device);
+        let world_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: lighting_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&visibility.view),
+                },
+            ],
+        });
+
         Self {
             config,
             world_pipeline,
             upscale_pipeline_cache: std::collections::HashMap::new(),
-            bind_group_layout,
+            world_bind_group,
+            visibility,
             upscale_bind_group_layout,
             sampler,
             camera_uniform_buffer,
@@ -426,6 +458,14 @@ impl GpuRenderer {
 
     pub fn chunks_mut(&mut self) -> &mut ChunkMeshPool {
         &mut self.chunk_pool
+    }
+
+    pub(crate) fn update_visibility(
+        &mut self,
+        ctx: &GpuContext,
+        scene: &crate::scene::DynamicSceneState,
+    ) {
+        self.visibility.update(&ctx.queue, scene);
     }
 
     pub fn upload_chunk(
@@ -597,21 +637,6 @@ impl GpuRenderer {
             bytemuck::bytes_of(lighting),
         );
 
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("world_bind_group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.camera_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.lighting_uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
         let target = self.internal_target.as_ref().unwrap();
         let mut encoder = ctx
             .device
@@ -656,7 +681,7 @@ impl GpuRenderer {
             });
 
             pass.set_pipeline(&self.world_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(0, &self.world_bind_group, &[]);
 
             // Draw chunks
             let sorted_coords = self.chunk_pool.sorted_coords();
@@ -854,21 +879,6 @@ impl GpuRenderer {
             bytemuck::bytes_of(lighting),
         );
 
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("world_bind_group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.camera_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.lighting_uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
         let target = self.internal_target.as_ref().unwrap();
         let mut encoder = ctx
             .device
@@ -913,7 +923,7 @@ impl GpuRenderer {
             });
 
             pass.set_pipeline(&self.world_pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_bind_group(0, &self.world_bind_group, &[]);
 
             let sorted_coords = self.chunk_pool.sorted_coords();
             let chunks_resident = sorted_coords.len() as u32;
@@ -1162,6 +1172,335 @@ mod tests {
         assert!(
             center_px_b[0] > 200 && center_px_b[1] < 50,
             "Center pixel should still be red due to depth test, got {center_px_b:?}"
+        );
+    }
+
+    #[test]
+    fn cutaway_removes_shrouded_upper_floor_before_depth_write() {
+        use crate::mesh::{GeometryTag, MaterialFlags};
+        use crate::scene::{BuildingCutawayState, SceneManager};
+        use zombiebox_core::{ActionGame, Position};
+
+        let ctx = GpuContext::new_headless().expect("GPU setup");
+        let mut renderer = GpuRenderer::new(&ctx, RenderPipelineConfig::default());
+        let mut rig = CameraRig::new(100, 100);
+        rig.set_mode(crate::CameraMode::Overhead);
+        let camera = rig.update(crate::CameraTarget::default(), 0.0);
+        let game = ActionGame::residential(42);
+        let mut scene = SceneManager::new()
+            .prepare_at_focus(&game, Position::new(0, 0), 0.0)
+            .dynamic;
+        scene.building_cutaways = vec![BuildingCutawayState {
+            building_id: 1,
+            floors: 2,
+            foundation_z: 0.0,
+            player_inside: true,
+            wants_cutaway: true,
+            openness: 1.0,
+            stipple_step: 0,
+            dither_opacity_u8: 0,
+        }];
+        let lighting = SceneLightingUniforms::for_scene(&scene, &camera);
+        let mut mesh = MeshBuilder::new();
+        let mut floor = |height, color, meta| {
+            mesh.push_quad(
+                Vec3::new(-2.0, height, -2.0),
+                Vec3::new(-2.0, height, 2.0),
+                Vec3::new(2.0, height, 2.0),
+                Vec3::new(2.0, height, -2.0),
+                color,
+                meta,
+            );
+        };
+        floor(
+            0.0,
+            [0.1, 1.0, 0.2, 1.0],
+            VertexMeta::DEFAULT
+                .with_tag(GeometryTag::Terrain)
+                .with_flags(MaterialFlags::UNLIT),
+        );
+        floor(
+            crate::FLOOR_H,
+            [1.0, 0.1, 0.2, 1.0],
+            VertexMeta::DEFAULT
+                .with_tag(GeometryTag::InteriorFloor)
+                .with_floor(1)
+                .with_building(1, 0)
+                .with_flags(MaterialFlags::UNLIT),
+        );
+        let mesh = mesh.build();
+
+        scene.building_cutaways[0].dither_opacity_u8 = 255;
+        renderer.update_visibility(&ctx, &scene);
+        let closed = renderer
+            .render_offscreen_rgba8(&ctx, &camera, &lighting, &[], Some(&mesh))
+            .unwrap()
+            .pixel(50, 50);
+        assert!(
+            closed[0] < 30 && closed[1] < 30,
+            "shroud leaked floor color {closed:?}"
+        );
+
+        scene.building_cutaways[0].dither_opacity_u8 = 0;
+        renderer.update_visibility(&ctx, &scene);
+        let open = renderer
+            .render_offscreen_rgba8(&ctx, &camera, &lighting, &[], Some(&mesh))
+            .unwrap()
+            .pixel(50, 50);
+        assert!(
+            open[0] < 50 && open[1] > 200,
+            "shroud blocked cutaway {open:?}"
+        );
+    }
+
+    #[test]
+    fn headless_terrain_renders_birch_street_and_county_scenes_seam_free() {
+        use std::collections::HashSet;
+        use zombiebox_core::{
+            ActionGame, CHUNK_SIZE, Ground, LandmarkKind, Position, Tile3D, WATER_SURFACE_Z,
+            WORLD_SIZE, Water, World,
+        };
+
+        let ctx = GpuContext::new_headless().expect("GpuContext init failed");
+        let mut renderer = GpuRenderer::new(&ctx, RenderPipelineConfig::default());
+        let lighting = SceneLightingUniforms::dusk_default();
+        let mesh_cfg = crate::TerrainMeshConfig::default();
+
+        // 1. Birch Street (640x360 Isometric)
+        {
+            let res_game = ActionGame::residential(42);
+            let mut mgr = crate::SceneManager::new();
+            let mut rig = CameraRig::new(640, 360);
+            rig.set_mode(crate::camera::CameraMode::Isometric);
+            let target = crate::camera::CameraTarget {
+                position: res_game.player_body().position,
+                ..Default::default()
+            };
+            let cam_frame = rig.update(target, 0.016);
+            let scene_frame = mgr.prepare(&res_game, &cam_frame, 0.016);
+            crate::sync_terrain_chunks_to_gpu(&ctx, &mut renderer, &scene_frame, &mesh_cfg);
+            let img = renderer
+                .render_offscreen_rgba8(&ctx, &cam_frame, &lighting, &[], None)
+                .unwrap();
+            let stats = renderer.last_frame_stats();
+            assert!(stats.chunks_drawn >= 1);
+            let colors: HashSet<[u8; 3]> = img
+                .pixels
+                .chunks_exact(4)
+                .map(|c| [c[0], c[1], c[2]])
+                .collect();
+            assert!(
+                colors.len() >= 8,
+                "Birch Street expected >= 8 colors, got {}",
+                colors.len()
+            );
+        }
+
+        // 2. County Seed 42 scenes
+        let world = World::new(42);
+        let mut county = ActionGame::county_with_world(world.clone());
+        let mut mgr = crate::SceneManager::new();
+
+        let bridge_pos = {
+            let center = WORLD_SIZE / 2;
+            let mut best: Option<(usize, i64, Position)> = None;
+            for y in 16..(WORLD_SIZE - 16) {
+                for x in 16..(WORLD_SIZE - 16) {
+                    let pos = Position::new(x, y);
+                    if let Some(t) = world.tile_at(pos)
+                        && t.ground == Ground::Bridge
+                        && t.water == Some(Water::River)
+                    {
+                        let mut rc = 0usize;
+                        for dy in -3..=3 {
+                            for dx in -3..=3 {
+                                if world
+                                    .tile_at(Position::new(x + dx, y + dy))
+                                    .is_some_and(|nt| nt.water == Some(Water::River))
+                                {
+                                    rc += 1;
+                                }
+                            }
+                        }
+                        let dist2 = i64::from(x - center).pow(2) + i64::from(y - center).pow(2);
+                        if best.is_none_or(|(bc, bd, _)| rc > bc || (rc == bc && dist2 < bd)) {
+                            best = Some((rc, dist2, pos));
+                        }
+                    }
+                }
+            }
+            best.expect("county has river bridge").2
+        };
+        let downtown_pos = world
+            .landmarks()
+            .iter()
+            .find(|l| l.kind == LandmarkKind::Downtown)
+            .unwrap()
+            .entrance;
+        let mountain_pos = world
+            .landmarks()
+            .iter()
+            .find(|l| l.kind == LandmarkKind::Mountain)
+            .unwrap()
+            .entrance;
+
+        for (label, pos, mode) in [
+            (
+                "spawn",
+                county.player_tile().pos(),
+                crate::camera::CameraMode::Isometric,
+            ),
+            (
+                "river-bridge-iso",
+                bridge_pos,
+                crate::camera::CameraMode::Isometric,
+            ),
+            (
+                "river-bridge-orbit",
+                bridge_pos,
+                crate::camera::CameraMode::Orbit,
+            ),
+            (
+                "downtown",
+                downtown_pos,
+                crate::camera::CameraMode::Isometric,
+            ),
+            (
+                "mountains",
+                mountain_pos,
+                crate::camera::CameraMode::Isometric,
+            ),
+        ] {
+            county.teleport(Tile3D::from_pos(pos, 0));
+            mgr.notify_teleport();
+            let mut rig = CameraRig::new(640, 360);
+            rig.set_mode(mode);
+            if mode == crate::camera::CameraMode::Orbit {
+                rig.orbit_rotate(0.65, -0.05);
+            }
+            let target = crate::camera::CameraTarget {
+                position: county.player_body().position,
+                ..Default::default()
+            };
+            let cam_frame = rig.update(target, 0.016);
+            let scene_frame = mgr.prepare(&county, &cam_frame, 0.016);
+            crate::sync_terrain_chunks_to_gpu(&ctx, &mut renderer, &scene_frame, &mesh_cfg);
+            let img = renderer
+                .render_offscreen_rgba8(&ctx, &cam_frame, &lighting, &[], None)
+                .unwrap();
+            let stats = renderer.last_frame_stats();
+            assert!(stats.chunks_drawn >= 1, "{label} drew 0 chunks");
+            let colors: HashSet<[u8; 3]> = img
+                .pixels
+                .chunks_exact(4)
+                .map(|c| [c[0], c[1], c[2]])
+                .collect();
+            assert!(
+                colors.len() >= 8,
+                "{label} expected >= 8 distinct colors, got {}",
+                colors.len()
+            );
+
+            if label == "river-bridge-iso" {
+                let bq = world.bridge_quad(bridge_pos).unwrap();
+                let bz = (bq[0] + bq[1] + bq[2] + bq[3]) * 0.25;
+                let sp_bridge = cam_frame
+                    .project_sim_to_screen(zombiebox_core::Vec3::new(
+                        bridge_pos.x as f32,
+                        bridge_pos.y as f32,
+                        bz,
+                    ))
+                    .unwrap();
+                let bpx = img.pixel(
+                    (sp_bridge.px.x as u32).min(639),
+                    (sp_bridge.px.y as u32).min(359),
+                );
+                assert!(
+                    bpx[0] > bpx[2],
+                    "projected bridge pixel should be warm timber, got {bpx:?}"
+                );
+
+                // Find adjacent open river water tile
+                let mut water_tile = None;
+                for dy in -4..=4 {
+                    for dx in -4..=4 {
+                        let p = Position::new(bridge_pos.x + dx, bridge_pos.y + dy);
+                        if world.tile_at(p).is_some_and(|t| {
+                            t.ground == Ground::River && t.water == Some(Water::River)
+                        }) {
+                            water_tile = Some(p);
+                            break;
+                        }
+                    }
+                    if water_tile.is_some() {
+                        break;
+                    }
+                }
+                let wp = water_tile.expect("open river tile near bridge");
+                let sp_water = cam_frame
+                    .project_sim_to_screen(zombiebox_core::Vec3::new(
+                        wp.x as f32,
+                        wp.y as f32,
+                        WATER_SURFACE_Z,
+                    ))
+                    .unwrap();
+                let wpx = img.pixel(
+                    (sp_water.px.x as u32).min(639),
+                    (sp_water.px.y as u32).min(359),
+                );
+                assert!(
+                    wpx[2] > wpx[0],
+                    "projected water pixel should be blue, got {wpx:?}"
+                );
+            }
+        }
+
+        // 3. Zero chunk-seam crack test with bright magenta sentinel clear color
+        let mut crack_renderer = GpuRenderer::new(
+            &ctx,
+            RenderPipelineConfig {
+                clear_color_rgba: [1.0, 0.0, 1.0, 1.0],
+                ..Default::default()
+            },
+        );
+        county.teleport(Tile3D::from_pos(downtown_pos, 0));
+        mgr.notify_teleport();
+        let fc = ChunkCoord::from_pos(downtown_pos);
+        let seam_xy = zombiebox_core::Vec2::new(
+            (fc.cx + 1) as f32 * CHUNK_SIZE as f32 - 0.5,
+            (fc.cy + 1) as f32 * CHUNK_SIZE as f32 - 0.5,
+        );
+        let seam_z = world.elevation_at(seam_xy).unwrap_or(0.0);
+        let mut rig = CameraRig::new(640, 360);
+        rig.set_mode(crate::camera::CameraMode::Isometric);
+        let cam_frame = rig.update(
+            crate::camera::CameraTarget {
+                position: seam_xy.extend(seam_z),
+                ..Default::default()
+            },
+            0.016,
+        );
+        let scene_frame = mgr.prepare(&county, &cam_frame, 0.016);
+        crate::sync_terrain_chunks_to_gpu(&ctx, &mut crack_renderer, &scene_frame, &mesh_cfg);
+        let crack_img = crack_renderer
+            .render_offscreen_rgba8(&ctx, &cam_frame, &lighting, &[], None)
+            .unwrap();
+        let x_lo = 640 / 8;
+        let x_hi = 640 - x_lo;
+        let y_lo = 360 / 8;
+        let y_hi = 360 - y_lo;
+        let mut magenta_hits = 0usize;
+        for y in y_lo..y_hi {
+            for x in x_lo..x_hi {
+                let px = crack_img.pixel(x, y);
+                if px[0] > 230 && px[1] < 25 && px[2] > 230 {
+                    magenta_hits += 1;
+                }
+            }
+        }
+        assert_eq!(
+            magenta_hits, 0,
+            "detected {magenta_hits} magenta background crack pixels along chunk boundary!"
         );
     }
 }

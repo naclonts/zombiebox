@@ -543,6 +543,11 @@ impl ResidentialBlock {
         &self.monster_spawns
     }
 
+    pub(super) fn tile_visibility(&self, tile: Tile3D) -> Option<TileVisibility> {
+        let (x, y, floor) = self.world_to_local(tile)?;
+        Some(self.cell_at(x, y, floor).visibility)
+    }
+
     pub fn tile_render_info(&self, pos: Position, floor: Floor) -> Option<TileRenderInfo> {
         let tile = Tile3D::from_pos(pos, floor);
         let (lx, ly, fl) = self.world_to_local(tile)?;

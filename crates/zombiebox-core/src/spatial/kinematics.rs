@@ -454,13 +454,36 @@ pub fn step_kinematic_body(
                     params.max_walkable_slope,
                     params.avoid_water,
                 );
+                // Keep the feet on a bridge deck while the body's radius still overlaps
+                // its edge. Dropping to the road too early makes the slab look like a
+                // headroom obstruction and pins the body at the boundary.
+                let bridge_edge_z = if matches!(cur_sup, SupportId::Bridge(_) | SupportId::Terrain)
+                {
+                    colliders
+                        .iter()
+                        .filter(|c| {
+                            matches!(c.kind, ColliderKind::BridgeDeck { .. })
+                                && c.bounds.max.z <= state.position.z + 0.001
+                                && c.bounds.max.z >= state.position.z - params.max_step_down
+                                && circle_overlaps_rect_2d(
+                                    cand_xy,
+                                    shape.radius - 1e-4,
+                                    c.bounds.min.xy(),
+                                    c.bounds.max.xy(),
+                                )
+                        })
+                        .map(|c| c.bounds.max.z)
+                        .fold(f32::NEG_INFINITY, f32::max)
+                } else {
+                    f32::NEG_INFINITY
+                };
                 let mut matched = raw_match.filter(|s| {
-                    let target_z = s.z.max(min_collider_step_z);
+                    let target_z = s.z.max(min_collider_step_z).max(bridge_edge_z);
                     has_headroom_at(cand_xy.extend(target_z), shape, &colliders, params)
                 });
 
                 if let Some(s) = matched {
-                    let new_z = s.z.max(min_collider_step_z);
+                    let new_z = s.z.max(min_collider_step_z).max(bridge_edge_z);
                     if new_z - state.position.z > 0.035
                         && ((!s.is_stair && (s.id != cur_sup || s.normal.z > 0.99))
                             || min_collider_step_z > s.z)

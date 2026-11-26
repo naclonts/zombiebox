@@ -1,7 +1,7 @@
 # 2.5D Isometric Reference Baselines (`zombiebox-render`)
 
 * **Baseline Commit:** `daeff4a`
-* **Reproduction Command:** `cargo run --locked --offline --release -p zombiebox-render --example preview -- --baselines docs/baselines/iso-2p5d`
+* **Historical reproduction command (run at the recorded source revision):** `cargo run --locked --offline --release -p zombiebox-render --example preview -- --baselines docs/baselines/iso-2p5d`
 
 | File | Scenario | Seed | Player Pos (x, y) | Floor | Resolution | Notes |
 |---|---|---:|---|---:|---|---|

@@ -8,13 +8,13 @@ This is a wip zombie survival sandbox game for mobile or web browser. The world 
 
 ## Run the browser playtest
 
-From the repository root, start the dev server with stable Rust 1.87 or newer.
+From the repository root, start the dev server with stable Rust 1.87 or newer. The server needs a working `wgpu` adapter for action play. The browser receives rendered frames over HTTP.
 
 ```sh
 cargo run --locked -p zombiebox-web
 ```
 
-Open `http://127.0.0.1:8765` and choose **Enter the county**. Move with **WASD** or the **arrow keys**, hold **Shift** to walk quietly, aim with the mouse, and click or press **Space** to fire. Use **E** to interact, **1–4** to equip a weapon, **R** to reload, **Q** or **H** to heal, **M** for the atlas, and **Escape** to pause. Touch devices have on-screen controls.
+Open `http://127.0.0.1:8765` and choose **Enter the county**. Move with **WASD** or the **arrow keys**, hold **Shift** to walk quietly, aim with the mouse, and click or press **Space** to fire. Use **E** to interact, **1–4** to equip a weapon, **R** to reload, **Q** or **H** to heal, **M** for the atlas, **C** to switch cameras, and **Escape** to pause. Touch devices have on-screen controls.
 
 The original tile-command playtest is available at `http://127.0.0.1:8765/legacy`. Stand on the marked crate and press **L** to scavenge. **Fire** highlights when the pistol has a clear shot, and **Space** fires.
 
@@ -61,6 +61,14 @@ cargo run --locked -p zombiebox-web -- --bind "$tailnet_ip:8765"
 
 Open `http://<tailscale-ip>:8765` on the phone, substituting the development machine's Tailscale IP. The phone needs access to TCP port 8765. Runs live in server memory and can be restarted from the playtest screen.
 
+## Run the desktop 3D viewer
+
+```sh
+cargo run --locked -p zombiebox-render3d --features viewer --example viewer -- --seed 42
+```
+
+Add `--birch` for Birch Street. Use **1–5** to switch between isometric, overhead, orbit, chase, and first-person views. The window title displays controls and frame statistics.
+
 ## Replay the encounter headlessly
 
 ```sh
@@ -75,10 +83,10 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | --- | --- |
 | [crates/zombiebox-core](crates/zombiebox-core) | Fixed-tick survival rules, world generation, gameplay events, and the headless example |
 | [crates/zombiebox-ffi](crates/zombiebox-ffi) | Versioned C interface for native hosts to own and step a Rust run |
-| [crates/zombiebox-render](crates/zombiebox-render) | Isometric county and Birch Street rendering, character animation, and combat effects |
+| [crates/zombiebox-render3d](crates/zombiebox-render3d) | Shared 3D camera, chunk meshing, lighting, character animation, combat effects, and GPU presentation |
 | [crates/zombiebox-web](crates/zombiebox-web) | Playtest HTTP host for the Rust simulation |
 | [apps/mobile](apps/mobile) | React Native Android app, JNI host, and native build guide |
-| [apps/web](apps/web) | Isometric Canvas view, touch controls, and HUD for the browser playtest |
+| [apps/web](apps/web) | Streamed action frames, touch controls, HUD, and Canvas atlas and turn-based playtest |
 | [docs/product-decisions.md](docs/product-decisions.md) | Product checklist, visual/performance targets, and milestone completion checks |
 | [docs/goals.md](docs/goals.md) | Directional guidance for upcoming gameplay, procedural world, vehicle, AI, and audio goals |
 | [docs/architecture.md](docs/architecture.md) | Stack decision, runtime ownership, procedural streaming, rendering plan, and device criteria |
@@ -89,8 +97,9 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 ```sh
 cargo test --locked --workspace
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p zombiebox-render3d --features viewer --all-targets -- -D warnings
 cargo fmt --all -- --check
 sh scripts/check-native.sh
 ```
 
-The last command requires a Unix host and a C compiler. See the [mobile development guide](apps/mobile/README.md) for Android setup, APK build and sideload instructions, play controls, and the future iOS port.
+The C ABI smoke check requires a Unix host and a C compiler. The GPU presentation captures and migration checks are listed in the [3D progress ledger](docs/render3d-progress.md). See the [mobile development guide](apps/mobile/README.md) for Android setup, APK build and sideload instructions, play controls, and the future iOS port.

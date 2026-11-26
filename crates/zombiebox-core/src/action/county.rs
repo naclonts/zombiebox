@@ -1253,6 +1253,13 @@ impl CountyStage {
             .collect()
     }
 
+    pub(super) fn tile_visibility(&self, tile: Tile3D) -> Option<TileVisibility> {
+        if !self.in_window(tile.pos()) {
+            return None;
+        }
+        self.cell_at_world(tile).map(|cell| cell.visibility)
+    }
+
     pub fn tile_render_info(&self, pos: Position, floor: Floor) -> Option<TileRenderInfo> {
         if !self.in_window(pos) {
             return None;

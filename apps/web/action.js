@@ -49,6 +49,7 @@
 
   const btnAtlas = $("btn-atlas");
   const btnLook = $("btn-look");
+  const btnCamera = $("btn-camera");
   const btnSound = $("btn-sound");
   const btnPause = $("btn-pause");
   const btnInteract = $("btn-interact");
@@ -86,6 +87,7 @@
     playing: false,
     inFlight: false,
     lookAhead: true,
+    cameraMode: 0,
     muted: false,
     lastTNs: 0,
     toastTimer: 0,
@@ -673,7 +675,7 @@
     return { mx, my, ax, ay };
   }
 
-  function decodeAndRenderFrame(buf) {
+  function decodeAndRenderFrame(buf, drawImage = true) {
     if (buf.byteLength < 64) return null;
     const view = new DataView(buf);
     if (
@@ -697,8 +699,10 @@
       canvas.height = fh;
     }
     const pixels = new Uint8ClampedArray(buf, 64, fw * fh * 4);
-    const imageData = new ImageData(pixels, fw, fh);
-    ctx.putImageData(imageData, 0, 0);
+    if (drawImage) {
+      const imageData = new ImageData(pixels, fw, fh);
+      ctx.putImageData(imageData, 0, 0);
+    }
 
     const audioLo = view.getUint32(8, true);
     const hud = {
@@ -737,6 +741,7 @@
   async function requestFrame(advance) {
     if (!state.runId || state.inFlight) return;
     state.inFlight = true;
+    const requestedCameraMode = state.cameraMode;
 
     const { w, h } = computeRenderSize();
     const tNs = getMonotonicNs();
@@ -767,7 +772,8 @@
       `w=${w}&h=${h}&t_ns=${tNs}` +
       `&mx=${mx.toFixed(4)}&my=${my.toFixed(4)}` +
       `&ax=${ax.toFixed(4)}&ay=${ay.toFixed(4)}` +
-      `&flags=${flags}&weapon=${selectWeapon}&advance=${advance ? 1 : 0}`;
+      `&flags=${flags}&weapon=${selectWeapon}&advance=${advance ? 1 : 0}` +
+      `&camera=${state.cameraMode}`;
 
     try {
       const res = await fetch(
@@ -784,10 +790,13 @@
         throw err;
       }
       if (!res.ok) {
-        throw new Error(`Frame failed (${res.status})`);
+        const detail = (await res.text()).trim();
+        const err = new Error(detail || `Frame failed (${res.status})`);
+        err.status = res.status;
+        throw err;
       }
       const buf = await res.arrayBuffer();
-      const hud = decodeAndRenderFrame(buf);
+      const hud = decodeAndRenderFrame(buf, requestedCameraMode === state.cameraMode);
       if (hud) {
         const prevFlags = state.hud ? state.hud.statusFlags : 0;
         updateHud(hud);
@@ -803,21 +812,22 @@
         }
       }
     } catch (err) {
-      if (advance || err.status === 404) {
-        state.playing = false;
-        if (err.status === 404) {
-          state.runId = null;
-          state.started = false;
-        }
-        openModal(
-          "error",
-          err.status === 404
-            ? "Your session expired on the server. Start a fresh run to continue."
-            : "Lost connection to the Zombiebox host.",
-        );
+      state.playing = false;
+      if (err.status === 404) {
+        state.runId = null;
+        state.started = false;
       }
+      openModal(
+        "error",
+        err.status === 404
+          ? "Your session expired on the server. Start a fresh run to continue."
+          : err.message || "Lost connection to the Zombiebox host.",
+      );
     } finally {
       state.inFlight = false;
+      if (requestedCameraMode !== state.cameraMode && state.runId && !state.playing) {
+        requestFrame(false);
+      }
     }
   }
 
@@ -1132,6 +1142,12 @@
       return;
     }
 
+    if (k === "c" && !e.repeat) {
+      e.preventDefault();
+      cycleCamera();
+      return;
+    }
+
     if (!state.playing) return;
 
     if (["w", "a", "s", "d", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(k)) {
@@ -1214,6 +1230,17 @@
     btnLook.blur();
     if (!state.playing && state.runId) requestFrame(false);
   });
+
+  function cycleCamera() {
+    state.cameraMode = (state.cameraMode + 1) % 5;
+    const labels = ["ISO", "TOP", "ORBIT", "CHASE", "1ST"];
+    btnCamera.textContent = `${labels[state.cameraMode]} [C]`;
+    btnCamera.setAttribute("aria-label", `Camera view: ${["Isometric", "Overhead", "Orbit", "Chase", "First person"][state.cameraMode]}`);
+    btnCamera.blur();
+    if (!state.playing && state.runId) requestFrame(false);
+  }
+
+  btnCamera.addEventListener("click", cycleCamera);
 
   btnSound.addEventListener("click", () => {
     state.muted = !state.muted;

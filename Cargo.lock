@@ -2718,16 +2718,11 @@ version = "0.1.0"
 name = "zombiebox-ffi"
 version = "0.1.0"
 dependencies = [
+ "pollster",
+ "raw-window-handle",
+ "wgpu",
  "zombiebox-core",
- "zombiebox-render",
-]
-
-[[package]]
-name = "zombiebox-render"
-version = "0.1.0"
-dependencies = [
- "png",
- "zombiebox-core",
+ "zombiebox-render3d",
 ]
 
 [[package]]
@@ -2748,5 +2743,5 @@ name = "zombiebox-web"
 version = "0.1.0"
 dependencies = [
  "zombiebox-core",
- "zombiebox-render",
+ "zombiebox-render3d",
 ]

@@ -12,7 +12,15 @@ pub mod effects;
 pub mod gpu;
 pub mod materials;
 pub mod mesh;
+#[cfg(feature = "gpu")]
+mod presentation;
 pub mod scene;
+#[cfg(feature = "gpu")]
+pub use presentation::Presentation;
+#[cfg(feature = "gpu")]
+mod telemetry;
+#[cfg(feature = "gpu")]
+pub use telemetry::{FramePercentiles, FrameTiming};
 
 pub use camera::{
     CameraConfig, CameraFrame, CameraGpuUniforms, CameraMode, CameraRig, CameraTarget, Frustum,
@@ -22,7 +30,8 @@ pub use camera::{
 pub use coords::{ChunkCoord, FLOOR_H, RenderAabb, RenderVec3, SimAabb3, SimVec3};
 pub use mesh::{
     CardinalDir, EXTERIOR_FLOOR_SENTINEL, FaceMask, GeometryTag, MaterialFlags, MeshBuffer,
-    MeshBuilder, MeshValidationError, RidgeAxis, VertexMeta, WorldVertex,
+    MeshBuilder, MeshValidationError, RidgeAxis, TerrainMeshConfig, VertexMeta, WorldVertex,
+    build_chunk_terrain_mesh, build_chunk_terrain_mesh_with_config,
 };
 pub use scene::{
     BuildingCutawayState, BuildingSnapshot, CacheSnapshot, CacheSyncMode, CachedChunk,
@@ -38,6 +47,34 @@ pub use gpu::{
     PrototypeMeshId, RenderPipelineConfig, SceneLightingUniforms, SurfaceFrameOutcome,
     render_smoke_cube, select_surface_format, write_rgba8_png,
 };
+
+/// Applies `frame.evicted_chunks` and `frame.dirty_chunks` from `SceneManager::prepare`
+/// into `GpuRenderer`'s `ChunkMeshPool`. Returns the number of chunks newly meshed & uploaded.
+#[cfg(feature = "gpu")]
+pub fn sync_terrain_chunks_to_gpu(
+    ctx: &GpuContext,
+    renderer: &mut GpuRenderer,
+    frame: &FrameSnapshot,
+    config: &TerrainMeshConfig,
+) -> usize {
+    for &coord in &frame.evicted_chunks {
+        renderer.chunks_mut().remove_chunk(coord);
+    }
+    let mut uploaded = 0usize;
+    for delta in &frame.dirty_chunks {
+        if renderer.chunks().has_revision(delta.coord, delta.revision) {
+            continue;
+        }
+        let mesh = build_chunk_terrain_mesh_with_config(&delta.snapshot, config);
+        let aabb = mesh
+            .compute_aabb()
+            .unwrap_or_else(|| delta.snapshot.bounds_render_aabb());
+        if renderer.upload_chunk(ctx, delta.coord, delta.revision, aabb, &mesh) {
+            uploaded += 1;
+        }
+    }
+    uploaded
+}
 
 /// Tightly packed row-major RGBA8888 image (`width * height * 4` bytes).
 #[derive(Clone, Debug, PartialEq, Eq)]

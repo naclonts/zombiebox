@@ -37,7 +37,7 @@ for abi in "$@"; do
     "$linker" -std=c11 -O2 -fPIC -shared -Wall -Wextra -Werror \
         -I "$project_dir/crates/zombiebox-ffi/include" \
         "$android_dir/zombiebox_jni.c" "$target_dir/$target/release/libzombiebox_ffi.a" \
-        -landroid -ldl -ljnigraphics -llog -lm \
+        -landroid -ldl -llog -lm \
         -Wl,--exclude-libs,ALL -Wl,-z,max-page-size=16384 \
         -Wl,-soname,libzombiebox_jni.so -o "$output_dir/$abi/libzombiebox_jni.so"
 done
