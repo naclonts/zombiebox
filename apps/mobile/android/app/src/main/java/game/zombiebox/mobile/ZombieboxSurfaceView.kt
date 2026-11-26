@@ -1,5 +1,7 @@
 package game.zombiebox.mobile
 
+import android.app.Activity
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -14,6 +16,7 @@ import android.view.ViewConfiguration
 import android.view.WindowInsets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.LifecycleEventListener
 import com.facebook.react.common.LifecycleState
@@ -25,30 +28,41 @@ import kotlin.math.roundToInt
 
 // A single game survives view replacement. All calls are made on the Android UI thread.
 private object Runs {
-    private data class Run(val id: String, val seed: Long, val handle: Long)
+    private data class Run(val id: String, val seed: Long, val scenario: String, val handle: Long)
 
     private var current: Run? = null
     private var owner: ZombieboxSurfaceView? = null
 
-    fun attach(view: ZombieboxSurfaceView, id: String, seed: Long) {
-        if (current?.id != id || current?.seed != seed) {
+    fun attach(view: ZombieboxSurfaceView, id: String, seed: Long, scenario: String) {
+        if (current?.id != id || current?.seed != seed || current?.scenario != scenario) {
             current?.let { NativeGame.destroyV2(it.handle) }
-            current = Run(id, seed, NativeGame.createV2(seed))
+            current = Run(id, seed, scenario, createHandle(seed, scenario))
         }
         if (owner !== view) {
             owner = view
-            NativeGame.resetClockV2(handle(view))
+            val h = handle(view)
+            if (h != 0L) NativeGame.resetClockV2(h)
         }
+    }
+
+    fun replaceWithCounty(view: ZombieboxSurfaceView, id: String, seed: Long, handle: Long) {
+        current?.let { NativeGame.destroyV2(it.handle) }
+        current = Run(id, seed, "county", handle)
+        owner = view
     }
 
     fun handle(view: ZombieboxSurfaceView): Long = if (owner === view) current?.handle ?: 0 else 0
 
     fun detach(view: ZombieboxSurfaceView) {
         if (owner === view) {
-            NativeGame.resetClockV2(handle(view))
+            val h = handle(view)
+            if (h != 0L) NativeGame.resetClockV2(h)
             owner = null
         }
     }
+
+    private fun createHandle(seed: Long, scenario: String): Long =
+        if (scenario == "birch") NativeGame.createV2(seed) else NativeGame.createCountyV2(seed)
 }
 
 internal enum class ControlScheme {
@@ -58,9 +72,11 @@ internal enum class ControlScheme {
 }
 
 internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext) :
-    View(reactContext), LifecycleEventListener {
+    View(reactContext), LifecycleEventListener, ActivityEventListener {
     var runId: String? = null
     var seed: Long? = null
+    var scenario: String = "county"
+    var runStarted: Boolean = false
     var paused = true
     var controlScheme: String = "tap_stick"
     var sfxVolumePct: Int = 75
@@ -70,6 +86,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
 
     private var appliedRunId: String? = null
     private var appliedSeed: Long? = null
+    private var appliedScenario: String? = null
     private var resumed = false
     private var drawing = false
 
@@ -129,12 +146,15 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         if (!isAttachedToWindow) return
         val id = runId
         val seedValue = seed
-        if (!id.isNullOrEmpty() && seedValue != null && (appliedRunId != id || appliedSeed != seedValue)) {
+        if (!id.isNullOrEmpty() && seedValue != null &&
+            (appliedRunId != id || appliedSeed != seedValue || appliedScenario != scenario)
+        ) {
             stopFrames()
             Runs.detach(this)
-            Runs.attach(this, id, seedValue)
+            Runs.attach(this, id, seedValue, scenario)
             appliedRunId = id
             appliedSeed = seedValue
+            appliedScenario = scenario
             hasLastHud = false
             currentInteractKind = 0
             render(System.nanoTime(), false)
@@ -143,6 +163,86 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         updateFrames()
         invalidate()
     }
+
+    fun openCounty() {
+        val handle = Runs.handle(this)
+        val locBuf = IntArray(5)
+        if (handle != 0L) {
+            NativeGame.locationV2(handle, locBuf)
+        }
+        val isDead = hasLastHud && ((lastHudOut[7] and 2) != 0)
+        val active = runStarted && scenario == "county" && !isDead && handle != 0L
+        val seedStr = seed?.toULong()?.toString() ?: "42"
+        val activity = reactContext.currentActivity
+        val intent = Intent(activity ?: reactContext, CountyActivity::class.java).apply {
+            putExtra("seed", seedStr)
+            putExtra("active", active)
+            putExtra("px", locBuf[0])
+            putExtra("py", locBuf[1])
+            putExtra("pf", locBuf[2])
+        }
+        if (activity != null) {
+            activity.startActivityForResult(intent, REQUEST_COUNTY_ATLAS)
+        } else {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            reactContext.startActivity(intent)
+        }
+    }
+
+    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != REQUEST_COUNTY_ATLAS || resultCode != Activity.RESULT_OK || data == null) return
+        val seedStr = data.getStringExtra("seed") ?: return
+        val seedLong = seedStr.toULongOrNull()?.toLong() ?: return
+        val tx = data.getIntExtra("x", 0)
+        val ty = data.getIntExtra("y", 0)
+        val tf = data.getIntExtra("floor", 0)
+
+        val isDead = hasLastHud && ((lastHudOut[7] and 2) != 0)
+        val canPreserve =
+            runStarted && scenario == "county" && appliedSeed == seedLong && !isDead && Runs.handle(this) != 0L
+        val resolved = IntArray(4)
+
+        if (canPreserve) {
+            if (!NativeGame.teleportV2(Runs.handle(this), tx, ty, tf, resolved)) return
+        } else {
+            val newHandle = NativeGame.createCountyV2(seedLong)
+            if (newHandle == 0L) return
+            if (!NativeGame.teleportV2(newHandle, tx, ty, tf, resolved)) {
+                NativeGame.destroyV2(newHandle)
+                return
+            }
+            val targetId = runId ?: "1"
+            stopFrames()
+            Runs.replaceWithCounty(this, targetId, seedLong, newHandle)
+            this.seed = seedLong
+            this.scenario = "county"
+            this.runStarted = true
+            this.appliedSeed = seedLong
+            this.appliedScenario = "county"
+            this.appliedRunId = targetId
+        }
+
+        hasLastHud = false
+        currentInteractKind = 0
+        render(System.nanoTime(), false)
+
+        if (id != NO_ID) {
+            UIManagerHelper.getEventDispatcher(reactContext)?.dispatchEvent(
+                AtlasTeleportEvent(
+                    UIManagerHelper.getSurfaceId(reactContext),
+                    id,
+                    seedStr,
+                    resolved[0],
+                    resolved[1],
+                    resolved[2],
+                    canPreserve,
+                    resolved[0] != tx || resolved[1] != ty || resolved[2] != tf,
+                ),
+            )
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) = Unit
 
     fun requestInteract() {
         if (canPlay()) interactQueued = true
@@ -172,16 +272,19 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         super.onAttachedToWindow()
         resumed = reactContext.lifecycleState == LifecycleState.RESUMED
         reactContext.addLifecycleEventListener(this)
+        reactContext.reactApplicationContext.addActivityEventListener(this)
         applyProps()
     }
 
     override fun onDetachedFromWindow() {
+        reactContext.reactApplicationContext.removeActivityEventListener(this)
         reactContext.removeLifecycleEventListener(this)
         stopFrames()
         audioEngine.suspend()
         Runs.detach(this)
         appliedRunId = null
         appliedSeed = null
+        appliedScenario = null
         super.onDetachedFromWindow()
     }
 
@@ -962,6 +1065,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     }
 
     companion object {
+        private const val REQUEST_COUNTY_ATLAS = 0x5A42
         private const val INVALID_POINTER = -1
         private const val WEAPON_UNCHANGED = -1
         private const val TAP_DURATION_MS = 250L
@@ -1002,6 +1106,7 @@ internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: I
         val w5 = words[5]
         val w6 = words[6]
         val flags = words[7] and 0xffff
+        val w8 = words[8]
 
         val equippedRaw = (w0 ushr 24) and 0xff
         val equippedWeapon = if (equippedRaw == 255) -1 else equippedRaw
@@ -1036,9 +1141,39 @@ internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: I
         putBoolean("lowAmmo", (flags and (1 shl 5)) != 0)
         putBoolean("indoors", (flags and (1 shl 6)) != 0)
         putBoolean("dangerClose", (flags and (1 shl 7)) != 0)
+        putInt("playerX", w8 and 0xfff)
+        putInt("playerY", (w8 ushr 12) and 0xfff)
+        putInt("district", (w8 ushr 24) and 0xf)
+        putInt("worldMode", (w8 ushr 28) and 0xf)
     }
 
     companion object {
         const val NAME = "topHudChanged"
+    }
+}
+
+internal class AtlasTeleportEvent(
+    surfaceId: Int,
+    viewId: Int,
+    private val seed: String,
+    private val x: Int,
+    private val y: Int,
+    private val floor: Int,
+    private val preservedRun: Boolean,
+    private val snapped: Boolean,
+) : Event<AtlasTeleportEvent>(surfaceId, viewId) {
+    override fun getEventName() = NAME
+
+    override fun getEventData() = Arguments.createMap().apply {
+        putString("seed", seed)
+        putInt("x", x)
+        putInt("y", y)
+        putInt("floor", floor)
+        putBoolean("preservedRun", preservedRun)
+        putBoolean("snapped", snapped)
+    }
+
+    companion object {
+        const val NAME = "topAtlasTeleport"
     }
 }

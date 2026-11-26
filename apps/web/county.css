@@ -116,7 +116,7 @@ body {
   font-size: 12px;
 }
 .seed-form {
-  width: min(360px, 40%);
+  width: min(440px, 48%);
 }
 .seed-form label,
 .seed-form small {
@@ -945,5 +945,116 @@ body {
   }
   .floor-map {
     height: 145px;
+  }
+}
+#seed-random {
+  background: #223027;
+  color: var(--ink);
+  border: 1px solid #4d5f51;
+  border-left: 0;
+  padding: 0 13px;
+}
+#seed-random:hover {
+  background: #2b3d32;
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.teleport-card {
+  margin: 0 0 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.teleport-btn {
+  width: 100%;
+  border: 1px solid #ecc07f;
+  background: linear-gradient(180deg, #e7b16a 0%, #cf9249 100%);
+  color: #171f18;
+  font: 700 11px var(--mono);
+  letter-spacing: 0.08em;
+  padding: 9px 12px;
+  cursor: pointer;
+  text-align: center;
+}
+.teleport-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #f4c684 0%, #dda25d 100%);
+  border-color: #fae0b4;
+}
+.teleport-btn:disabled,
+.teleport-chip:disabled {
+  background: #222e27;
+  border-color: #3a4a3e;
+  color: #79877b;
+  cursor: not-allowed;
+}
+.teleport-note {
+  display: block;
+  font: 9px/1.35 var(--mono);
+  color: #9eb0a0;
+  letter-spacing: 0.03em;
+}
+.map-tools {
+  flex-wrap: wrap;
+}
+.map-tools .teleport-chip {
+  border: 1px solid #6ad9a6;
+  background: #47d195;
+  color: #111d16;
+  padding: 7px 10px;
+  font: 700 10px var(--mono);
+  letter-spacing: 0.07em;
+}
+.map-tools .teleport-chip:hover:not(:disabled) {
+  background: #67e1ab;
+  border-color: #93f0c7;
+}
+.teleport-btn:focus-visible,
+.teleport-chip:focus-visible,
+#seed-random:focus-visible {
+  outline: 2px solid #f7d59e;
+  outline-offset: 2px;
+}
+.floor-map {
+  cursor: crosshair;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .teleport-btn,
+  .teleport-chip,
+  #seed-random {
+    transition:
+      color 0.15s,
+      border-color 0.15s,
+      background 0.15s;
+  }
+}
+@media (max-width: 690px) {
+  .map-tools .teleport-chip {
+    padding: 6px 8px;
+    font-size: 9px;
+  }
+}
+@media (orientation: landscape) and (max-height: 550px) {
+  .seed-form {
+    width: min(360px, 52%);
+  }
+  .seed-form input,
+  .seed-form button {
+    padding-top: 7px;
+    padding-bottom: 7px;
+  }
+  .teleport-card {
+    margin-bottom: 6px;
+    gap: 3px;
+  }
+  .teleport-btn {
+    padding: 6px 10px;
+    font-size: 10px;
+  }
+  .teleport-note {
+    font-size: 8px;
+  }
+  .map-tools .teleport-chip {
+    padding: 5px 8px;
+    font-size: 9px;
   }
 }

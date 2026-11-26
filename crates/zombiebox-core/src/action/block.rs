@@ -6,23 +6,23 @@ use std::collections::VecDeque;
 use crate::{CHUNK_SIZE, House, Position, World};
 
 use super::types::{
-    BLOCK_HEIGHT, BLOCK_WIDTH, BuildingInfo, BuildingStyle, CacheKind, CacheLoot, CacheView,
-    CombatWorld, DamageKind, Floor, LightKind, LightSourceView, Material, MonsterKind, NUM_FLOORS,
-    PropKind, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction, TileRenderInfo,
-    TileVisibility, Vec2, WallOrientation, Weapon, mix64,
+    BLOCK_HEIGHT, BLOCK_WIDTH, BuildingId, BuildingInfo, BuildingStyle, CacheId, CacheKind,
+    CacheLoot, CacheView, CombatWorld, DamageKind, Floor, LightKind, LightSourceView, Material,
+    MonsterKind, NUM_FLOORS, PropKind, Surface, Tile3D, TileDamageResult, TileKind,
+    TileObstruction, TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, mix64,
 };
 
-const OUTDOOR_AMBIENT: f32 = 92.0;
-const INDOOR_AMBIENT: f32 = 42.0;
-const STREETLIGHT_RADIUS: f32 = 6.5;
-const STREETLIGHT_INTENSITY: u8 = 155;
-const STREETLIGHT_F1_BLEED: f32 = 0.55;
-const PORCH_LIGHT_RADIUS: f32 = 3.5;
-const PORCH_LIGHT_INTENSITY: u8 = 125;
-const WINDOW_LIGHT_TRANSMIT: f32 = 0.85;
-const TREE_LIGHT_TRANSMIT: f32 = 0.65;
-const VISIBILITY_RANGE: f32 = 14.0;
-const MAX_DYNAMIC_FLASHES: usize = 32;
+pub(super) const OUTDOOR_AMBIENT: f32 = 92.0;
+pub(super) const INDOOR_AMBIENT: f32 = 42.0;
+pub(super) const STREETLIGHT_RADIUS: f32 = 6.5;
+pub(super) const STREETLIGHT_INTENSITY: u8 = 155;
+pub(super) const STREETLIGHT_F1_BLEED: f32 = 0.55;
+pub(super) const PORCH_LIGHT_RADIUS: f32 = 3.5;
+pub(super) const PORCH_LIGHT_INTENSITY: u8 = 125;
+pub(super) const WINDOW_LIGHT_TRANSMIT: f32 = 0.85;
+pub(super) const TREE_LIGHT_TRANSMIT: f32 = 0.65;
+pub(super) const VISIBILITY_RANGE: f32 = 14.0;
+pub(super) const MAX_DYNAMIC_FLASHES: usize = 32;
 
 const EXTERIOR_MAP: [&str; BLOCK_HEIGHT] = [
     "sRs...........T.sRs..T.......T..sRss", // 00
@@ -60,7 +60,7 @@ const EXTERIOR_MAP: [&str; BLOCK_HEIGHT] = [
 ];
 
 struct HouseBlueprint {
-    id: u8,
+    id: BuildingId,
     name: &'static str,
     x: usize,
     y: usize,
@@ -215,11 +215,18 @@ pub fn tile_spec(kind: TileKind, wall_mat: Material) -> (Material, u16) {
         | TileKind::BrokenStreetlight
         | TileKind::Rubble
         | TileKind::StairsUp
-        | TileKind::StairsDown => (Material::None, 0),
+        | TileKind::StairsDown
+        | TileKind::StairsBoth => (Material::None, 0),
         TileKind::Window => (Material::Glass, 20),
         TileKind::Door { .. } => (Material::WoodDoor, 60),
         TileKind::Streetlight => (Material::MetalPole, 50),
-        TileKind::InteriorWall => (Material::Drywall, 1000),
+        TileKind::InteriorWall => {
+            let mat = match wall_mat {
+                Material::None => Material::Drywall,
+                other => other,
+            };
+            (mat, 1000)
+        }
         TileKind::ExteriorWall | TileKind::Pillar => {
             let mat = match wall_mat {
                 Material::None => Material::WoodSiding,
@@ -301,7 +308,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SupplyCache {
-    pub id: u8,
+    pub id: CacheId,
     pub pos: Tile3D,
     pub kind: CacheKind,
     pub loot: CacheLoot,
@@ -316,23 +323,23 @@ pub struct MonsterSpawn {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Cell {
-    surface: Surface,
-    kind: TileKind,
-    material: Material,
-    hp: u16,
-    max_hp: u16,
-    building_id: u8,
-    indoor: bool,
-    load_bearing: bool,
-    collapsed: bool,
-    room_id: u16,
-    visibility: TileVisibility,
-    stair_dir: (i8, i8),
+pub(super) struct Cell {
+    pub(super) surface: Surface,
+    pub(super) kind: TileKind,
+    pub(super) material: Material,
+    pub(super) hp: u16,
+    pub(super) max_hp: u16,
+    pub(super) building_id: BuildingId,
+    pub(super) indoor: bool,
+    pub(super) load_bearing: bool,
+    pub(super) collapsed: bool,
+    pub(super) room_id: u16,
+    pub(super) visibility: TileVisibility,
+    pub(super) stair_dir: (i8, i8),
 }
 
 impl Cell {
-    const fn air() -> Self {
+    pub(super) const fn air() -> Self {
         Self {
             surface: Surface::Air,
             kind: TileKind::Empty,
@@ -349,7 +356,7 @@ impl Cell {
         }
     }
 
-    fn set_kind(&mut self, kind: TileKind, wall_mat: Material) {
+    pub(super) fn set_kind(&mut self, kind: TileKind, wall_mat: Material) {
         let (material, max_hp) = tile_spec(kind, wall_mat);
         self.kind = kind;
         self.material = material;
@@ -370,12 +377,12 @@ struct StaticLight {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct DynamicFlash {
-    pos: Vec2,
-    floor: Floor,
-    radius: f32,
-    intensity: u8,
-    ttl_ticks: u8,
+pub(super) struct DynamicFlash {
+    pub(super) pos: Vec2,
+    pub(super) floor: Floor,
+    pub(super) radius: f32,
+    pub(super) intensity: u8,
+    pub(super) ttl_ticks: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -461,7 +468,7 @@ impl ResidentialBlock {
         &self.caches
     }
 
-    pub fn take_cache(&mut self, id: u8) -> Option<CacheLoot> {
+    pub fn take_cache(&mut self, id: CacheId) -> Option<CacheLoot> {
         let cache = self.caches.iter_mut().find(|c| c.id == id)?;
         if cache.opened {
             return None;
@@ -639,7 +646,7 @@ impl ResidentialBlock {
 
         // Full room reveal when standing in or peeking into any room via window/door/breach.
         if !revealed_rooms.is_empty() {
-            let mut room_tiles: Vec<(usize, usize, u8)> = Vec::new();
+            let mut room_tiles: Vec<(usize, usize, BuildingId)> = Vec::new();
             for ly in 0..BLOCK_HEIGHT {
                 for lx in 0..BLOCK_WIDTH {
                     let cell = &mut self.cells[Self::idx(lx, ly, fl)];
@@ -695,26 +702,7 @@ impl ResidentialBlock {
         radius: f32,
         can_vault_window: bool,
     ) -> bool {
-        let min_x = (center.x - radius - 0.5).floor() as i32;
-        let max_x = (center.x + radius + 0.5).ceil() as i32;
-        let min_y = (center.y - radius - 0.5).floor() as i32;
-        let max_y = (center.y + radius + 0.5).ceil() as i32;
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let tile = Tile3D::new(x, y, floor);
-                if self.is_walkable(tile, can_vault_window) {
-                    continue;
-                }
-                let nearest_x = center.x.clamp(x as f32 - 0.5, x as f32 + 0.5);
-                let nearest_y = center.y.clamp(y as f32 - 0.5, y as f32 + 0.5);
-                let dx = center.x - nearest_x;
-                let dy = center.y - nearest_y;
-                if dx * dx + dy * dy < radius * radius {
-                    return false;
-                }
-            }
-        }
-        true
+        circle_walkable_world(self, center, floor, radius, can_vault_window)
     }
 
     pub fn move_body(
@@ -726,82 +714,15 @@ impl ResidentialBlock {
         can_vault_window: bool,
         doorway_assist: bool,
     ) {
-        let steps = ((delta.length() / 0.08).ceil() as usize).max(1);
-        let part = delta * (1.0 / steps as f32);
-
-        for _ in 0..steps {
-            let cand_x = Vec2::new(position.x + part.x, position.y);
-            if self.circle_walkable(cand_x, floor, radius, can_vault_window) {
-                position.x = cand_x.x;
-            } else if doorway_assist && part.x.abs() > 1e-4 {
-                let ahead_x = (position.x + part.x.signum() * (radius + 0.18)).round() as i32;
-                if let Some(target_y) =
-                    self.find_doorway_align(ahead_x, position.y, floor, can_vault_window, true)
-                {
-                    let nudge =
-                        (target_y - position.y).clamp(-part.x.abs() * 0.85, part.x.abs() * 0.85);
-                    let nudged = Vec2::new(position.x, position.y + nudge);
-                    if self.circle_walkable(nudged, floor, radius, can_vault_window) {
-                        position.y = nudged.y;
-                        let retry = Vec2::new(position.x + part.x, position.y);
-                        if self.circle_walkable(retry, floor, radius, can_vault_window) {
-                            position.x = retry.x;
-                        }
-                    }
-                }
-            }
-
-            let cand_y = Vec2::new(position.x, position.y + part.y);
-            if self.circle_walkable(cand_y, floor, radius, can_vault_window) {
-                position.y = cand_y.y;
-            } else if doorway_assist && part.y.abs() > 1e-4 {
-                let ahead_y = (position.y + part.y.signum() * (radius + 0.18)).round() as i32;
-                if let Some(target_x) =
-                    self.find_doorway_align(ahead_y, position.x, floor, can_vault_window, false)
-                {
-                    let nudge =
-                        (target_x - position.x).clamp(-part.y.abs() * 0.85, part.y.abs() * 0.85);
-                    let nudged = Vec2::new(position.x + nudge, position.y);
-                    if self.circle_walkable(nudged, floor, radius, can_vault_window) {
-                        position.x = nudged.x;
-                        let retry = Vec2::new(position.x, position.y + part.y);
-                        if self.circle_walkable(retry, floor, radius, can_vault_window) {
-                            position.y = retry.y;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn find_doorway_align(
-        &self,
-        ahead_axis: i32,
-        perp_coord: f32,
-        floor: Floor,
-        can_vault_window: bool,
-        ahead_is_x: bool,
-    ) -> Option<f32> {
-        let base = perp_coord.round() as i32;
-        let mut best: Option<(f32, f32)> = None;
-        for offset in [-1, 0, 1] {
-            let cand = base + offset;
-            let dist = (cand as f32 - perp_coord).abs();
-            if dist > 0.42 || dist < 0.01 {
-                continue;
-            }
-            let tile = if ahead_is_x {
-                Tile3D::new(ahead_axis, cand, floor)
-            } else {
-                Tile3D::new(cand, ahead_axis, floor)
-            };
-            if self.is_walkable(tile, can_vault_window)
-                && best.is_none_or(|(_, best_dist)| dist < best_dist)
-            {
-                best = Some((cand as f32, dist));
-            }
-        }
-        best.map(|(coord, _)| coord)
+        move_body_world(
+            self,
+            position,
+            floor,
+            delta,
+            radius,
+            can_vault_window,
+            doorway_assist,
+        );
     }
 
     #[inline]
@@ -1065,7 +986,7 @@ impl ResidentialBlock {
 
     fn init_caches(&mut self) {
         struct CacheSpec {
-            id: u8,
+            id: CacheId,
             lx: usize,
             ly: usize,
             floor: Floor,
@@ -1579,99 +1500,11 @@ impl ResidentialBlock {
         )
     }
 
-    /// 2D Amanatides & Woo grid DDA in tile-center coordinates (tile `(x, y)` spans `[x-0.5, x+0.5]`).
-    /// Calls `visit(cx, cy, corner_a, corner_b)` on every stepped cell after start; stops and returns
-    /// `false` if `visit` returns `false`.
-    fn trace_grid_dda<F>(&self, from: Vec2, to: Vec2, mut visit: F) -> bool
+    fn trace_grid_dda<F>(&self, from: Vec2, to: Vec2, visit: F) -> bool
     where
         F: FnMut(i32, i32, Option<(i32, i32)>, Option<(i32, i32)>) -> bool,
     {
-        let fx = from.x + 0.5;
-        let fy = from.y + 0.5;
-        let tx = to.x + 0.5;
-        let ty = to.y + 0.5;
-
-        let mut cx = fx.floor() as i32;
-        let mut cy = fy.floor() as i32;
-        let end_x = tx.floor() as i32;
-        let end_y = ty.floor() as i32;
-
-        if cx == end_x && cy == end_y {
-            return true;
-        }
-
-        let dx = tx - fx;
-        let dy = ty - fy;
-        let step_x = if dx > 0.0 {
-            1
-        } else if dx < 0.0 {
-            -1
-        } else {
-            0
-        };
-        let step_y = if dy > 0.0 {
-            1
-        } else if dy < 0.0 {
-            -1
-        } else {
-            0
-        };
-
-        let t_delta_x = if step_x != 0 {
-            (1.0 / dx).abs()
-        } else {
-            f32::INFINITY
-        };
-        let t_delta_y = if step_y != 0 {
-            (1.0 / dy).abs()
-        } else {
-            f32::INFINITY
-        };
-
-        let mut t_max_x = if step_x > 0 {
-            ((cx as f32 + 1.0) - fx) / dx
-        } else if step_x < 0 {
-            (cx as f32 - fx) / dx
-        } else {
-            f32::INFINITY
-        };
-        let mut t_max_y = if step_y > 0 {
-            ((cy as f32 + 1.0) - fy) / dy
-        } else if step_y < 0 {
-            (cy as f32 - fy) / dy
-        } else {
-            f32::INFINITY
-        };
-
-        let max_steps = (BLOCK_WIDTH + BLOCK_HEIGHT) * 2;
-        for _ in 0..max_steps {
-            if cx == end_x && cy == end_y {
-                return true;
-            }
-            let diff = t_max_x - t_max_y;
-            let (corner_a, corner_b) = if diff.abs() < 1e-4 {
-                let a = (cx + step_x, cy);
-                let b = (cx, cy + step_y);
-                cx += step_x;
-                cy += step_y;
-                t_max_x += t_delta_x;
-                t_max_y += t_delta_y;
-                (Some(a), Some(b))
-            } else if diff < 0.0 {
-                cx += step_x;
-                t_max_x += t_delta_x;
-                (None, None)
-            } else {
-                cy += step_y;
-                t_max_y += t_delta_y;
-                (None, None)
-            };
-
-            if !visit(cx, cy, corner_a, corner_b) {
-                return false;
-            }
-        }
-        true
+        trace_grid_dda(from, to, (BLOCK_WIDTH + BLOCK_HEIGHT) * 2, visit)
     }
 
     fn count_f0_load_bearing_3x3(&self, lx: usize, ly: usize) -> u8 {
@@ -1819,6 +1652,7 @@ impl CombatWorld for ResidentialBlock {
             | TileKind::Rubble
             | TileKind::StairsUp
             | TileKind::StairsDown
+            | TileKind::StairsBoth
             | TileKind::BrokenStreetlight
             | TileKind::Door { open: true, .. } => TileObstruction::Open,
             TileKind::BrokenWindow => TileObstruction::BrokenWindow,
@@ -1851,7 +1685,7 @@ impl CombatWorld for ResidentialBlock {
         }
     }
 
-    fn building_id(&self, tile: Tile3D) -> u8 {
+    fn building_id(&self, tile: Tile3D) -> BuildingId {
         self.world_to_local(tile)
             .map_or(0, |(lx, ly, fl)| self.cell_at(lx, ly, fl).building_id)
     }
@@ -2051,7 +1885,7 @@ impl CombatWorld for ResidentialBlock {
     }
 }
 
-fn is_room_barrier(kind: TileKind) -> bool {
+pub(super) fn is_room_barrier(kind: TileKind) -> bool {
     matches!(
         kind,
         TileKind::ExteriorWall
@@ -2061,6 +1895,241 @@ fn is_room_barrier(kind: TileKind) -> bool {
             | TileKind::BrokenWindow
             | TileKind::Door { .. }
     )
+}
+
+pub(super) fn light_cell_factor_kind(kind: TileKind) -> f32 {
+    match kind {
+        TileKind::ExteriorWall
+        | TileKind::InteriorWall
+        | TileKind::Pillar
+        | TileKind::Door { open: false, .. }
+        | TileKind::Prop(PropKind::Shed) => 0.0,
+        TileKind::Window => WINDOW_LIGHT_TRANSMIT,
+        TileKind::Prop(PropKind::BirchTree) => TREE_LIGHT_TRANSMIT,
+        _ => 1.0,
+    }
+}
+
+pub(super) fn is_los_opaque_kind(kind: TileKind) -> bool {
+    matches!(
+        kind,
+        TileKind::ExteriorWall
+            | TileKind::InteriorWall
+            | TileKind::Pillar
+            | TileKind::Door { open: false, .. }
+            | TileKind::Prop(PropKind::Shed)
+            | TileKind::Prop(PropKind::BirchTree)
+    )
+}
+
+pub(super) fn circle_walkable_world(
+    world: &dyn CombatWorld,
+    center: Vec2,
+    floor: Floor,
+    radius: f32,
+    can_vault_window: bool,
+) -> bool {
+    let min_x = (center.x - radius - 0.5).floor() as i32;
+    let max_x = (center.x + radius + 0.5).ceil() as i32;
+    let min_y = (center.y - radius - 0.5).floor() as i32;
+    let max_y = (center.y + radius + 0.5).ceil() as i32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let tile = Tile3D::new(x, y, floor);
+            if world.is_walkable(tile, can_vault_window) {
+                continue;
+            }
+            let nearest_x = center.x.clamp(x as f32 - 0.5, x as f32 + 0.5);
+            let nearest_y = center.y.clamp(y as f32 - 0.5, y as f32 + 0.5);
+            let dx = center.x - nearest_x;
+            let dy = center.y - nearest_y;
+            if dx * dx + dy * dy < radius * radius {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+pub(super) fn move_body_world(
+    world: &dyn CombatWorld,
+    position: &mut Vec2,
+    floor: Floor,
+    delta: Vec2,
+    radius: f32,
+    can_vault_window: bool,
+    doorway_assist: bool,
+) {
+    let steps = ((delta.length() / 0.08).ceil() as usize).max(1);
+    let part = delta * (1.0 / steps as f32);
+
+    for _ in 0..steps {
+        let cand_x = Vec2::new(position.x + part.x, position.y);
+        if circle_walkable_world(world, cand_x, floor, radius, can_vault_window) {
+            position.x = cand_x.x;
+        } else if doorway_assist && part.x.abs() > 1e-4 {
+            let ahead_x = (position.x + part.x.signum() * (radius + 0.18)).round() as i32;
+            if let Some(target_y) =
+                find_doorway_align_world(world, ahead_x, position.y, floor, can_vault_window, true)
+            {
+                let nudge =
+                    (target_y - position.y).clamp(-part.x.abs() * 0.85, part.x.abs() * 0.85);
+                let nudged = Vec2::new(position.x, position.y + nudge);
+                if circle_walkable_world(world, nudged, floor, radius, can_vault_window) {
+                    position.y = nudged.y;
+                    let retry = Vec2::new(position.x + part.x, position.y);
+                    if circle_walkable_world(world, retry, floor, radius, can_vault_window) {
+                        position.x = retry.x;
+                    }
+                }
+            }
+        }
+
+        let cand_y = Vec2::new(position.x, position.y + part.y);
+        if circle_walkable_world(world, cand_y, floor, radius, can_vault_window) {
+            position.y = cand_y.y;
+        } else if doorway_assist && part.y.abs() > 1e-4 {
+            let ahead_y = (position.y + part.y.signum() * (radius + 0.18)).round() as i32;
+            if let Some(target_x) =
+                find_doorway_align_world(world, ahead_y, position.x, floor, can_vault_window, false)
+            {
+                let nudge =
+                    (target_x - position.x).clamp(-part.y.abs() * 0.85, part.y.abs() * 0.85);
+                let nudged = Vec2::new(position.x + nudge, position.y);
+                if circle_walkable_world(world, nudged, floor, radius, can_vault_window) {
+                    position.x = nudged.x;
+                    let retry = Vec2::new(position.x, position.y + part.y);
+                    if circle_walkable_world(world, retry, floor, radius, can_vault_window) {
+                        position.y = retry.y;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn find_doorway_align_world(
+    world: &dyn CombatWorld,
+    ahead_axis: i32,
+    perp_coord: f32,
+    floor: Floor,
+    can_vault_window: bool,
+    ahead_is_x: bool,
+) -> Option<f32> {
+    let base = perp_coord.round() as i32;
+    let mut best: Option<(f32, f32)> = None;
+    for offset in [-1, 0, 1] {
+        let cand = base + offset;
+        let dist = (cand as f32 - perp_coord).abs();
+        if dist > 0.42 || dist < 0.01 {
+            continue;
+        }
+        let tile = if ahead_is_x {
+            Tile3D::new(ahead_axis, cand, floor)
+        } else {
+            Tile3D::new(cand, ahead_axis, floor)
+        };
+        if world.is_walkable(tile, can_vault_window)
+            && best.is_none_or(|(_, best_dist)| dist < best_dist)
+        {
+            best = Some((cand as f32, dist));
+        }
+    }
+    best.map(|(coord, _)| coord)
+}
+
+/// 2D Amanatides & Woo grid DDA in tile-center coordinates (tile `(x, y)` spans `[x-0.5, x+0.5]`).
+/// Calls `visit(cx, cy, corner_a, corner_b)` on every stepped cell after start; stops and returns
+/// `false` if `visit` returns `false`.
+pub(super) fn trace_grid_dda<F>(from: Vec2, to: Vec2, max_steps: usize, mut visit: F) -> bool
+where
+    F: FnMut(i32, i32, Option<(i32, i32)>, Option<(i32, i32)>) -> bool,
+{
+    let fx = from.x + 0.5;
+    let fy = from.y + 0.5;
+    let tx = to.x + 0.5;
+    let ty = to.y + 0.5;
+
+    let mut cx = fx.floor() as i32;
+    let mut cy = fy.floor() as i32;
+    let end_x = tx.floor() as i32;
+    let end_y = ty.floor() as i32;
+
+    if cx == end_x && cy == end_y {
+        return true;
+    }
+
+    let dx = tx - fx;
+    let dy = ty - fy;
+    let step_x = if dx > 0.0 {
+        1
+    } else if dx < 0.0 {
+        -1
+    } else {
+        0
+    };
+    let step_y = if dy > 0.0 {
+        1
+    } else if dy < 0.0 {
+        -1
+    } else {
+        0
+    };
+
+    let t_delta_x = if step_x != 0 {
+        (1.0 / dx).abs()
+    } else {
+        f32::INFINITY
+    };
+    let t_delta_y = if step_y != 0 {
+        (1.0 / dy).abs()
+    } else {
+        f32::INFINITY
+    };
+
+    let mut t_max_x = if step_x > 0 {
+        ((cx as f32 + 1.0) - fx) / dx
+    } else if step_x < 0 {
+        (cx as f32 - fx) / dx
+    } else {
+        f32::INFINITY
+    };
+    let mut t_max_y = if step_y > 0 {
+        ((cy as f32 + 1.0) - fy) / dy
+    } else if step_y < 0 {
+        (cy as f32 - fy) / dy
+    } else {
+        f32::INFINITY
+    };
+
+    for _ in 0..max_steps {
+        if cx == end_x && cy == end_y {
+            return true;
+        }
+        let diff = t_max_x - t_max_y;
+        let (corner_a, corner_b) = if diff.abs() < 1e-4 {
+            let a = (cx + step_x, cy);
+            let b = (cx, cy + step_y);
+            cx += step_x;
+            cy += step_y;
+            t_max_x += t_delta_x;
+            t_max_y += t_delta_y;
+            (Some(a), Some(b))
+        } else if diff < 0.0 {
+            cx += step_x;
+            t_max_x += t_delta_x;
+            (None, None)
+        } else {
+            cy += step_y;
+            t_max_y += t_delta_y;
+            (None, None)
+        };
+
+        if !visit(cx, cy, corner_a, corner_b) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # Zombiebox
 
-A single-player isometric action-adventure and zombie survival sandbox built for Android. The local app plays in landscape with twin-stick controls across a dusk-lit, destructible, multi-level Birch Street residential block: scavenge tools, firearms, and medkits across three two-story houses and surrounding yards, smash windows or breach walls, and clear sight- and sound-reactive infected threats. The County field atlas lets you survey and walk a seeded county on Android and in the browser. The legacy browser playtest remains available, and an iOS app is a future platform target.
+A single-player isometric action-adventure and zombie survival sandbox built for Android. The default run opens in a seeded 512 × 512 county with connected roads, towns, and wilderness. Explore on foot, search multi-floor buildings for supplies, and fight infected. Choose **Birch Street** to play the original destructible residential block encounter.
 
 ## Run the browser playtest
 
@@ -10,13 +10,15 @@ From the repository root, start the dev server with stable Rust 1.87 or newer.
 cargo run --locked -p zombiebox-web
 ```
 
-Open `http://127.0.0.1:8765`. Follow the lit doorway and stand on the marked crate to scavenge. **Fire** highlights when the pistol has a clear shot. Use the on-screen controls or move with **WASD** or the **arrow keys**, scavenge with **L**, fire with **Space**, and pause with **Escape**.
+Open `http://127.0.0.1:8765` and choose **Enter the county**. Move with **WASD** or the **arrow keys**, hold **Shift** to walk quietly, aim with the mouse, and click or press **Space** to fire. Use **E** to interact, **1–4** to equip a weapon, **R** to reload, **Q** or **H** to heal, **M** for the atlas, and **Escape** to pause. Touch devices have on-screen controls.
+
+The original tile-command playtest is available at `http://127.0.0.1:8765/legacy`. Stand on the marked crate and press **L** to scavenge. **Fire** highlights when the pistol has a clear shot, and **Space** fires.
 
 ### Explore a procedural county
 
-Choose **Open the county field atlas** on the browser opening screen or **County atlas** in the Android app. For the reference county, open [seed 42](http://127.0.0.1:8765/county?seed=42) with the browser host running. To replay another county, enter its unsigned decimal seed and choose **Survey**.
+Choose **Open County Field Atlas** on the browser opening screen or **County atlas** in the Android app. During play, use **M** in the browser or **Map** on Android. For the reference county, open [seed 42](http://127.0.0.1:8765/county?seed=42) with the browser host running. You can enter any unsigned 64-bit decimal seed on the opening screen or in the atlas.
 
-Select a landmark to inspect its approach, floor plans, supply caches, and infected placements. **Start walk** puts you on the residential street. Move with WASD, arrows, or the touch pad. On stairs, use **[** and **]** or the minus/plus buttons to change floors. **Overview** returns to the county map. The atlas surveys the generated baseline. Birch Street remains the real-time combat and destruction encounter.
+Select a landmark to inspect its approach, floor plans, supply caches, and baseline infected placements. **Start walk** switches to the atlas walk view. Move with WASD, arrows, or the touch pad. Use the minus and plus buttons on stairs to change floors. Choose **Play at this cell** to start a run at the selected location, or **Teleport here** to move within an active county run. Same-seed teleports keep your gear and world changes for the life of the run.
 
 ### Install the Android app
 
@@ -53,7 +55,7 @@ tailnet_ip=$(tailscale ip -4)
 cargo run --locked -p zombiebox-web -- --bind "$tailnet_ip:8765"
 ```
 
-Open `http://<tailscale-ip>:8765` on the phone, substituting the development machine's Tailscale IP. The phone needs access to TCP port 8765. Runs live in server memory and can be restarted from the playtest screen. The browser build uses its own on-screen controls, WASD or arrow keys, **L** to scavenge, **Space** to fire, and **Escape** to pause.
+Open `http://<tailscale-ip>:8765` on the phone, substituting the development machine's Tailscale IP. The phone needs access to TCP port 8765. Runs live in server memory and can be restarted from the playtest screen.
 
 ## Replay the encounter headlessly
 
@@ -69,7 +71,7 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | --- | --- |
 | [crates/zombiebox-core](crates/zombiebox-core) | Fixed-tick survival rules, world generation, gameplay events, and the headless example |
 | [crates/zombiebox-ffi](crates/zombiebox-ffi) | Versioned C interface for native hosts to own and step a Rust run |
-| [crates/zombiebox-render](crates/zombiebox-render) | Native isometric rendering, Birch Street art, character animation, and combat effects |
+| [crates/zombiebox-render](crates/zombiebox-render) | Isometric county and Birch Street rendering, character animation, and combat effects |
 | [crates/zombiebox-web](crates/zombiebox-web) | Playtest HTTP host for the Rust simulation |
 | [apps/mobile](apps/mobile) | React Native Android app, JNI host, and native build guide |
 | [apps/web](apps/web) | Isometric Canvas view, touch controls, and HUD for the browser playtest |

@@ -1060,9 +1060,9 @@ fn trace_bullet_ray(
             };
         }
 
-        // Upper-floor shots exiting through an open/shattered F1 window into exterior air
+        // Upper-floor shots exiting through an open/shattered upper window into exterior air
         // automatically angle downward to engage Floor 0 outdoor targets & terrain.
-        if cur_floor == 1 && !world.has_floor(tile) {
+        if cur_floor > 0 && !world.has_floor(tile) {
             cur_floor = 0;
             max_range = base_range + UPPER_WINDOW_EXTRA_RANGE;
             tile = Tile3D::new(tx, ty, 0);
@@ -1245,9 +1245,9 @@ pub fn step_projectiles(
 
             match proj.kind {
                 ProjectileKind::Rocket => {
-                    // If a horizontal F1 rocket exits into exterior air (e.g. through a breached wall),
+                    // If a horizontal upper-floor rocket exits into exterior air (e.g. through a breached wall),
                     // angle it downward toward Floor 0.
-                    if proj.floor == 1 && !world.has_floor(tile) && proj.vz == 0.0 {
+                    if proj.floor > 0 && !world.has_floor(tile) && proj.vz == 0.0 {
                         proj.vz = -ROCKET_SPEED * 0.22;
                     }
 
@@ -1591,7 +1591,7 @@ fn in_world_bounds(world: &dyn CombatWorld, tile: Tile3D) -> bool {
 mod tests {
     use super::*;
     use crate::Position;
-    use crate::action::types::{MonsterId, MonsterKind, TileKind};
+    use crate::action::types::{BuildingId, MonsterId, MonsterKind, TileKind};
     use std::collections::HashMap;
 
     struct MockWorld {
@@ -1660,7 +1660,7 @@ mod tests {
             }
         }
 
-        fn building_id(&self, _tile: Tile3D) -> u8 {
+        fn building_id(&self, _tile: Tile3D) -> BuildingId {
             0
         }
 

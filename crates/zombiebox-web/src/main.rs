@@ -1,19 +1,88 @@
 use std::{
     collections::{HashMap, VecDeque},
+    fmt::Write as FmtWrite,
     io::{Read, Write},
+    mem,
     net::{SocketAddr, TcpListener, TcpStream},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     thread,
     time::Duration,
 };
 use zombiebox_core::{
-    Command, Direction, Event, Game, Ground, Position, WORLD_SIZE, county_survey_json,
+    ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionMode, ActionOutcome,
+    Command, Direction, Event, FloorTransition, Game, Ground, Material, Position, ProjectileKind,
+    Tile3D, Vec2, WORLD_SIZE, Weapon, county_survey_json,
 };
+use zombiebox_render::{Renderer, screen_vector_to_world};
 
-const MAX_REQUEST: usize = 4096;
+const MAX_REQUEST: usize = 8192;
 const MAX_SESSIONS: usize = 256;
+const MAX_ACTION_SESSIONS: usize = 24;
+const MAX_CONNECTIONS: usize = 64;
 const VIEW: i32 = 23;
+
+const TICK_UNIT: u64 = 1_000_000_000;
+const MAX_FRAME_NS: u64 = 50_000_000;
+const ACTION_W_MIN: u16 = 160;
+const ACTION_W_MAX: u16 = 640;
+const ACTION_H_MIN: u16 = 120;
+const ACTION_H_MAX: u16 = 400;
+
+const ZB_WEAPON_UNCHANGED: i32 = -1;
+const ZB_WEAPON_NONE: u8 = 255;
+
+const ZB_INPUT_FIRE_PULSE: u32 = 1 << 0;
+const ZB_INPUT_FIRE_HOLD: u32 = 1 << 1;
+const ZB_INPUT_INTERACT: u32 = 1 << 2;
+const ZB_INPUT_RELOAD: u32 = 1 << 3;
+const ZB_INPUT_HEAL: u32 = 1 << 4;
+const ZB_INPUT_LOOK_AHEAD: u32 = 1 << 5;
+
+const ZB_V2_WON: u16 = 1 << 0;
+const ZB_V2_DEAD: u16 = 1 << 1;
+const ZB_V2_RELOADING: u16 = 1 << 2;
+const ZB_V2_CAN_RELOAD: u16 = 1 << 3;
+const ZB_V2_CAN_HEAL: u16 = 1 << 4;
+const ZB_V2_LOW_AMMO: u16 = 1 << 5;
+const ZB_V2_INDOORS: u16 = 1 << 6;
+const ZB_V2_DANGER_CLOSE: u16 = 1 << 7;
+
+const ZB_SFX_AXE_SWING: u64 = 1 << 0;
+const ZB_SFX_AXE_HIT_FLESH: u64 = 1 << 1;
+const ZB_SFX_AXE_HIT_WOOD: u64 = 1 << 2;
+const ZB_SFX_PISTOL_FIRE: u64 = 1 << 3;
+const ZB_SFX_SHOTGUN_FIRE: u64 = 1 << 4;
+const ZB_SFX_ROCKET_LAUNCH: u64 = 1 << 5;
+const ZB_SFX_EXPLOSION: u64 = 1 << 6;
+const ZB_SFX_DRY_FIRE: u64 = 1 << 7;
+const ZB_SFX_RELOAD_START: u64 = 1 << 8;
+const ZB_SFX_RELOAD_FINISH: u64 = 1 << 9;
+const ZB_SFX_GLASS_SHATTER: u64 = 1 << 10;
+const ZB_SFX_WOOD_SPLINTER: u64 = 1 << 11;
+const ZB_SFX_STONE_THUD: u64 = 1 << 12;
+const ZB_SFX_STREETLIGHT_BREAK: u64 = 1 << 13;
+const ZB_SFX_DOOR_TOGGLE: u64 = 1 << 14;
+const ZB_SFX_WINDOW_CLIMB: u64 = 1 << 15;
+const ZB_SFX_STAIRS_STEP: u64 = 1 << 16;
+const ZB_SFX_PICKUP: u64 = 1 << 17;
+const ZB_SFX_MEDKIT_HEAL: u64 = 1 << 18;
+const ZB_SFX_WEAPON_SWITCH: u64 = 1 << 19;
+const ZB_SFX_MONSTER_ALERT: u64 = 1 << 20;
+const ZB_SFX_MONSTER_HIT: u64 = 1 << 21;
+const ZB_SFX_MONSTER_DOWN: u64 = 1 << 22;
+const ZB_SFX_BLOATER_BURST: u64 = 1 << 23;
+const ZB_SFX_SHOOTER_FIRE: u64 = 1 << 24;
+const ZB_SFX_PLAYER_HURT: u64 = 1 << 25;
+const ZB_SFX_WIN: u64 = 1 << 26;
+const ZB_SFX_DEATH: u64 = 1 << 27;
+const ZB_SFX_STRUCTURAL_BREACH: u64 = 1 << 28;
+
 const INDEX: &str = include_str!("../../../apps/web/index.html");
+const ACTION_JS: &str = include_str!("../../../apps/web/action.js");
+const LEGACY_HTML: &str = include_str!("../../../apps/web/legacy.html");
 const JS: &str = include_str!("../../../apps/web/game.js");
 const CSS: &str = include_str!("../../../apps/web/style.css");
 const SCENE: &str = include_str!("../../../apps/web/scene.js");
@@ -23,11 +92,163 @@ struct Session {
     game: Game,
 }
 
+struct ActionSession {
+    game: ActionGame,
+    renderer: Option<Renderer>,
+    last_frame: Option<u64>,
+    partial_tick: u64,
+    elapsed_ns: u64,
+    pending_fire_pulse: bool,
+    pending_interact: bool,
+    pending_reload: bool,
+    pending_heal: bool,
+    pending_select_weapon: Option<Weapon>,
+}
+
+impl ActionSession {
+    fn new(game: ActionGame) -> Self {
+        Self {
+            game,
+            renderer: None,
+            last_frame: None,
+            partial_tick: 0,
+            elapsed_ns: 0,
+            pending_fire_pulse: false,
+            pending_interact: false,
+            pending_reload: false,
+            pending_heal: false,
+            pending_select_weapon: None,
+        }
+    }
+
+    fn reset_clock_and_latches(&mut self) {
+        self.last_frame = None;
+        self.partial_tick = 0;
+        self.pending_fire_pulse = false;
+        self.pending_interact = false;
+        self.pending_reload = false;
+        self.pending_heal = false;
+        self.pending_select_weapon = None;
+    }
+
+    fn ensure_renderer(&mut self, width: usize, height: usize) {
+        if self
+            .renderer
+            .as_ref()
+            .is_none_or(|r| r.width() != width || r.height() != height)
+        {
+            self.renderer = Some(Renderer::new(width, height));
+        }
+    }
+
+    fn advance_clock(&mut self, frame_time_ns: u64) {
+        let elapsed = self
+            .last_frame
+            .replace(frame_time_ns)
+            .map_or(0, |previous| {
+                frame_time_ns.saturating_sub(previous).min(MAX_FRAME_NS)
+            });
+        self.elapsed_ns += elapsed;
+        self.partial_tick += elapsed * u64::from(ACTION_TICKS_PER_SECOND);
+    }
+
+    fn step_frame(
+        &mut self,
+        frame_time_ns: u64,
+        movement: Vec2,
+        aim: Option<Vec2>,
+        action_flags: u32,
+        select_weapon: Option<Weapon>,
+    ) -> u64 {
+        self.advance_clock(frame_time_ns);
+
+        self.pending_fire_pulse |= (action_flags & ZB_INPUT_FIRE_PULSE) != 0;
+        self.pending_interact |= (action_flags & ZB_INPUT_INTERACT) != 0;
+        self.pending_reload |= (action_flags & ZB_INPUT_RELOAD) != 0;
+        self.pending_heal |= (action_flags & ZB_INPUT_HEAL) != 0;
+        if let Some(weapon) = select_weapon {
+            self.pending_select_weapon = Some(weapon);
+        }
+
+        let fire_hold = (action_flags & ZB_INPUT_FIRE_HOLD) != 0;
+        let mut frame_audio = 0u64;
+
+        while self.partial_tick >= TICK_UNIT {
+            self.partial_tick -= TICK_UNIT;
+            let fire = mem::take(&mut self.pending_fire_pulse) || fire_hold;
+            let interact = mem::take(&mut self.pending_interact);
+            let reload = mem::take(&mut self.pending_reload);
+            let use_medkit = mem::take(&mut self.pending_heal);
+            let select_weapon = self.pending_select_weapon.take();
+
+            self.game.step(ActionInput {
+                movement,
+                aim,
+                fire,
+                interact,
+                select_weapon,
+                cycle_weapon: false,
+                reload,
+                use_medkit,
+                quiet_walk: false,
+            });
+            frame_audio |= events_to_sfx_mask(self.game.events());
+            if let Some(renderer) = &mut self.renderer {
+                renderer.observe_events(&self.game, self.elapsed_ns / 1_000_000);
+            }
+        }
+        frame_audio
+    }
+}
+
 #[derive(Default)]
 struct HostState {
     sessions: HashMap<u64, Session>,
     order: VecDeque<u64>,
+    action_sessions: HashMap<u64, ActionSession>,
+    action_order: VecDeque<u64>,
+    cached_county: Option<(u64, zombiebox_core::World)>,
     next_id: u64,
+}
+
+impl HostState {
+    fn alloc_id(&mut self) -> u64 {
+        let id = self.next_id.max(1);
+        self.next_id = id.wrapping_add(1).max(1);
+        id
+    }
+
+    fn county_world(&mut self, seed: u64) -> zombiebox_core::World {
+        if let Some((cached_seed, world)) = &self.cached_county
+            && *cached_seed == seed
+        {
+            return world.clone();
+        }
+        let world = zombiebox_core::World::new(seed);
+        self.cached_county = Some((seed, world.clone()));
+        world
+    }
+}
+
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct ParsedRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+    cross_site: bool,
+    keep_alive: bool,
+}
+
+enum ReadError {
+    ClosedOrTimeout,
+    HttpStatus(u16),
 }
 
 fn main() -> std::io::Result<()> {
@@ -51,27 +272,42 @@ fn main() -> std::io::Result<()> {
         next_id: 1,
         ..HostState::default()
     }));
-    let (tx, rx) = mpsc::sync_channel::<TcpStream>(32);
-    let rx = Arc::new(Mutex::new(rx));
-    for _ in 0..8 {
-        let rx = Arc::clone(&rx);
-        let state = Arc::clone(&state);
-        thread::spawn(move || {
-            loop {
-                let stream = match rx.lock().expect("worker receiver poisoned").recv() {
-                    Ok(s) => s,
-                    Err(_) => break,
-                };
-                handle(stream, &state);
-            }
-        });
-    }
+    let active_connections = Arc::new(AtomicUsize::new(0));
     for incoming in listener.incoming() {
         match incoming {
-            Ok(stream) => {
-                if tx.send(stream).is_err() {
-                    break;
+            Ok(mut stream) => {
+                let mut active = active_connections.load(Ordering::Acquire);
+                let acquired = loop {
+                    if active >= MAX_CONNECTIONS {
+                        break false;
+                    }
+                    match active_connections.compare_exchange_weak(
+                        active,
+                        active + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break true,
+                        Err(actual) => active = actual,
+                    }
+                };
+                if !acquired {
+                    let _ = stream.write_all(&response_conn(
+                        503,
+                        "text/plain; charset=utf-8",
+                        b"too many connections\n",
+                        false,
+                    ));
+                    continue;
                 }
+                let guard = ConnectionGuard(Arc::clone(&active_connections));
+                let state = Arc::clone(&state);
+                let _ = thread::Builder::new()
+                    .name("zb-http".into())
+                    .spawn(move || {
+                        let _guard = guard;
+                        handle(stream, &state);
+                    });
             }
             Err(e) => eprintln!("accept error: {e}"),
         }
@@ -80,62 +316,105 @@ fn main() -> std::io::Result<()> {
 }
 
 fn handle(mut stream: TcpStream, state: &Mutex<HostState>) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let response = match read_request(&mut stream) {
-        Ok((method, path, body, cross_site)) => {
-            if method == "POST" && cross_site {
-                response(403, "text/plain", b"cross-site request denied\n")
-            } else if method == "GET" {
-                static_route(&path)
-            } else {
-                let mut state = state.lock().expect("host state poisoned");
-                route(&method, &path, &body, &mut state)
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let mut pending = Vec::new();
+    loop {
+        match read_request(&mut stream, &mut pending) {
+            Ok(req) => {
+                let keep_alive = req.keep_alive;
+                let resp = if req.method == "POST" && req.cross_site {
+                    response_conn(
+                        403,
+                        "text/plain",
+                        b"cross-site request denied\n",
+                        keep_alive,
+                    )
+                } else if req.method == "GET" {
+                    static_route_conn(&req.path, keep_alive)
+                } else {
+                    let mut state = state.lock().expect("host state poisoned");
+                    route_conn(&req.method, &req.path, &req.body, &mut state, keep_alive)
+                };
+                if stream.write_all(&resp).is_err() || !keep_alive {
+                    break;
+                }
+            }
+            Err(ReadError::ClosedOrTimeout) => break,
+            Err(ReadError::HttpStatus(status)) => {
+                let resp =
+                    response_conn(status, "text/plain; charset=utf-8", b"bad request\n", false);
+                let _ = stream.write_all(&resp);
+                break;
             }
         }
-        Err(status) => response(status, "text/plain; charset=utf-8", b"bad request\n"),
-    };
-    let _ = stream.write_all(&response);
+    }
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool), u16> {
-    let mut bytes = Vec::new();
-    let mut buf = [0u8; 1024];
-    let split;
-    loop {
-        if bytes.len() >= MAX_REQUEST {
-            return Err(413);
+fn read_request(stream: &mut TcpStream, pending: &mut Vec<u8>) -> Result<ParsedRequest, ReadError> {
+    let mut buf = [0u8; 2048];
+    let split = loop {
+        if let Some(i) = pending.windows(4).position(|w| w == b"\r\n\r\n") {
+            let end = i + 4;
+            if end > MAX_REQUEST {
+                return Err(ReadError::HttpStatus(413));
+            }
+            break end;
         }
-        let n = stream.read(&mut buf).map_err(|_| 400u16)?;
-        if n == 0 {
-            return Err(400);
+        if pending.len() >= MAX_REQUEST {
+            return Err(ReadError::HttpStatus(413));
         }
-        bytes.extend_from_slice(&buf[..n]);
-        if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-            split = i + 4;
-            break;
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                return Err(if pending.is_empty() {
+                    ReadError::ClosedOrTimeout
+                } else {
+                    ReadError::HttpStatus(400)
+                });
+            }
+            Ok(n) => pending.extend_from_slice(&buf[..n]),
+            Err(_) => {
+                return Err(if pending.is_empty() {
+                    ReadError::ClosedOrTimeout
+                } else {
+                    ReadError::HttpStatus(400)
+                });
+            }
         }
-    }
-    let head = std::str::from_utf8(&bytes[..split - 4]).map_err(|_| 400u16)?;
+    };
+
+    let head = std::str::from_utf8(&pending[..split - 4])
+        .map_err(|_| ReadError::HttpStatus(400))?
+        .to_owned();
     let mut lines = head.split("\r\n");
-    let mut first = lines.next().ok_or(400u16)?.split_whitespace();
-    let method = first.next().ok_or(400u16)?.to_string();
-    let path = first.next().ok_or(400u16)?.to_string();
+    let mut first = lines
+        .next()
+        .ok_or(ReadError::HttpStatus(400))?
+        .split_whitespace();
+    let method = first.next().ok_or(ReadError::HttpStatus(400))?.to_string();
+    let path = first.next().ok_or(ReadError::HttpStatus(400))?.to_string();
     let version = first.next();
     if !matches!(version, Some("HTTP/1.1" | "HTTP/1.0")) || first.next().is_some() {
-        return Err(400);
+        return Err(ReadError::HttpStatus(400));
     }
+
     let mut len = 0usize;
     let mut saw_len = false;
     let mut cross_site = false;
+    let mut conn_close = false;
+    let mut conn_keep_alive = false;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
                 if saw_len {
-                    return Err(400);
+                    return Err(ReadError::HttpStatus(400));
                 }
                 saw_len = true;
-                len = value.trim().parse().map_err(|_| 400u16)?;
+                len = value
+                    .trim()
+                    .parse()
+                    .map_err(|_| ReadError::HttpStatus(400))?;
             }
             if name.eq_ignore_ascii_case("sec-fetch-site")
                 && value.trim().eq_ignore_ascii_case("cross-site")
@@ -143,40 +422,77 @@ fn read_request(stream: &mut TcpStream) -> Result<(String, String, Vec<u8>, bool
                 cross_site = true;
             }
             if name.eq_ignore_ascii_case("transfer-encoding") {
-                return Err(400);
+                return Err(ReadError::HttpStatus(400));
+            }
+            if name.eq_ignore_ascii_case("connection") {
+                for token in value.split(',').map(str::trim) {
+                    if token.eq_ignore_ascii_case("close") {
+                        conn_close = true;
+                    } else if token.eq_ignore_ascii_case("keep-alive") {
+                        conn_keep_alive = true;
+                    }
+                }
             }
         }
     }
+
     if len > MAX_REQUEST || split + len > MAX_REQUEST {
-        return Err(413);
+        return Err(ReadError::HttpStatus(413));
     }
-    while bytes.len() < split + len {
-        let n = stream.read(&mut buf).map_err(|_| 400u16)?;
+    while pending.len() < split + len {
+        let n = stream
+            .read(&mut buf)
+            .map_err(|_| ReadError::HttpStatus(400))?;
         if n == 0 {
-            return Err(400);
+            return Err(ReadError::HttpStatus(400));
         }
-        bytes.extend_from_slice(&buf[..n]);
-        if bytes.len() > MAX_REQUEST {
-            return Err(413);
+        pending.extend_from_slice(&buf[..n]);
+        if pending.len() > MAX_REQUEST + buf.len() {
+            return Err(ReadError::HttpStatus(413));
         }
     }
-    Ok((method, path, bytes[split..split + len].to_vec(), cross_site))
+
+    let body = pending[split..split + len].to_vec();
+    pending.drain(..split + len);
+    let keep_alive = if conn_close {
+        false
+    } else if version == Some("HTTP/1.1") {
+        true
+    } else {
+        conn_keep_alive
+    };
+
+    Ok(ParsedRequest {
+        method,
+        path,
+        body,
+        cross_site,
+        keep_alive,
+    })
 }
 
+#[cfg(test)]
 fn static_route(path: &str) -> Vec<u8> {
+    static_route_conn(path, true)
+}
+
+fn static_route_conn(path: &str, keep_alive: bool) -> Vec<u8> {
     let path = path.split('?').next().unwrap_or(path);
     if let Some(value) = path.strip_prefix("/api/county/") {
-        if let Some(seed) = value
-            .parse::<u64>()
-            .ok()
-            .filter(|_| value.bytes().all(|b| b.is_ascii_digit()))
-        {
-            return response(200, "application/json", county_survey_json(seed).as_bytes());
+        if let Some(seed) = parse_u64_decimal(value) {
+            return response_conn(
+                200,
+                "application/json",
+                county_survey_json(seed).as_bytes(),
+                keep_alive,
+            );
         }
-        return response(400, "text/plain", b"invalid seed\n");
+        return response_conn(400, "text/plain", b"invalid seed\n", keep_alive);
     }
     let (mime, data) = match path {
-        "/" | "/index.html" => ("text/html", INDEX),
+        "/" | "/index.html" => ("text/html; charset=utf-8", INDEX),
+        "/action.js" => ("text/javascript; charset=utf-8", ACTION_JS),
+        "/legacy" | "/legacy.html" => ("text/html; charset=utf-8", LEGACY_HTML),
         "/game.js" => ("text/javascript", JS),
         "/scene.js" => ("text/javascript", SCENE),
         "/style.css" => ("text/css", CSS),
@@ -190,58 +506,102 @@ fn static_route(path: &str) -> Vec<u8> {
             include_str!("../../../apps/web/county.js"),
         ),
         "/county.css" => ("text/css", include_str!("../../../apps/web/county.css")),
-        _ => return response(404, "text/plain", b"not found\n"),
+        _ => return response_conn(404, "text/plain", b"not found\n", keep_alive),
     };
-    response(200, mime, data.as_bytes())
+    response_conn(200, mime, data.as_bytes(), keep_alive)
 }
 
+#[cfg(test)]
 fn route(method: &str, path: &str, body: &[u8], state: &mut HostState) -> Vec<u8> {
+    route_conn(method, path, body, state, true)
+}
+
+fn route_conn(
+    method: &str,
+    path: &str,
+    body: &[u8],
+    state: &mut HostState,
+    keep_alive: bool,
+) -> Vec<u8> {
     if method != "POST" {
-        return response(405, "text/plain", b"method not allowed\n");
+        return response_conn(405, "text/plain", b"method not allowed\n", keep_alive);
     }
+    let path = path.split('?').next().unwrap_or(path);
     if path == "/api/runs" {
-        let Ok(seed_text) = std::str::from_utf8(body) else {
-            return response(400, "text/plain", b"invalid seed\n");
-        };
-        if seed_text.is_empty() || !seed_text.bytes().all(|b| b.is_ascii_digit()) {
-            return response(400, "text/plain", b"invalid seed\n");
-        }
-        let Ok(seed) = seed_text.parse::<u64>() else {
-            return response(400, "text/plain", b"invalid seed\n");
-        };
-        while state.sessions.len() >= MAX_SESSIONS {
-            if let Some(oldest) = state.order.pop_front() {
-                state.sessions.remove(&oldest);
-            }
-        }
-        let id = state.next_id;
-        state.next_id = state.next_id.wrapping_add(1).max(1);
-        let game = Game::residential(seed);
-        state.sessions.insert(id, Session { seed, game });
-        state.order.push_back(id);
-        return match state_json(id, &state.sessions[&id], &[]) {
-            Ok(s) => response(201, "application/json", s.as_bytes()),
-            Err(_) => response(500, "text/plain", b"serialization error\n"),
-        };
+        return handle_legacy_create(body, state, keep_alive);
     }
-    let Some(id_str) = path
+    if let Some(id_str) = path
         .strip_prefix("/api/runs/")
         .and_then(|s| s.strip_suffix("/step"))
-    else {
-        return response(404, "text/plain", b"not found\n");
+    {
+        return handle_legacy_step(id_str, body, state, keep_alive);
+    }
+    if path == "/api/action/runs" {
+        return handle_action_create(body, state, keep_alive);
+    }
+    if let Some(rest) = path.strip_prefix("/api/action/")
+        && let Some((id_str, action)) = rest.split_once('/')
+    {
+        let Some(id) = parse_u64_decimal(id_str) else {
+            return response_conn(404, "text/plain", b"not found\n", keep_alive);
+        };
+        return match action {
+            "teleport" => handle_action_teleport(id, body, state, keep_alive),
+            "reset-clock" => handle_action_reset_clock(id, state, keep_alive),
+            "frame" => handle_action_frame(id, body, state, keep_alive),
+            _ => response_conn(404, "text/plain", b"not found\n", keep_alive),
+        };
+    }
+    response_conn(404, "text/plain", b"not found\n", keep_alive)
+}
+
+fn handle_legacy_create(body: &[u8], state: &mut HostState, keep_alive: bool) -> Vec<u8> {
+    let Ok(seed_text) = std::str::from_utf8(body) else {
+        return response_conn(400, "text/plain", b"invalid seed\n", keep_alive);
     };
+    let Some(seed) = parse_u64_decimal(seed_text) else {
+        return response_conn(400, "text/plain", b"invalid seed\n", keep_alive);
+    };
+    while state.sessions.len() >= MAX_SESSIONS {
+        if let Some(oldest) = state.order.pop_front() {
+            state.sessions.remove(&oldest);
+        } else {
+            break;
+        }
+    }
+    let id = state.alloc_id();
+    let game = Game::residential(seed);
+    state.sessions.insert(id, Session { seed, game });
+    state.order.push_back(id);
+    match state_json(id, &state.sessions[&id], &[]) {
+        Ok(s) => response_conn(201, "application/json", s.as_bytes(), keep_alive),
+        Err(_) => response_conn(500, "text/plain", b"serialization error\n", keep_alive),
+    }
+}
+
+fn handle_legacy_step(
+    id_str: &str,
+    body: &[u8],
+    state: &mut HostState,
+    keep_alive: bool,
+) -> Vec<u8> {
     let Ok(id) = id_str.parse::<u64>() else {
-        return response(404, "text/plain", b"not found\n");
+        return response_conn(404, "text/plain", b"not found\n", keep_alive);
     };
     let Some(session) = state.sessions.get_mut(&id) else {
-        return response(404, "text/plain", b"unknown run\n");
+        return response_conn(404, "text/plain", b"unknown run\n", keep_alive);
     };
     let Ok(text) = std::str::from_utf8(body) else {
-        return response(400, "text/plain", b"invalid batch\n");
+        return response_conn(400, "text/plain", b"invalid batch\n", keep_alive);
     };
     let commands: Option<Vec<_>> = text.bytes().map(command).collect();
     let Some(commands) = commands.filter(|c| !c.is_empty() && c.len() <= 3) else {
-        return response(400, "text/plain", b"batch must contain 1 to 3 commands\n");
+        return response_conn(
+            400,
+            "text/plain",
+            b"batch must contain 1 to 3 commands\n",
+            keep_alive,
+        );
     };
     let mut all_events = Vec::new();
     for cmd in commands {
@@ -257,9 +617,566 @@ fn route(method: &str, path: &str, body: &[u8], state: &mut HostState) -> Vec<u8
         );
     }
     match state_json(id, session, &all_events) {
-        Ok(s) => response(200, "application/json", s.as_bytes()),
-        Err(_) => response(500, "text/plain", b"serialization error\n"),
+        Ok(s) => response_conn(200, "application/json", s.as_bytes(), keep_alive),
+        Err(_) => response_conn(500, "text/plain", b"serialization error\n", keep_alive),
     }
+}
+
+fn handle_action_create(body: &[u8], state: &mut HostState, keep_alive: bool) -> Vec<u8> {
+    let Ok(fields) = parse_form_fields(body) else {
+        return response_conn(400, "text/plain", b"invalid form body\n", keep_alive);
+    };
+    let mut mode = "county";
+    let mut seed: Option<u64> = None;
+    let mut x: Option<i32> = None;
+    let mut y: Option<i32> = None;
+    let mut floor: u8 = 0;
+
+    for (k, v) in fields {
+        match k {
+            "mode" => {
+                if !matches!(v, "county" | "birch") {
+                    return response_conn(400, "text/plain", b"invalid mode\n", keep_alive);
+                }
+                mode = v;
+            }
+            "seed" => {
+                let Some(parsed) = parse_u64_decimal(v) else {
+                    return response_conn(400, "text/plain", b"invalid seed\n", keep_alive);
+                };
+                seed = Some(parsed);
+            }
+            "x" => {
+                let Ok(parsed) = v.parse::<i32>() else {
+                    return response_conn(400, "text/plain", b"invalid x\n", keep_alive);
+                };
+                x = Some(parsed);
+            }
+            "y" => {
+                let Ok(parsed) = v.parse::<i32>() else {
+                    return response_conn(400, "text/plain", b"invalid y\n", keep_alive);
+                };
+                y = Some(parsed);
+            }
+            "floor" => {
+                let Ok(parsed) = v.parse::<u8>() else {
+                    return response_conn(400, "text/plain", b"invalid floor\n", keep_alive);
+                };
+                floor = parsed;
+            }
+            _ => {}
+        }
+    }
+
+    let Some(seed) = seed else {
+        return response_conn(400, "text/plain", b"missing seed\n", keep_alive);
+    };
+    if x.is_some() != y.is_some() {
+        return response_conn(400, "text/plain", b"incomplete coordinates\n", keep_alive);
+    }
+
+    let mut game = if mode == "birch" {
+        ActionGame::residential(seed)
+    } else {
+        let world = state.county_world(seed);
+        ActionGame::county_with_world(world)
+    };
+
+    let mut snapped = false;
+    if mode != "birch"
+        && let (Some(tx), Some(ty)) = (x, y)
+    {
+        let target = Tile3D::new(tx, ty, floor);
+        let Some(resolved) = game.teleport(target) else {
+            return response_conn(
+                422,
+                "application/json",
+                b"{\"error\":\"impassable\"}",
+                keep_alive,
+            );
+        };
+        snapped = resolved != target;
+    }
+
+    while state.action_sessions.len() >= MAX_ACTION_SESSIONS {
+        if let Some(oldest) = state.action_order.pop_front() {
+            state.action_sessions.remove(&oldest);
+        } else {
+            break;
+        }
+    }
+
+    let id = state.alloc_id();
+    let json = action_run_json(id, &game, false, snapped);
+    state.action_sessions.insert(id, ActionSession::new(game));
+    state.action_order.push_back(id);
+    response_conn(201, "application/json", json.as_bytes(), keep_alive)
+}
+
+fn handle_action_teleport(
+    id: u64,
+    body: &[u8],
+    state: &mut HostState,
+    keep_alive: bool,
+) -> Vec<u8> {
+    if !state.action_sessions.contains_key(&id) {
+        return response_conn(404, "text/plain", b"unknown run\n", keep_alive);
+    }
+    let Ok(fields) = parse_form_fields(body) else {
+        return response_conn(400, "text/plain", b"invalid form body\n", keep_alive);
+    };
+    let mut seed: Option<u64> = None;
+    let mut x: Option<i32> = None;
+    let mut y: Option<i32> = None;
+    let mut floor: u8 = 0;
+
+    for (k, v) in fields {
+        match k {
+            "seed" => {
+                let Some(parsed) = parse_u64_decimal(v) else {
+                    return response_conn(400, "text/plain", b"invalid seed\n", keep_alive);
+                };
+                seed = Some(parsed);
+            }
+            "x" => {
+                let Ok(parsed) = v.parse::<i32>() else {
+                    return response_conn(400, "text/plain", b"invalid x\n", keep_alive);
+                };
+                x = Some(parsed);
+            }
+            "y" => {
+                let Ok(parsed) = v.parse::<i32>() else {
+                    return response_conn(400, "text/plain", b"invalid y\n", keep_alive);
+                };
+                y = Some(parsed);
+            }
+            "floor" => {
+                let Ok(parsed) = v.parse::<u8>() else {
+                    return response_conn(400, "text/plain", b"invalid floor\n", keep_alive);
+                };
+                floor = parsed;
+            }
+            _ => {}
+        }
+    }
+
+    let (Some(seed), Some(tx), Some(ty)) = (seed, x, y) else {
+        return response_conn(
+            400,
+            "text/plain",
+            b"missing teleport parameters\n",
+            keep_alive,
+        );
+    };
+    let target = Tile3D::new(tx, ty, floor);
+
+    let can_preserve = {
+        let session = &state.action_sessions[&id];
+        session.game.mode() == ActionMode::County
+            && session.game.seed() == seed
+            && session.game.outcome() == ActionOutcome::Playing
+    };
+
+    if can_preserve {
+        let session = state
+            .action_sessions
+            .get_mut(&id)
+            .expect("checked session existence");
+        let Some(dest) = session.game.teleport(target) else {
+            return response_conn(
+                422,
+                "application/json",
+                b"{\"error\":\"impassable\"}",
+                keep_alive,
+            );
+        };
+        session.reset_clock_and_latches();
+        if let Some(renderer) = &mut session.renderer {
+            renderer.notify_teleport();
+        }
+        let json = action_run_json(id, &session.game, true, dest != target);
+        return response_conn(200, "application/json", json.as_bytes(), keep_alive);
+    }
+
+    let world = state.county_world(seed);
+    let mut fresh = ActionGame::county_with_world(world);
+    let Some(dest) = fresh.teleport(target) else {
+        return response_conn(
+            422,
+            "application/json",
+            b"{\"error\":\"impassable\"}",
+            keep_alive,
+        );
+    };
+    let session = state
+        .action_sessions
+        .get_mut(&id)
+        .expect("checked session existence");
+    session.game = fresh;
+    session.elapsed_ns = 0;
+    session.reset_clock_and_latches();
+    if let Some(renderer) = &mut session.renderer {
+        renderer.notify_teleport();
+    }
+    let json = action_run_json(id, &session.game, false, dest != target);
+    response_conn(200, "application/json", json.as_bytes(), keep_alive)
+}
+
+fn handle_action_reset_clock(id: u64, state: &mut HostState, keep_alive: bool) -> Vec<u8> {
+    let Some(session) = state.action_sessions.get_mut(&id) else {
+        return response_conn(404, "text/plain", b"unknown run\n", keep_alive);
+    };
+    session.reset_clock_and_latches();
+    response_conn(200, "text/plain", b"ok\n", keep_alive)
+}
+
+fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: bool) -> Vec<u8> {
+    let Some(session) = state.action_sessions.get_mut(&id) else {
+        return response_conn(404, "text/plain", b"unknown run\n", keep_alive);
+    };
+    let Ok(fields) = parse_form_fields(body) else {
+        return response_conn(400, "text/plain", b"invalid form body\n", keep_alive);
+    };
+
+    let mut w: Option<u16> = None;
+    let mut h: Option<u16> = None;
+    let mut t_ns: u64 = 0;
+    let mut mx: f32 = 0.0;
+    let mut my: f32 = 0.0;
+    let mut ax: f32 = 0.0;
+    let mut ay: f32 = 0.0;
+    let mut flags: u32 = 0;
+    let mut weapon: i32 = ZB_WEAPON_UNCHANGED;
+    let mut advance: u8 = 0;
+
+    for (k, v) in fields {
+        match k {
+            "w" => {
+                let Ok(parsed) = v.parse::<u16>() else {
+                    return response_conn(400, "text/plain", b"invalid w\n", keep_alive);
+                };
+                w = Some(parsed.clamp(ACTION_W_MIN, ACTION_W_MAX));
+            }
+            "h" => {
+                let Ok(parsed) = v.parse::<u16>() else {
+                    return response_conn(400, "text/plain", b"invalid h\n", keep_alive);
+                };
+                h = Some(parsed.clamp(ACTION_H_MIN, ACTION_H_MAX));
+            }
+            "t_ns" => {
+                let Some(parsed) = parse_u64_decimal(v) else {
+                    return response_conn(400, "text/plain", b"invalid t_ns\n", keep_alive);
+                };
+                t_ns = parsed;
+            }
+            "mx" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid mx\n", keep_alive);
+                };
+                mx = parsed;
+            }
+            "my" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid my\n", keep_alive);
+                };
+                my = parsed;
+            }
+            "ax" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid ax\n", keep_alive);
+                };
+                ax = parsed;
+            }
+            "ay" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid ay\n", keep_alive);
+                };
+                ay = parsed;
+            }
+            "flags" => {
+                let Ok(parsed) = v.parse::<u32>() else {
+                    return response_conn(400, "text/plain", b"invalid flags\n", keep_alive);
+                };
+                flags = parsed;
+            }
+            "weapon" => {
+                let Ok(parsed) = v.parse::<i32>() else {
+                    return response_conn(400, "text/plain", b"invalid weapon\n", keep_alive);
+                };
+                weapon = parsed;
+            }
+            "advance" => match v {
+                "0" => advance = 0,
+                "1" => advance = 1,
+                _ => return response_conn(400, "text/plain", b"invalid advance\n", keep_alive),
+            },
+            _ => {}
+        }
+    }
+
+    let (Some(w), Some(h)) = (w, h) else {
+        return response_conn(400, "text/plain", b"missing dimensions\n", keep_alive);
+    };
+    let Ok(select_weapon) = parse_select_weapon(weapon) else {
+        return response_conn(400, "text/plain", b"invalid weapon\n", keep_alive);
+    };
+
+    session.ensure_renderer(usize::from(w), usize::from(h));
+    if let Some(renderer) = &mut session.renderer {
+        renderer.set_look_ahead((flags & ZB_INPUT_LOOK_AHEAD) != 0);
+    }
+
+    let audio_events = if advance == 1 {
+        let movement = stick(mx, my);
+        let aim = stick(ax, ay);
+        session.step_frame(
+            t_ns,
+            movement,
+            (aim != Vec2::ZERO).then_some(aim),
+            flags,
+            select_weapon,
+        )
+    } else {
+        session.reset_clock_and_latches();
+        0
+    };
+
+    let elapsed_ms = session.elapsed_ns / 1_000_000;
+    let pixels = session
+        .renderer
+        .as_mut()
+        .expect("renderer initialized")
+        .render(&session.game, elapsed_ms);
+    let payload = encode_zbf2_frame(&session.game, w, h, audio_events, pixels);
+    response_conn(200, "application/octet-stream", &payload, keep_alive)
+}
+
+fn encode_zbf2_frame(
+    game: &ActionGame,
+    w: u16,
+    h: u16,
+    audio_events: u64,
+    pixels: &[u8],
+) -> Vec<u8> {
+    let hud = game.hud();
+    let low_ammo = matches!(
+        hud.equipped,
+        Some(Weapon::Pistol | Weapon::Shotgun | Weapon::RocketLauncher)
+    ) && (hud.active_mag == 0
+        || (hud.active_mag_cap >= 4 && hud.active_mag <= hud.active_mag_cap / 4));
+
+    let mut status_flags = 0u16;
+    if hud.outcome == ActionOutcome::Won {
+        status_flags |= ZB_V2_WON;
+    }
+    if hud.outcome == ActionOutcome::Dead {
+        status_flags |= ZB_V2_DEAD;
+    }
+    if hud.reloading {
+        status_flags |= ZB_V2_RELOADING;
+    }
+    if hud.can_reload {
+        status_flags |= ZB_V2_CAN_RELOAD;
+    }
+    if hud.can_heal {
+        status_flags |= ZB_V2_CAN_HEAL;
+    }
+    if low_ammo {
+        status_flags |= ZB_V2_LOW_AMMO;
+    }
+    if hud.indoors {
+        status_flags |= ZB_V2_INDOORS;
+    }
+    if hud.rocket_danger_close {
+        status_flags |= ZB_V2_DANGER_CLOSE;
+    }
+
+    let zombies = hud.zombie_count.min(u16::MAX as usize) as u16;
+    let zombies_total = hud.zombies_total.min(u16::MAX as usize) as u16;
+
+    let mut header = [0u8; 64];
+    header[0..4].copy_from_slice(b"ZBF2");
+    header[4..6].copy_from_slice(&w.to_le_bytes());
+    header[6..8].copy_from_slice(&h.to_le_bytes());
+    header[8..16].copy_from_slice(&audio_events.to_le_bytes());
+    header[16..24].copy_from_slice(&hud.tick.to_le_bytes());
+    header[24..28].copy_from_slice(&hud.player_pos.x.to_le_bytes());
+    header[28..32].copy_from_slice(&hud.player_pos.y.to_le_bytes());
+    header[32..34].copy_from_slice(&hud.active_reserve.to_le_bytes());
+    header[34..36].copy_from_slice(&hud.pistol_reserve.to_le_bytes());
+    header[36..38].copy_from_slice(&hud.shotgun_reserve.to_le_bytes());
+    header[38..40].copy_from_slice(&hud.rocket_reserve.to_le_bytes());
+    header[40..42].copy_from_slice(&zombies.to_le_bytes());
+    header[42..44].copy_from_slice(&zombies_total.to_le_bytes());
+    header[44..46].copy_from_slice(&status_flags.to_le_bytes());
+    header[46] = hud.health;
+    header[47] = hud.max_health;
+    header[48] = hud.floor;
+    header[49] = hud.equipped.map_or(ZB_WEAPON_NONE, |w| w as u8);
+    header[50] = hud.owned_weapons_mask;
+    header[51] = hud.active_mag;
+    header[52] = hud.active_mag_cap;
+    header[53] = hud.pistol_mag;
+    header[54] = hud.shotgun_mag;
+    header[55] = hud.rocket_mag;
+    header[56] = hud.reload_progress;
+    header[57] = hud.medkits;
+    header[58] = hud.caches_found;
+    header[59] = hud.caches_total;
+    header[60] = hud.interact_prompt as u8;
+    header[61] = hud.objective_kind as u8;
+    header[62] = game.district_code();
+    header[63] = game.mode() as u8;
+
+    let mut out = Vec::with_capacity(64 + pixels.len());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(pixels);
+    out
+}
+
+fn action_run_json(id: u64, game: &ActionGame, preserved: bool, snapped: bool) -> String {
+    let pose = game.player_tile();
+    let mode = match game.mode() {
+        ActionMode::BirchStreet => "birch",
+        ActionMode::County => "county",
+    };
+    format!(
+        "{{\"id\":\"{id}\",\"seed\":\"{}\",\"mode\":\"{mode}\",\"x\":{},\"y\":{},\"floor\":{},\"district\":{},\"preserved\":{preserved},\"snapped\":{snapped}}}",
+        game.seed(),
+        pose.x,
+        pose.y,
+        pose.floor,
+        game.district_code()
+    )
+}
+
+fn parse_form_fields(body: &[u8]) -> Result<Vec<(&str, &str)>, ()> {
+    let text = std::str::from_utf8(body).map_err(|_| ())?;
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    text.split('&')
+        .map(|pair| pair.split_once('=').ok_or(()))
+        .collect()
+}
+
+fn parse_u64_decimal(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u64>().ok()
+}
+
+fn parse_select_weapon(value: i32) -> Result<Option<Weapon>, ()> {
+    if value == ZB_WEAPON_UNCHANGED {
+        return Ok(None);
+    }
+    let slot = u8::try_from(value).map_err(|_| ())?;
+    Weapon::from_slot(slot).map(Some).ok_or(())
+}
+
+fn stick(x: f32, y: f32) -> Vec2 {
+    if !x.is_finite() || !y.is_finite() {
+        return Vec2::ZERO;
+    }
+    let strength = x.hypot(y).min(1.0);
+    let vector = screen_vector_to_world(x, y);
+    let length = vector.x.hypot(vector.y);
+    if length > 0.0 {
+        vector * (strength / length)
+    } else {
+        Vec2::ZERO
+    }
+}
+
+fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
+    let mut mask = 0u64;
+    for event in events {
+        match *event {
+            ActionEvent::UnarmedShove { .. } => mask |= ZB_SFX_AXE_SWING,
+            ActionEvent::AxeSwing {
+                hit_flesh,
+                hit_solid,
+                ..
+            } => {
+                mask |= ZB_SFX_AXE_SWING;
+                if hit_flesh {
+                    mask |= ZB_SFX_AXE_HIT_FLESH;
+                }
+                if hit_solid {
+                    mask |= ZB_SFX_AXE_HIT_WOOD;
+                }
+            }
+            ActionEvent::ShotFired { weapon, .. } => {
+                mask |= match weapon {
+                    Weapon::Axe => ZB_SFX_AXE_SWING,
+                    Weapon::Pistol => ZB_SFX_PISTOL_FIRE,
+                    Weapon::Shotgun => ZB_SFX_SHOTGUN_FIRE,
+                    Weapon::RocketLauncher => ZB_SFX_ROCKET_LAUNCH,
+                };
+            }
+            ActionEvent::BulletTrace { .. } => {}
+            ActionEvent::ProjectileLaunched { kind, .. } => {
+                mask |= match kind {
+                    ProjectileKind::Rocket => ZB_SFX_ROCKET_LAUNCH,
+                    ProjectileKind::ShooterBolt => ZB_SFX_SHOOTER_FIRE,
+                };
+            }
+            ActionEvent::RocketBlast { .. } => mask |= ZB_SFX_EXPLOSION,
+            ActionEvent::DryFire { .. } => mask |= ZB_SFX_DRY_FIRE,
+            ActionEvent::MaterialHit {
+                material,
+                destroyed,
+                light_changed,
+                ..
+            } => match material {
+                Material::Glass => mask |= ZB_SFX_GLASS_SHATTER,
+                Material::WoodLight | Material::WoodDoor | Material::TreeWood => {
+                    mask |= ZB_SFX_WOOD_SPLINTER;
+                }
+                Material::Drywall | Material::WoodSiding | Material::BrickMasonry => {
+                    mask |= ZB_SFX_STONE_THUD;
+                    if destroyed {
+                        mask |= ZB_SFX_STRUCTURAL_BREACH;
+                    }
+                }
+                Material::MetalPole => {
+                    if destroyed || light_changed {
+                        mask |= ZB_SFX_STREETLIGHT_BREAK;
+                    } else {
+                        mask |= ZB_SFX_STONE_THUD;
+                    }
+                }
+                Material::Flesh => mask |= ZB_SFX_MONSTER_HIT,
+                Material::None | Material::Caustic => {}
+            },
+            ActionEvent::StructuralCollapse { .. } => mask |= ZB_SFX_STRUCTURAL_BREACH,
+            ActionEvent::DoorToggled { .. } => mask |= ZB_SFX_DOOR_TOGGLE,
+            ActionEvent::WindowClimbed { .. } => mask |= ZB_SFX_WINDOW_CLIMB,
+            ActionEvent::WeaponSwitched { .. } => mask |= ZB_SFX_WEAPON_SWITCH,
+            ActionEvent::ReloadStarted { .. } => mask |= ZB_SFX_RELOAD_START,
+            ActionEvent::ReloadCompleted { .. } => mask |= ZB_SFX_RELOAD_FINISH,
+            ActionEvent::Looted { .. } => mask |= ZB_SFX_PICKUP,
+            ActionEvent::Healed { .. } => mask |= ZB_SFX_MEDKIT_HEAL,
+            ActionEvent::MonsterAlerted { .. } => mask |= ZB_SFX_MONSTER_ALERT,
+            ActionEvent::MonsterTelegraph { .. } => {}
+            ActionEvent::MonsterHit { .. } => mask |= ZB_SFX_MONSTER_HIT,
+            ActionEvent::MonsterDown { .. } => mask |= ZB_SFX_MONSTER_DOWN,
+            ActionEvent::BloaterSwell { .. } => {}
+            ActionEvent::BloaterBurst { .. } => mask |= ZB_SFX_BLOATER_BURST,
+            ActionEvent::PlayerHurt { .. } => mask |= ZB_SFX_PLAYER_HURT,
+            ActionEvent::FloorChanged { via, .. } => {
+                mask |= match via {
+                    FloorTransition::Stairs => ZB_SFX_STAIRS_STEP,
+                    FloorTransition::WindowDrop => ZB_SFX_WINDOW_CLIMB,
+                    FloorTransition::Collapse => ZB_SFX_STRUCTURAL_BREACH,
+                };
+            }
+            ActionEvent::Died => mask |= ZB_SFX_DEATH,
+            ActionEvent::Won => mask |= ZB_SFX_WIN,
+        }
+    }
+    mask
 }
 
 fn command(b: u8) -> Option<Command> {
@@ -276,7 +1193,6 @@ fn command(b: u8) -> Option<Command> {
 }
 
 fn state_json(id: u64, s: &Session, events: &[(u64, Event)]) -> Result<String, std::fmt::Error> {
-    use std::fmt::Write as FmtWrite;
     let hud = s.game.hud();
     // Stable viewport centered on the player; clip coordinates at world edges.
     let x0 = (hud.player.x - VIEW / 2).max(0);
@@ -379,18 +1295,25 @@ fn state_json(id: u64, s: &Session, events: &[(u64, Event)]) -> Result<String, s
     Ok(out)
 }
 
-fn response(status: u16, mime: &str, body: &[u8]) -> Vec<u8> {
+fn response_conn(status: u16, mime: &str, body: &[u8], keep_alive: bool) -> Vec<u8> {
     let label = match status {
         200 => "OK",
         201 => "Created",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
+        422 => "Unprocessable Entity",
         503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
-    let mut out=format!("HTTP/1.1 {status} {label}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n",body.len()).into_bytes();
+    let conn = if keep_alive { "keep-alive" } else { "close" };
+    let mut out = format!(
+        "HTTP/1.1 {status} {label}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: {conn}\r\nX-Content-Type-Options: nosniff\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
     out.extend_from_slice(body);
     out
 }
@@ -398,6 +1321,15 @@ fn response(status: u16, mime: &str, body: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn split_http_response(resp: &[u8]) -> (&str, &[u8]) {
+        let idx = resp
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("valid HTTP response");
+        let head = std::str::from_utf8(&resp[..idx]).expect("utf8 headers");
+        (head, &resp[idx + 4..])
+    }
 
     #[test]
     fn batch_is_validated_before_any_step() {
@@ -420,5 +1352,134 @@ mod tests {
     fn command_parser_accepts_only_documented_ascii_commands() {
         assert!(b".NESWLA".iter().all(|b| command(*b).is_some()));
         assert!(b" neswla\n".iter().all(|b| command(*b).is_none()));
+    }
+
+    #[test]
+    fn action_county_create_and_render_zbf2_frame() {
+        let mut state = HostState {
+            next_id: 1,
+            ..HostState::default()
+        };
+        let create_resp = route(
+            "POST",
+            "/api/action/runs",
+            b"mode=county&seed=42",
+            &mut state,
+        );
+        let (create_head, create_body) = split_http_response(&create_resp);
+        assert!(create_head.starts_with("HTTP/1.1 201 Created"));
+        assert!(create_head.contains("Connection: keep-alive"));
+        let create_json = std::str::from_utf8(create_body).unwrap();
+        assert!(create_json.contains("\"id\":\"1\""));
+        assert!(create_json.contains("\"seed\":\"42\""));
+        assert!(create_json.contains("\"mode\":\"county\""));
+
+        let f0 = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1000000000&mx=0&my=0&ax=0&ay=0&flags=32&weapon=-1&advance=1",
+            &mut state,
+        );
+        let (f0_head, f0_body) = split_http_response(&f0);
+        assert!(f0_head.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(f0_body.len(), 64 + 320 * 180 * 4);
+        assert_eq!(&f0_body[0..4], b"ZBF2");
+        assert_eq!(u16::from_le_bytes([f0_body[4], f0_body[5]]), 320);
+        assert_eq!(u16::from_le_bytes([f0_body[6], f0_body[7]]), 180);
+        assert_eq!(f0_body[63], ActionMode::County as u8);
+
+        let f1 = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=1.0&my=0&ax=0&ay=0&flags=32&weapon=-1&advance=1",
+            &mut state,
+        );
+        let (f1_head, f1_body) = split_http_response(&f1);
+        assert!(f1_head.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(f1_body.len(), 64 + 320 * 180 * 4);
+        let tick = u64::from_le_bytes(f1_body[16..24].try_into().unwrap());
+        assert_eq!(tick, 3);
+    }
+
+    #[test]
+    fn action_teleport_preserves_same_seed_and_resets_different_seed() {
+        let mut state = HostState {
+            next_id: 1,
+            ..HostState::default()
+        };
+        let create_resp = route(
+            "POST",
+            "/api/action/runs",
+            b"mode=county&seed=42",
+            &mut state,
+        );
+        assert!(create_resp.starts_with(b"HTTP/1.1 201"));
+
+        // Step a few ticks so tick > 0 on session 1.
+        let _ = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1000000000&mx=0&my=0&ax=0&ay=0&flags=32&weapon=-1&advance=1",
+            &mut state,
+        );
+        let _ = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&flags=32&weapon=-1&advance=1",
+            &mut state,
+        );
+        assert_eq!(state.action_sessions[&1].game.hud().tick, 3);
+
+        // Find a valid walkable destination on seed 42 (the spawn position itself is guaranteed walkable).
+        let dest = state.action_sessions[&1].game.player_tile();
+        let tp_same_body = format!("seed=42&x={}&y={}&floor={}", dest.x, dest.y, dest.floor);
+        let tp_same = route(
+            "POST",
+            "/api/action/1/teleport",
+            tp_same_body.as_bytes(),
+            &mut state,
+        );
+        let (same_head, same_body) = split_http_response(&tp_same);
+        assert!(same_head.starts_with("HTTP/1.1 200 OK"));
+        let same_json = std::str::from_utf8(same_body).unwrap();
+        assert!(same_json.contains("\"preserved\":true"));
+        assert_eq!(state.action_sessions[&1].game.hud().tick, 3);
+
+        // Teleporting with a different seed creates a fresh run (preserved == false).
+        let fresh_world = state.county_world(99);
+        let fresh_spawn = fresh_world.wake_position();
+        let tp_diff_body = format!("seed=99&x={}&y={}&floor=0", fresh_spawn.x, fresh_spawn.y);
+        let tp_diff = route(
+            "POST",
+            "/api/action/1/teleport",
+            tp_diff_body.as_bytes(),
+            &mut state,
+        );
+        let (diff_head, diff_body) = split_http_response(&tp_diff);
+        assert!(diff_head.starts_with("HTTP/1.1 200 OK"));
+        let diff_json = std::str::from_utf8(diff_body).unwrap();
+        assert!(diff_json.contains("\"preserved\":false"));
+        assert!(diff_json.contains("\"seed\":\"99\""));
+        assert_eq!(state.action_sessions[&1].game.seed(), 99);
+        assert_eq!(state.action_sessions[&1].game.hud().tick, 0);
+    }
+
+    #[test]
+    fn static_routes_serve_action_and_legacy_assets() {
+        for (path, mime_substr) in [
+            ("/", "text/html"),
+            ("/index.html", "text/html"),
+            ("/action.js", "text/javascript"),
+            ("/legacy", "text/html"),
+            ("/legacy.html", "text/html"),
+            ("/county.html", "text/html"),
+        ] {
+            let resp = static_route(path);
+            let (head, body) = split_http_response(&resp);
+            assert!(head.starts_with("HTTP/1.1 200 OK"), "{path}");
+            assert!(head.contains(mime_substr), "{path}: {head}");
+            assert!(head.contains("Connection: keep-alive"), "{path}");
+            assert!(!body.is_empty(), "{path}");
+        }
     }
 }

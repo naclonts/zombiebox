@@ -229,6 +229,8 @@ impl LightGrid {
                         1.0
                     } else if src.floor == 0 && floor == 1 {
                         0.45
+                    } else if src.floor == 0 && floor == 2 {
+                        0.22
                     } else {
                         0.0
                     };

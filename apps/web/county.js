@@ -5,6 +5,26 @@
   const canvas = $("county-map"),
     ctx = canvas.getContext("2d", { alpha: false });
   const params = new URLSearchParams(location.search);
+  const rawSeed = params.get("seed")?.trim() ?? "";
+  const initialSeed = /^\d+$/.test(rawSeed) ? rawSeed : null;
+  const initialActive = params.get("active") === "1";
+  const pxParam = Number(params.get("px"));
+  const pyParam = Number(params.get("py"));
+  const pfParam = Number(params.get("pf") || 0);
+  const activePlayer =
+    initialActive &&
+    params.has("px") &&
+    params.has("py") &&
+    Number.isFinite(pxParam) &&
+    Number.isFinite(pyParam) &&
+    Number.isFinite(pfParam)
+      ? {
+          x: Math.trunc(pxParam),
+          y: Math.trunc(pyParam),
+          floor: Math.max(0, Math.trunc(pfParam)),
+        }
+      : null;
+  let firstLoad = true;
   const input = $("seed-input"),
     form = $("seed-form");
   const legend = {
@@ -50,6 +70,12 @@
   const district = (x, y) => county?.district?.[y * SIZE + x] || "R";
   const elevation = (x, y) => county?.elevation?.charCodeAt(y * SIZE + x) || 33;
   const feat = (x, y) => county?.features?.[y * SIZE + x] || ".";
+  const isSameActiveRun = () =>
+    Boolean(
+      activePlayer &&
+        county &&
+        String(county.seed) === String(initialSeed),
+    );
   function buildBase() {
     CountyMap.drawBase(base, county);
   }
@@ -159,6 +185,29 @@
       ctx.strokeStyle = "#fff0b3";
       ctx.lineWidth = 1.5;
       ctx.strokeRect(X, Y, Math.max(3, scale), Math.max(3, scale));
+    }
+    if (isSameActiveRun()) {
+      const X = ox + (activePlayer.x + 0.5) * scale,
+        Y = oy + (activePlayer.y + 0.5) * scale,
+        r = Math.max(4, Math.min(10, scale * 0.6));
+      ctx.fillStyle = "#47d195";
+      ctx.strokeStyle = "#111d16";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(X, Y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(X, Y, Math.max(1.5, r * 0.38), 0, Math.PI * 2);
+      ctx.fill();
+      if (scale > 1.6) {
+        ctx.font = `bold ${Math.max(10, Math.min(12, scale * 1.4))}px ui-monospace, monospace`;
+        ctx.fillStyle = "#111d16";
+        ctx.fillText("YOU ARE HERE", X + r + 5, Y + 4);
+        ctx.fillStyle = "#47d195";
+        ctx.fillText("YOU ARE HERE", X + r + 4, Y + 3);
+      }
     }
     if (walk && player) {
       const X = ox + (player.x + 0.5) * scale,
@@ -356,6 +405,7 @@
       : "NO STRUCTURE";
     renderFloor(atBuildings[0] || null);
     render();
+    updateTeleportUI();
   }
   function distance(v, x, y) {
     return Math.hypot(v.x - x, v.y - y);
@@ -524,6 +574,36 @@
       );
       fctx.fill();
     }
+    if (selected && inside(building, selected.x, selected.y)) {
+      fctx.strokeStyle = "#fff0b3";
+      fctx.lineWidth = Math.max(1, ratio);
+      fctx.strokeRect(
+        (selected.x - building.x) * cw + 0.5,
+        (selected.y - building.y) * ch + 0.5,
+        Math.max(2, cw - 1),
+        Math.max(2, ch - 1),
+      );
+    }
+    if (
+      isSameActiveRun() &&
+      activePlayer.floor === floor &&
+      inside(building, activePlayer.x, activePlayer.y)
+    ) {
+      const px = (activePlayer.x - building.x + 0.5) * cw;
+      const py = (activePlayer.y - building.y + 0.5) * ch;
+      const pr = Math.max(3, Math.min(cw, ch) * 0.42);
+      fctx.fillStyle = "#47d195";
+      fctx.strokeStyle = "#111d16";
+      fctx.lineWidth = Math.max(1.5, ratio);
+      fctx.beginPath();
+      fctx.arc(px, py, pr, 0, Math.PI * 2);
+      fctx.fill();
+      fctx.stroke();
+      fctx.fillStyle = "#ffffff";
+      fctx.beginPath();
+      fctx.arc(px, py, Math.max(1.2, pr * 0.38), 0, Math.PI * 2);
+      fctx.fill();
+    }
     fctx.strokeStyle = "#172119";
     fctx.lineWidth = Math.max(1, ratio);
     fctx.strokeRect(0, 0, map.width, map.height);
@@ -536,6 +616,144 @@
     return f === 0
       ? [".", "_", "+", "^"].includes(c)
       : ["_", "+", "^"].includes(c);
+  }
+  function nearestTraversable(cx, cy, f, maxR) {
+    let best = null;
+    for (let dy = -maxR; dy <= maxR; dy++) {
+      for (let dx = -maxR; dx <= maxR; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const x = cx + dx;
+        const y = cy + dy;
+        if (!traversable(x, y, f)) continue;
+        const d = Math.hypot(dx, dy);
+        if (!best || d < best.d) best = { x, y, d };
+      }
+    }
+    return best;
+  }
+  function getTargetCell() {
+    if (walk && player) {
+      return { x: player.x, y: player.y, floor: player.floor };
+    }
+    if (selected) {
+      const b = currentBuilding();
+      if (b && floor > 0 && !inside(b, selected.x, selected.y)) {
+        for (let y = b.y; y < b.y + b.h; y++) {
+          for (let x = b.x; x < b.x + b.w; x++) {
+            if (traversable(x, y, floor)) return { x, y, floor };
+          }
+        }
+        return {
+          x: b.x + Math.floor(b.w / 2),
+          y: b.y + Math.floor(b.h / 2),
+          floor,
+        };
+      }
+      return { x: selected.x, y: selected.y, floor };
+    }
+    return {
+      x: county?.spawn?.[0] ?? 256,
+      y: county?.spawn?.[1] ?? 256,
+      floor: 0,
+    };
+  }
+  function resolveTeleport(tx, ty, tf) {
+    if (traversable(tx, ty, tf)) {
+      return { ok: true, snapped: false, x: tx, y: ty, floor: tf };
+    }
+    const b = (county?.buildings || []).find((q) => inside(q, tx, ty));
+    if (b) {
+      const f = Math.min(tf, Math.max(0, (b.floors || 1) - 1));
+      let best = null;
+      for (let y = b.y; y < b.y + b.h; y++) {
+        for (let x = b.x; x < b.x + b.w; x++) {
+          if (!traversable(x, y, f)) continue;
+          const d = Math.hypot(x - tx, y - ty);
+          if (!best || d < best.d) best = { x, y, d };
+        }
+      }
+      if (best) {
+        return { ok: true, snapped: true, x: best.x, y: best.y, floor: f };
+      }
+      if (Array.isArray(b.entry) && b.entry.length >= 2) {
+        const [ex, ey] = b.entry;
+        if (traversable(ex, ey, 0)) {
+          return { ok: true, snapped: true, x: ex, y: ey, floor: 0 };
+        }
+        const nearEntry = nearestTraversable(ex, ey, 0, 4);
+        if (nearEntry) {
+          return {
+            ok: true,
+            snapped: true,
+            x: nearEntry.x,
+            y: nearEntry.y,
+            floor: 0,
+          };
+        }
+      }
+    }
+    const near = nearestTraversable(tx, ty, 0, 8);
+    if (near) {
+      return { ok: true, snapped: true, x: near.x, y: near.y, floor: 0 };
+    }
+    return {
+      ok: false,
+      reason:
+        "Impassable water or mountain — select a road, shore, bridge, or building.",
+    };
+  }
+  function updateTeleportUI() {
+    const btn = $("teleport-btn");
+    const chip = $("walk-teleport");
+    const note = $("teleport-note");
+    if (!county) {
+      btn.disabled = true;
+      chip.disabled = true;
+      return;
+    }
+    const target = getTargetCell();
+    const res = resolveTeleport(target.x, target.y, target.floor);
+    if (!res.ok) {
+      btn.disabled = true;
+      chip.disabled = true;
+      btn.textContent = "IMPASSABLE TERRAIN";
+      chip.textContent = "IMPASSABLE";
+      note.textContent = res.reason;
+      return;
+    }
+    btn.disabled = false;
+    chip.disabled = false;
+    const sameRun = isSameActiveRun();
+    btn.textContent = sameRun ? "TELEPORT HERE ↗" : "PLAY AT THIS CELL ↗";
+    chip.textContent = sameRun ? "TELEPORT ↗" : "PLAY HERE ↗";
+    const preserveText = sameRun
+      ? "keeps gear & world edits"
+      : `starts run on seed ${county.seed}`;
+    note.textContent = res.snapped
+      ? `Snaps to walkable (${res.x}, ${res.y}) · ${res.floor + 1}F · ${preserveText}`
+      : `Deploy at (${res.x}, ${res.y}) · ${res.floor + 1}F · ${preserveText}`;
+  }
+  function dispatchTeleport() {
+    if (!county) return;
+    const target = getTargetCell();
+    const res = resolveTeleport(target.x, target.y, target.floor);
+    if (!res.ok) return;
+    const seedStr = String(county.seed);
+    if (
+      window.ZombieboxAtlasBridge &&
+      typeof window.ZombieboxAtlasBridge.teleport === "function"
+    ) {
+      window.ZombieboxAtlasBridge.teleport(seedStr, res.x, res.y, res.floor);
+      return;
+    }
+    const q = new URLSearchParams({
+      mode: "county",
+      seed: seedStr,
+      tx: String(res.x),
+      ty: String(res.y),
+      tf: String(res.floor),
+    });
+    location.href = `/?${q.toString()}`;
   }
   function move(dx, dy) {
     if (!walk || !player) return;
@@ -570,6 +788,7 @@
       );
       setSelection(player.x, player.y);
     } else overview();
+    updateTeleportUI();
   }
   function overview() {
     if (!county) return;
@@ -652,7 +871,13 @@
       if (data.size !== SIZE) throw new Error("Unexpected county dimensions");
       county = data;
       input.value = county.seed;
-      params.set("seed", county.seed);
+      params.set("seed", String(county.seed));
+      if (String(county.seed) !== String(initialSeed)) {
+        params.delete("active");
+        params.delete("px");
+        params.delete("py");
+        params.delete("pf");
+      }
       history.replaceState(
         null,
         "",
@@ -671,7 +896,25 @@
         y: county.spawn?.[1] ?? 256,
         floor: 0,
       };
-      overview();
+      const isInitialActive = firstLoad && isSameActiveRun();
+      firstLoad = false;
+      if (isInitialActive) {
+        walk = false;
+        showIndex = false;
+        floor = activePlayer.floor;
+        view.x = activePlayer.x + 0.5;
+        view.y = activePlayer.y + 0.5;
+        view.zoom = Math.max(
+          2.5,
+          Math.min(
+            8,
+            (14 * SIZE) / Math.max(1, Math.min(cssW || 400, cssH || 400)),
+          ),
+        );
+        setSelection(activePlayer.x, activePlayer.y, false);
+      } else {
+        overview();
+      }
       resize();
     } catch (error) {
       $("map-status").textContent = "SURVEY UNAVAILABLE";
@@ -689,6 +932,13 @@
         "Enter a decimal number for the county seed.";
       return;
     }
+    toggleWalk(false);
+    load(seed);
+  });
+  $("seed-random").addEventListener("click", () => {
+    if (busy) return;
+    const seed = String(Math.floor(Math.random() * 1000000000) + 1);
+    input.value = seed;
     toggleWalk(false);
     load(seed);
   });
@@ -790,6 +1040,13 @@
         Math.min(16, view.zoom * (key === "-" ? 0.8 : 1.25)),
       );
       render();
+    } else if (
+      key === "enter" &&
+      !/BUTTON|A/.test(e.target?.tagName) &&
+      (walk || e.target === canvas || e.target === $("floor-map"))
+    ) {
+      e.preventDefault();
+      dispatchTeleport();
     }
   });
   $("walk-toggle").addEventListener("click", () => toggleWalk());
@@ -820,14 +1077,45 @@
     );
     setSelection(x, y);
   });
+  $("floor-map").addEventListener("click", (e) => {
+    if (!county || walk) return;
+    const building = currentBuilding();
+    if (!building) return;
+    const map = $("floor-map");
+    if (!map.clientWidth || !map.clientHeight) return;
+    const cols = Math.max(1, building.w || 8);
+    const rows = Math.max(1, building.h || 6);
+    const cw = Math.min(map.width / cols, map.height / rows);
+    const ch = cw;
+    const ox = (map.width - cw * cols) / 2;
+    const oy = (map.height - ch * rows) / 2;
+    const px = e.offsetX * (map.width / map.clientWidth);
+    const py = e.offsetY * (map.height / map.clientHeight);
+    const bx = Math.floor((px - ox) / cw);
+    const by = Math.floor((py - oy) / ch);
+    if (bx < 0 || by < 0 || bx >= cols || by >= rows) return;
+    setSelection(building.x + bx, building.y + by, false);
+  });
   $("floor-picker").addEventListener("change", (e) => {
     floor = Number(e.target.value);
     updateDetail();
   });
+  $("teleport-btn").addEventListener("click", dispatchTeleport);
+  $("walk-teleport").addEventListener("click", dispatchTeleport);
+  for (const id of ["back-top", "back-bottom"]) {
+    $(id)?.addEventListener("click", (e) => {
+      if (
+        window.ZombieboxAtlasBridge &&
+        typeof window.ZombieboxAtlasBridge.close === "function"
+      ) {
+        e.preventDefault();
+        window.ZombieboxAtlasBridge.close();
+      }
+    });
+  }
   new ResizeObserver(resize).observe(canvas);
   window.addEventListener("resize", resize);
-  const initial =
-    params.get("seed") || String(Math.floor(Math.random() * 2147483647));
+  const initial = initialSeed || "42";
   input.value = initial;
   load(initial);
 })();

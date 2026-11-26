@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use zombiebox_core::{
-    ActionEvent, ActionGame, ActionOutcome, AwarenessIcon, Floor, MonsterId, MonsterKind, Surface,
-    TileKind, TileVisibility, Vec2, WallOrientation, Weapon,
+    ActionEvent, ActionGame, ActionOutcome, AwarenessIcon, BuildingId, Floor, MonsterId,
+    MonsterKind, Surface, TileKind, TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon,
 };
 
 mod actors;
@@ -19,8 +19,9 @@ mod vfx;
 use actors::{ActorKind, ActorVisual, draw_actor, draw_fallen};
 use lighting::{DynamicLight, LightGrid, actor_light, lower_floor_actor_light};
 use street::{
-    DrawItem, DrawItemKind, cutaway_to_stipple, draw_building_roof, draw_cache, draw_f1_deck_pass,
-    draw_ground_pass, draw_open_door_front_jamb, draw_tile_feature,
+    DrawItem, DrawItemKind, building_stipple, draw_building_roof, draw_cache, draw_flat_roof_tile,
+    draw_ground_pass, draw_mountain_crag, draw_open_door_front_jamb, draw_tile_feature,
+    draw_upper_deck_pass,
 };
 use vfx::VfxState;
 
@@ -138,7 +139,7 @@ pub struct Renderer {
     look_ahead_enabled: bool,
 
     // Per-building smooth cutaway openness (0.0 = closed, 1.0 = open).
-    cutaway: [f32; 8],
+    cutaway: HashMap<BuildingId, f32>,
 
     // Actor gait, hit-flash, alert-badge, and fallen corpse state.
     survivor: Gait,
@@ -147,10 +148,9 @@ pub struct Renderer {
     fallen: Vec<Fallen>,
 
     // Zero-alloc per-frame rendering workspaces.
-    light_f0: LightGrid,
-    light_f1: LightGrid,
+    light_floors: [LightGrid; 3],
     draw_items: Vec<DrawItem>,
-    f1_shooters: Vec<(Vec2, u8)>,
+    upper_shooters: Vec<(Vec2, Floor, u8)>,
     vfx: VfxState,
 }
 
@@ -170,17 +170,24 @@ impl Renderer {
             cam_floor: 0.0,
             cam_shake: 0.0,
             look_ahead_enabled: true,
-            cutaway: [0.0; 8],
+            cutaway: HashMap::with_capacity(32),
             survivor: Gait::default(),
             hurt: None,
             monster_tracks: HashMap::with_capacity(128),
             fallen: Vec::with_capacity(MAX_FALLEN),
-            light_f0: LightGrid::new(),
-            light_f1: LightGrid::new(),
+            light_floors: std::array::from_fn(|_| LightGrid::new()),
             draw_items: Vec::with_capacity(512),
-            f1_shooters: Vec::with_capacity(16),
+            upper_shooters: Vec::with_capacity(16),
             vfx: VfxState::new(),
         }
+    }
+
+    /// Reset camera & cutaway damping after an instant player teleport.
+    pub fn notify_teleport(&mut self) {
+        self.cam_initialized = false;
+        self.cam_shake = 0.0;
+        self.survivor = Gait::default();
+        self.cutaway.clear();
     }
 
     pub fn width(&self) -> usize {
@@ -223,7 +230,7 @@ impl Renderer {
             self.monster_tracks.clear();
             self.fallen.clear();
             self.vfx = VfxState::new();
-            self.cutaway = [0.0; 8];
+            self.cutaway.clear();
             self.last_render_ms = None;
         }
 
@@ -349,7 +356,9 @@ impl Renderer {
         };
 
         let target_floor = player_state.elevation;
-        let should_snap = !self.cam_initialized || self.cam_anchor.distance(player.position) > 6.0;
+        let should_snap = !self.cam_initialized
+            || self.cam_anchor.distance(player.position) > 6.0
+            || (target_floor - self.cam_floor).abs() > 1.5;
 
         if should_snap {
             self.cam_anchor = player.position;
@@ -423,10 +432,14 @@ impl Renderer {
         // 3. Populate local viewport 48×48 light grids (zero heap allocs!).
         let center_x = focus.x.round() as i32;
         let center_y = focus.y.round() as i32;
-        let on_f1 = player.floor == 1;
-        let f0_dim = if on_f1 { F0_LOWER_DIM_256 } else { 256 };
+        let af = player.floor.min(2) as usize;
+        let f0_dim = match af {
+            0 => 256,
+            1 => F0_LOWER_DIM_256,
+            _ => 138,
+        };
 
-        self.light_f0.populate(
+        self.light_floors[0].populate(
             game,
             center_x,
             center_y,
@@ -437,12 +450,25 @@ impl Renderer {
             active_flashes,
             f0_dim,
         );
-        if on_f1 {
-            self.light_f1.populate(
+        if af >= 1 {
+            if af == 2 {
+                self.light_floors[1].populate(
+                    game,
+                    center_x,
+                    center_y,
+                    1,
+                    player.position,
+                    player.floor,
+                    &static_lights,
+                    active_flashes,
+                    178,
+                );
+            }
+            self.light_floors[af].populate(
                 game,
                 center_x,
                 center_y,
-                1,
+                af as Floor,
                 player.position,
                 player.floor,
                 &static_lights,
@@ -453,44 +479,47 @@ impl Renderer {
 
         // 4. Update per-building smooth cutaway openness (~160 ms fade).
         let p_tile = player.position.tile();
-        let player_bid = if on_f1 {
-            self.light_f1
-                .tile_info(p_tile.x, p_tile.y)
-                .map_or(0, |t| t.building_id)
-        } else {
-            self.light_f0
-                .tile_info(p_tile.x, p_tile.y)
-                .map_or(0, |t| t.building_id)
-        };
+        let player_bid = self.light_floors[af]
+            .tile_info(p_tile.x, p_tile.y)
+            .map_or(0, |t| t.building_id);
 
-        for b in game.buildings() {
-            let bid = b.id as usize;
-            if bid >= self.cutaway.len() {
-                continue;
-            }
-            let wants = if on_f1 {
+        let buildings = game.buildings();
+        for b in buildings {
+            let wants = if af >= 1 {
                 player_bid == b.id
             } else {
-                building_wants_cutaway(b, player.position, player_bid, &self.light_f0)
+                building_wants_cutaway(b, player.position, player_bid, &self.light_floors[0])
             };
             let target = if wants { 1.0 } else { 0.0 };
             if should_snap {
-                self.cutaway[bid] = target;
-            } else if dt > 0.0 {
-                let step = dt / CUTAWAY_FADE_S;
-                if self.cutaway[bid] < target {
-                    self.cutaway[bid] = (self.cutaway[bid] + step).min(target);
+                if wants {
+                    self.cutaway.insert(b.id, 1.0);
                 } else {
-                    self.cutaway[bid] = (self.cutaway[bid] - step).max(target);
+                    self.cutaway.remove(&b.id);
+                }
+            } else if dt > 0.0 && (wants || self.cutaway.contains_key(&b.id)) {
+                let entry = self.cutaway.entry(b.id).or_insert(0.0);
+                let step = dt / CUTAWAY_FADE_S;
+                if *entry < target {
+                    *entry = (*entry + step).min(target);
+                } else {
+                    *entry = (*entry - step).max(target);
+                }
+                if *entry <= 0.0 && !wants {
+                    self.cutaway.remove(&b.id);
                 }
             }
         }
+        if self.cutaway.len() > 128 {
+            self.cutaway
+                .retain(|bid, v| *v > 0.0 && buildings.iter().any(|b| b.id == *bid));
+        }
 
-        // Collect F1 Shooters once for closed upper-story window peeking.
-        self.f1_shooters.clear();
+        // Collect upper-floor Shooters once for closed upper-story window peeking.
+        self.upper_shooters.clear();
         for m in &monsters {
-            if m.kind == MonsterKind::Shooter && m.floor == 1 {
-                self.f1_shooters.push((m.pos, m.variant));
+            if m.kind == MonsterKind::Shooter && m.floor > 0 {
+                self.upper_shooters.push((m.pos, m.floor, m.variant));
             }
         }
 
@@ -515,49 +544,52 @@ impl Renderer {
         let mut c = Canvas::new(self.width, self.height, &mut self.pixels);
         c.clear([22, 28, 36, 255]);
 
-        if !on_f1 {
+        if af == 0 {
             // === FLOOR 0 RENDERING (Outdoors & Inside Building F0) ===
             draw_ground_pass(
                 &mut c,
                 game,
                 &proj,
-                &self.light_f0,
+                &self.light_floors[0],
                 bounds,
                 false,
                 &self.cutaway,
+                elapsed_ms,
             );
             self.vfx.draw_decals(&mut c, &proj, 0, 256);
             self.vfx.draw_ground_telegraphs(
                 &mut c,
                 &proj,
                 &monsters,
-                &self.light_f0,
+                &self.light_floors[0],
                 0,
                 elapsed_ms,
             );
 
             // Build unified F0 depth-sorted draw queue.
             self.draw_items.clear();
-            let buildings = game.buildings();
             for y in bounds.2..=bounds.3 {
                 for x in bounds.0..=bounds.1 {
-                    let Some(info) = self.light_f0.tile_info(x, y) else {
+                    let Some(info) = self.light_floors[0].tile_info(x, y) else {
                         continue;
                     };
+                    let depth = (x + y) as f32;
+                    if info.surface == Surface::Mountain {
+                        self.draw_items.push(DrawItem {
+                            depth,
+                            bias: 4,
+                            kind: DrawItemKind::Mountain { x, y },
+                        });
+                    }
                     if info.kind == TileKind::Empty {
                         continue;
                     }
                     let bid = info.building_id;
-                    let stipple = if bid > 0 && (bid as usize) < self.cutaway.len() {
-                        cutaway_to_stipple(self.cutaway[bid as usize])
-                    } else {
-                        0
-                    };
-                    let depth = (x + y) as f32;
+                    let stipple = building_stipple(&self.cutaway, bid);
 
                     if bid > 0 && stipple == 4 {
-                        // Fully closed building: emit exterior perimeter 2-story columns only.
-                        if is_building_perimeter(game, bid, x, y) {
+                        // Fully closed building: emit exterior perimeter multi-story columns only.
+                        if is_building_perimeter(info, bid) {
                             self.draw_items.push(DrawItem {
                                 depth,
                                 bias: 4,
@@ -567,7 +599,7 @@ impl Renderer {
                                     floor: 0,
                                     closed_building: Some(bid),
                                     stipple: 4,
-                                    f0_support_only: false,
+                                    support_floors: 0,
                                 },
                             });
                         }
@@ -583,7 +615,7 @@ impl Renderer {
                                 floor: 0,
                                 closed_building: None,
                                 stipple: 4,
-                                f0_support_only: false,
+                                support_floors: 0,
                             },
                         });
                         if matches!(info.kind, TileKind::Door { open: true, .. }) {
@@ -598,8 +630,8 @@ impl Renderer {
                                 },
                             });
                         }
-                        // ...plus dissolving 2-story exterior facade overlay if mid-transition!
-                        if bid > 0 && stipple > 0 && is_building_perimeter(game, bid, x, y) {
+                        // ...plus dissolving multi-story exterior facade overlay if mid-transition!
+                        if bid > 0 && stipple > 0 && is_building_perimeter(info, bid) {
                             self.draw_items.push(DrawItem {
                                 depth: depth + 0.04,
                                 bias: 4,
@@ -609,7 +641,7 @@ impl Renderer {
                                     floor: 0,
                                     closed_building: Some(bid),
                                     stipple,
-                                    f0_support_only: false,
+                                    support_floors: 0,
                                 },
                             });
                         }
@@ -619,22 +651,16 @@ impl Renderer {
 
             // Closed / dissolving building roofs.
             for (bi, b) in buildings.iter().enumerate() {
-                let bid = b.id as usize;
-                let stipple = if bid < self.cutaway.len() {
-                    cutaway_to_stipple(self.cutaway[bid])
-                } else {
-                    4
-                };
+                let stipple = building_stipple(&self.cutaway, b.id);
                 if stipple > 0 {
-                    let roof_depth = (b.x + b.width - 1 + b.y + b.height - 1) as f32 + 0.08;
-                    self.draw_items.push(DrawItem {
-                        depth: roof_depth,
-                        bias: 5,
-                        kind: DrawItemKind::Roof {
-                            building_idx: bi,
-                            stipple,
-                        },
-                    });
+                    emit_building_roof(
+                        &mut self.draw_items,
+                        &self.light_floors[0],
+                        bounds,
+                        bi,
+                        b,
+                        stipple,
+                    );
                 }
             }
 
@@ -643,14 +669,11 @@ impl Renderer {
                 if cache.pos.floor != 0 {
                     continue;
                 }
-                if let Some(ti) = self.light_f0.tile_info(cache.pos.x, cache.pos.y) {
+                if let Some(ti) = self.light_floors[0].tile_info(cache.pos.x, cache.pos.y) {
                     if ti.visibility == TileVisibility::Hidden {
                         continue;
                     }
-                    if ti.building_id > 0
-                        && (ti.building_id as usize) < self.cutaway.len()
-                        && cutaway_to_stipple(self.cutaway[ti.building_id as usize]) == 4
-                    {
+                    if ti.building_id > 0 && building_stipple(&self.cutaway, ti.building_id) == 4 {
                         continue;
                     }
                 }
@@ -675,17 +698,15 @@ impl Renderer {
                 if m.floor != 0 {
                     continue;
                 }
-                let cell = self.light_f0.sample_light(m.pos);
+                let cell = self.light_floors[0].sample_light(m.pos);
                 if cell.vis != TileVisibility::Visible {
                     continue;
                 }
-                if let Some(ti) = self
-                    .light_f0
-                    .tile_info(m.pos.x.round() as i32, m.pos.y.round() as i32)
+                if let Some(ti) =
+                    self.light_floors[0].tile_info(m.pos.x.round() as i32, m.pos.y.round() as i32)
                     && ti.indoor
                     && ti.building_id > 0
-                    && (ti.building_id as usize) < self.cutaway.len()
-                    && cutaway_to_stipple(self.cutaway[ti.building_id as usize]) == 4
+                    && building_stipple(&self.cutaway, ti.building_id) == 4
                 {
                     continue;
                 }
@@ -705,7 +726,7 @@ impl Renderer {
                 if f.floor != 0 {
                     continue;
                 }
-                if self.light_f0.sample_light(f.at).vis == TileVisibility::Hidden {
+                if self.light_floors[0].sample_light(f.at).vis == TileVisibility::Hidden {
                     continue;
                 }
                 self.draw_items.push(DrawItem {
@@ -729,8 +750,9 @@ impl Renderer {
                 &mut c,
                 game,
                 &proj,
-                &self.light_f0,
-                None,
+                &self.light_floors,
+                0,
+                0,
                 &self.draw_items,
                 &caches,
                 &monsters,
@@ -742,11 +764,11 @@ impl Renderer {
                 recoil,
                 swing_progress,
                 hurt,
-                &self.f1_shooters,
+                &self.upper_shooters,
                 elapsed_ms,
             );
 
-            self.light_f0.draw_light_pools(
+            self.light_floors[0].draw_light_pools(
                 &mut c,
                 &proj,
                 &static_lights,
@@ -759,36 +781,43 @@ impl Renderer {
                 &mut c,
                 &proj,
                 &monsters,
-                &self.light_f0,
-                None,
+                &self.light_floors,
+                0,
                 elapsed_ms,
             );
         } else {
-            // === FLOOR 1 RENDERING (Dimmed F0 Street Below + Elevated F1 Cutaway Deck) ===
-            // Pass 1: Dimmed (0.62x) outdoor F0 street, streetlights, neighboring houses,
-            // outdoor F0 monsters below, and the player's building F0 support walls!
+            // === FLOOR 1 / FLOOR 2 RENDERING (Dimmed Lower World + Elevated Active Cutaway Deck) ===
+            // Pass 1: Dimmed outdoor F0 street/terrain, streetlights, neighboring closed buildings,
+            // outdoor F0 monsters below, and the active building's lower exterior support walls!
             draw_ground_pass(
                 &mut c,
                 game,
                 &proj,
-                &self.light_f0,
+                &self.light_floors[0],
                 bounds,
                 true,
                 &self.cutaway,
+                elapsed_ms,
             );
-            self.vfx.draw_decals(&mut c, &proj, 0, F0_LOWER_DIM_256);
+            self.vfx.draw_decals(&mut c, &proj, 0, f0_dim);
 
             self.draw_items.clear();
-            let buildings = game.buildings();
             for y in bounds.2..=bounds.3 {
                 for x in bounds.0..=bounds.1 {
-                    let Some(info) = self.light_f0.tile_info(x, y) else {
+                    let Some(info) = self.light_floors[0].tile_info(x, y) else {
                         continue;
                     };
+                    let depth = (x + y) as f32;
+                    if info.surface == Surface::Mountain {
+                        self.draw_items.push(DrawItem {
+                            depth,
+                            bias: 4,
+                            kind: DrawItemKind::Mountain { x, y },
+                        });
+                    }
                     if info.kind == TileKind::Empty {
                         continue;
                     }
-                    let depth = (x + y) as f32;
                     if info.building_id == 0 {
                         // Outdoor F0 props, trees, streetlights, fences.
                         self.draw_items.push(DrawItem {
@@ -800,12 +829,12 @@ impl Renderer {
                                 floor: 0,
                                 closed_building: None,
                                 stipple: 4,
-                                f0_support_only: false,
+                                support_floors: 0,
                             },
                         });
                     } else if info.building_id == player_bid {
-                        // Active building's F0 exterior support walls (0..-34 px).
-                        if is_building_perimeter(game, player_bid, x, y) {
+                        // Active building's lower exterior support walls (0..34 px on 2F, 0..68 px on 3F).
+                        if is_building_perimeter(info, player_bid) {
                             self.draw_items.push(DrawItem {
                                 depth,
                                 bias: 4,
@@ -815,12 +844,12 @@ impl Renderer {
                                     floor: 0,
                                     closed_building: None,
                                     stipple: 4,
-                                    f0_support_only: true,
+                                    support_floors: af as u8,
                                 },
                             });
                         }
-                    } else if is_building_perimeter(game, info.building_id, x, y) {
-                        // Neighboring buildings remain closed 2-story landmarks below!
+                    } else if is_building_perimeter(info, info.building_id) {
+                        // Neighboring buildings remain closed landmarks below!
                         self.draw_items.push(DrawItem {
                             depth,
                             bias: 4,
@@ -830,7 +859,7 @@ impl Renderer {
                                 floor: 0,
                                 closed_building: Some(info.building_id),
                                 stipple: 4,
-                                f0_support_only: false,
+                                support_floors: 0,
                             },
                         });
                     }
@@ -838,15 +867,14 @@ impl Renderer {
             }
             for (bi, b) in buildings.iter().enumerate() {
                 if b.id != player_bid {
-                    let roof_depth = (b.x + b.width - 1 + b.y + b.height - 1) as f32 + 0.08;
-                    self.draw_items.push(DrawItem {
-                        depth: roof_depth,
-                        bias: 5,
-                        kind: DrawItemKind::Roof {
-                            building_idx: bi,
-                            stipple: 4,
-                        },
-                    });
+                    emit_building_roof(
+                        &mut self.draw_items,
+                        &self.light_floors[0],
+                        bounds,
+                        bi,
+                        b,
+                        4,
+                    );
                 }
             }
             // Outdoor F0 monsters visible from upper windows!
@@ -856,7 +884,7 @@ impl Renderer {
                 }
                 let tx = m.pos.x.round() as i32;
                 let ty = m.pos.y.round() as i32;
-                if let Some(ti) = self.light_f0.tile_info(tx, ty) {
+                if let Some(ti) = self.light_floors[0].tile_info(tx, ty) {
                     if ti.indoor || ti.visibility != TileVisibility::Visible {
                         continue;
                     }
@@ -877,7 +905,7 @@ impl Renderer {
                 }
                 let tx = f.at.x.round() as i32;
                 let ty = f.at.y.round() as i32;
-                if let Some(ti) = self.light_f0.tile_info(tx, ty)
+                if let Some(ti) = self.light_floors[0].tile_info(tx, ty)
                     && !ti.indoor
                     && ti.visibility != TileVisibility::Hidden
                 {
@@ -902,8 +930,9 @@ impl Renderer {
                 &mut c,
                 game,
                 &proj,
-                &self.light_f0,
-                Some(&self.light_f1),
+                &self.light_floors,
+                0,
+                af as Floor,
                 &self.draw_items,
                 &caches,
                 &monsters,
@@ -915,36 +944,46 @@ impl Renderer {
                 recoil,
                 swing_progress,
                 hurt,
-                &self.f1_shooters,
+                &self.upper_shooters,
                 elapsed_ms,
             );
-            self.light_f0.draw_light_pools(
+            self.light_floors[0].draw_light_pools(
                 &mut c,
                 &proj,
                 &static_lights,
                 active_flashes,
                 0,
                 elapsed_ms,
-                0.55,
+                if af == 1 { 0.55 } else { 0.45 },
             );
 
-            // Pass 2: Elevated F1 floor deck at z = 1.0 (`-34 px`) with 4 px joist fascia + stairwell cutout!
-            draw_f1_deck_pass(&mut c, game, &proj, &self.light_f1, player_bid, bounds);
-            self.vfx.draw_decals(&mut c, &proj, 1, 256);
+            // Pass 2: Elevated active floor deck at `z = af as f32` with 4 px joist fascia + stairwell cutout!
+            draw_upper_deck_pass(
+                &mut c,
+                game,
+                &proj,
+                &self.light_floors[af],
+                af as Floor,
+                player_bid,
+                bounds,
+                elapsed_ms,
+            );
+            self.vfx.draw_decals(&mut c, &proj, af as Floor, 256);
             self.vfx.draw_ground_telegraphs(
                 &mut c,
                 &proj,
                 &monsters,
-                &self.light_f1,
-                1,
+                &self.light_floors[af],
+                af as Floor,
                 elapsed_ms,
             );
 
-            // Pass 3: Unified F1 depth-sorted walls, windows, furniture, caches, and F1 actors!
+            // Pass 3: Unified active floor `af` depth-sorted walls, windows, furniture, caches, and actors!
             self.draw_items.clear();
+            let active_fl = af as Floor;
             for y in bounds.2..=bounds.3 {
                 for x in bounds.0..=bounds.1 {
-                    let Some(info) = self.light_f1.tile_info(x, y) else {
+                    let Some(info) = self.light_floors[af].tile_info(x, y) else {
                         continue;
                     };
                     if info.surface == Surface::Air || info.kind == TileKind::Empty {
@@ -960,10 +999,10 @@ impl Renderer {
                         kind: DrawItemKind::Tile {
                             x,
                             y,
-                            floor: 1,
+                            floor: active_fl,
                             closed_building: None,
                             stipple: 4,
-                            f0_support_only: false,
+                            support_floors: 0,
                         },
                     });
                     if matches!(info.kind, TileKind::Door { open: true, .. }) {
@@ -973,7 +1012,7 @@ impl Renderer {
                             kind: DrawItemKind::DoorJambFront {
                                 x,
                                 y,
-                                floor: 1,
+                                floor: active_fl,
                                 horizontal: info.orientation != WallOrientation::AlongY,
                             },
                         });
@@ -981,10 +1020,10 @@ impl Renderer {
                 }
             }
             for (idx, cache) in caches.iter().enumerate() {
-                if cache.pos.floor != 1 {
+                if cache.pos.floor != active_fl {
                     continue;
                 }
-                if let Some(ti) = self.light_f1.tile_info(cache.pos.x, cache.pos.y) {
+                if let Some(ti) = self.light_floors[af].tile_info(cache.pos.x, cache.pos.y) {
                     if ti.visibility == TileVisibility::Hidden
                         || (player_bid != 0 && ti.building_id != player_bid)
                     {
@@ -1005,10 +1044,10 @@ impl Renderer {
                 },
             });
             for (idx, m) in monsters.iter().enumerate() {
-                if m.floor != 1 {
+                if m.floor != active_fl {
                     continue;
                 }
-                if self.light_f1.sample_light(m.pos).vis != TileVisibility::Visible {
+                if self.light_floors[af].sample_light(m.pos).vis != TileVisibility::Visible {
                     continue;
                 }
                 self.draw_items.push(DrawItem {
@@ -1022,10 +1061,10 @@ impl Renderer {
                 });
             }
             for (idx, f) in self.fallen.iter().enumerate() {
-                if f.floor != 1 {
+                if f.floor != active_fl {
                     continue;
                 }
-                if self.light_f1.sample_light(f.at).vis == TileVisibility::Hidden {
+                if self.light_floors[af].sample_light(f.at).vis == TileVisibility::Hidden {
                     continue;
                 }
                 self.draw_items.push(DrawItem {
@@ -1033,7 +1072,7 @@ impl Renderer {
                     bias: 0,
                     kind: DrawItemKind::Fallen {
                         idx,
-                        z: 1.0,
+                        z: active_fl as f32,
                         lower_dim: false,
                     },
                 });
@@ -1048,8 +1087,9 @@ impl Renderer {
                 &mut c,
                 game,
                 &proj,
-                &self.light_f1,
-                None,
+                &self.light_floors,
+                af,
+                active_fl,
                 &self.draw_items,
                 &caches,
                 &monsters,
@@ -1061,15 +1101,15 @@ impl Renderer {
                 recoil,
                 swing_progress,
                 hurt,
-                &self.f1_shooters,
+                &self.upper_shooters,
                 elapsed_ms,
             );
-            self.light_f1.draw_light_pools(
+            self.light_floors[af].draw_light_pools(
                 &mut c,
                 &proj,
                 &static_lights,
                 active_flashes,
-                1,
+                active_fl,
                 elapsed_ms,
                 1.0,
             );
@@ -1077,8 +1117,8 @@ impl Renderer {
                 &mut c,
                 &proj,
                 &monsters,
-                &self.light_f0,
-                Some(&self.light_f1),
+                &self.light_floors,
+                active_fl,
                 elapsed_ms,
             );
         }
@@ -1125,7 +1165,7 @@ impl Renderer {
 
 fn tile_draw_bias(kind: TileKind) -> u8 {
     match kind {
-        TileKind::Rubble | TileKind::StairsUp | TileKind::StairsDown => 0,
+        TileKind::Rubble | TileKind::StairsUp | TileKind::StairsDown | TileKind::StairsBoth => 0,
         TileKind::Prop(zombiebox_core::PropKind::BirchTree | zombiebox_core::PropKind::Shed)
         | TileKind::Streetlight
         | TileKind::ExteriorWall
@@ -1138,21 +1178,61 @@ fn tile_draw_bias(kind: TileKind) -> u8 {
     }
 }
 
-fn is_building_perimeter(game: &ActionGame, bid: u8, x: i32, y: i32) -> bool {
-    game.buildings().iter().any(|b| {
-        b.id == bid
-            && x >= b.x
-            && x < b.x + b.width
-            && y >= b.y
-            && y < b.y + b.height
-            && (x == b.x || x == b.x + b.width - 1 || y == b.y || y == b.y + b.height - 1)
-    })
+#[inline]
+fn is_building_perimeter(info: TileRenderInfo, bid: BuildingId) -> bool {
+    bid > 0 && !info.indoor && info.building_id == bid
+}
+
+fn emit_building_roof(
+    draw_items: &mut Vec<DrawItem>,
+    grid_f0: &LightGrid,
+    bounds: (i32, i32, i32, i32),
+    building_idx: usize,
+    b: &zombiebox_core::BuildingInfo,
+    stipple: u8,
+) {
+    if b.style.has_pitched_roof() {
+        let roof_depth = (b.x + b.width - 1 + b.y + b.height - 1) as f32 + 0.08;
+        draw_items.push(DrawItem {
+            depth: roof_depth,
+            bias: 5,
+            kind: DrawItemKind::Roof {
+                building_idx,
+                stipple,
+            },
+        });
+    } else {
+        let min_x = bounds.0.max(b.x);
+        let max_x = bounds.1.min(b.x + b.width - 1);
+        let min_y = bounds.2.max(b.y);
+        let max_y = bounds.3.min(b.y + b.height - 1);
+        for ry in min_y..=max_y {
+            for rx in min_x..=max_x {
+                if grid_f0
+                    .tile_info(rx, ry)
+                    .is_some_and(|ti| ti.building_id == b.id)
+                {
+                    draw_items.push(DrawItem {
+                        depth: (rx + ry) as f32 + 0.06,
+                        bias: 5,
+                        kind: DrawItemKind::RoofTile {
+                            x: rx,
+                            y: ry,
+                            bid: b.id,
+                            floors: b.floors,
+                            stipple,
+                        },
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn building_wants_cutaway(
     b: &zombiebox_core::BuildingInfo,
     p: Vec2,
-    player_bid: u8,
+    player_bid: BuildingId,
     grid: &LightGrid,
 ) -> bool {
     if player_bid == b.id {
@@ -1204,8 +1284,9 @@ fn draw_sorted_items(
     c: &mut Canvas<'_>,
     game: &ActionGame,
     proj: &Projector,
-    grid: &LightGrid,
-    grid_f1_opt: Option<&LightGrid>,
+    light_floors: &[LightGrid; 3],
+    grid_idx: usize,
+    max_populated_floor: Floor,
     items: &[DrawItem],
     caches: &[zombiebox_core::CacheView],
     monsters: &[zombiebox_core::MonsterView],
@@ -1217,12 +1298,13 @@ fn draw_sorted_items(
     recoil: f32,
     swing_progress: Option<f32>,
     hurt: f32,
-    f1_shooters: &[(Vec2, u8)],
+    upper_shooters: &[(Vec2, Floor, u8)],
     elapsed_ms: u64,
 ) {
     let w = c.width() as f32;
     let h = c.height() as f32;
     let buildings = game.buildings();
+    let grid = &light_floors[grid_idx];
 
     for item in items {
         match item.kind {
@@ -1232,24 +1314,25 @@ fn draw_sorted_items(
                 floor,
                 closed_building,
                 stipple,
-                f0_support_only,
+                support_floors,
             } => {
                 draw_tile_feature(
                     c,
                     game,
                     proj,
-                    grid,
-                    grid_f1_opt,
+                    light_floors,
+                    grid_idx,
+                    max_populated_floor,
                     x,
                     y,
                     floor,
                     closed_building,
                     stipple,
-                    f0_support_only,
+                    support_floors,
                     player_state.pose.position,
                     player_state.near_interact_tile,
                     player_state.interact_prompt,
-                    f1_shooters,
+                    upper_shooters,
                     elapsed_ms,
                 );
             }
@@ -1268,6 +1351,18 @@ fn draw_sorted_items(
                 if let Some(b) = buildings.get(building_idx) {
                     draw_building_roof(c, game, proj, grid, b, stipple);
                 }
+            }
+            DrawItemKind::RoofTile {
+                x,
+                y,
+                bid,
+                floors,
+                stipple,
+            } => {
+                draw_flat_roof_tile(c, game, proj, grid, x, y, bid, floors, stipple);
+            }
+            DrawItemKind::Mountain { x, y } => {
+                draw_mountain_crag(c, proj, grid, x, y);
             }
             DrawItemKind::Cache { idx } => {
                 let cache = &caches[idx];
@@ -1898,5 +1993,117 @@ mod tests {
         // Verify tile helper compiles and F1 tiles render cleanly if reached.
         let origin = game.block_bounds().unwrap().0;
         let _ = Tile3D::new(origin.x + 12, origin.y + 21, 1);
+    }
+
+    fn assert_non_uniform_frame(frame: &[u8]) {
+        assert!(!frame.is_empty());
+        let first = &frame[..4];
+        assert!(
+            frame.chunks_exact(4).any(|px| px != first),
+            "expected non-uniform rendered framebuffer"
+        );
+    }
+
+    #[test]
+    fn renders_county_spawn_3f_apartment_and_terrain_without_panics() {
+        let mut game = ActionGame::county(42);
+        let mut r = Renderer::new(640, 360);
+
+        // 1. County spawn (F0).
+        let spawn_frame = r.render(&game, 0);
+        assert_eq!(spawn_frame.len(), 640 * 360 * 4);
+        assert_non_uniform_frame(spawn_frame);
+
+        // Locate City (Downtown), Bridge/River, Hospital, Forest/Mountain tiles on the 512x512 world map.
+        let mut city_pos = None;
+        let mut bridge_pos = None;
+        let mut hospital_pos = None;
+        let mut mountain_or_forest = None;
+        for y in (0..512).step_by(2) {
+            for x in (0..512).step_by(2) {
+                let p = zombiebox_core::Position::new(x, y);
+                if let Some(tile) = game.world().tile_at(p) {
+                    let walkable_ground = !matches!(
+                        tile.ground,
+                        zombiebox_core::Ground::River
+                            | zombiebox_core::Ground::Lake
+                            | zombiebox_core::Ground::Mountain
+                    );
+                    if city_pos.is_none()
+                        && tile.district == zombiebox_core::District::City
+                        && walkable_ground
+                        && tile.feature == zombiebox_core::Feature::Empty
+                    {
+                        city_pos = Some(Tile3D::new(x, y, 0));
+                    }
+                    if bridge_pos.is_none() && tile.ground == zombiebox_core::Ground::Bridge {
+                        bridge_pos = Some(Tile3D::new(x, y, 0));
+                    }
+                    if hospital_pos.is_none()
+                        && tile.district == zombiebox_core::District::Hospital
+                        && walkable_ground
+                        && tile.feature == zombiebox_core::Feature::Empty
+                    {
+                        hospital_pos = Some(Tile3D::new(x, y, 0));
+                    }
+                    if mountain_or_forest.is_none()
+                        && tile.ground == zombiebox_core::Ground::Trail
+                        && tile.feature == zombiebox_core::Feature::Empty
+                    {
+                        mountain_or_forest = Some(Tile3D::new(x, y, 0));
+                    }
+                }
+            }
+        }
+
+        // 2. Teleport to Downtown, find a 3F Apartment (floors >= 3), teleport to floor 2 and render!
+        let city_anchor = city_pos.expect("expected City district tile in county(42)");
+        let _ = game.teleport(city_anchor);
+        r.notify_teleport();
+        game.step(ActionInput::default());
+        let mut found_3f = false;
+        'find_3f: for b in game.buildings().to_vec() {
+            if b.floors >= 3 {
+                for y in b.y..b.y + b.height {
+                    for x in b.x..b.x + b.width {
+                        if game
+                            .tile_render_info(zombiebox_core::Position::new(x, y), 2)
+                            .is_some_and(|ti| {
+                                ti.indoor
+                                    && ti.surface != Surface::Air
+                                    && ti.kind == TileKind::Empty
+                            })
+                            && game.teleport(Tile3D::new(x, y, 2)).is_some()
+                        {
+                            r.notify_teleport();
+                            game.step(ActionInput::default());
+                            assert_eq!(game.player_pose().floor, 2);
+                            let f2_frame = r.render(&game, 64);
+                            assert_non_uniform_frame(f2_frame);
+                            found_3f = true;
+                            break 'find_3f;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found_3f,
+            "expected 3F Downtown Apartment render in county(42)"
+        );
+
+        // 3. Teleport near River/Bridge, Hospital, and Trail/Forest/Mountain without panics.
+        for (i, spot) in [bridge_pos, hospital_pos, mountain_or_forest]
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if game.teleport(spot).is_some() {
+                r.notify_teleport();
+                game.step(ActionInput::default());
+                let frame = r.render(&game, 256 + (i as u64) * 128);
+                assert_non_uniform_frame(frame);
+            }
+        }
     }
 }

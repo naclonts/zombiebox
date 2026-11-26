@@ -2,7 +2,7 @@ use std::{mem, slice};
 
 use zombiebox_core::{
     ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionOutcome, FloorTransition,
-    Material, ProjectileKind, Vec2, Weapon,
+    Material, ProjectileKind, Tile3D, Vec2, Weapon,
 };
 use zombiebox_render::{Renderer, screen_vector_to_world};
 
@@ -98,6 +98,17 @@ pub struct ZbActionFrameOutput {
     pub objective_kind: u8,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ZbActionLocation {
+    pub x: i32,
+    pub y: i32,
+    pub floor: u8,
+    pub mode: u8,
+    pub district: u8,
+    pub reserved: u8,
+}
+
 pub struct ZbAction {
     game: ActionGame,
     renderer: Option<Renderer>,
@@ -113,9 +124,9 @@ pub struct ZbAction {
 }
 
 impl ZbAction {
-    fn new(seed: u64) -> Self {
+    fn with_game(game: ActionGame) -> Self {
         Self {
-            game: ActionGame::residential(seed),
+            game,
             renderer: None,
             last_frame: None,
             partial_tick: 0,
@@ -126,6 +137,25 @@ impl ZbAction {
             pending_reload: false,
             pending_heal: false,
             pending_select_weapon: None,
+        }
+    }
+
+    fn new(seed: u64) -> Self {
+        Self::with_game(ActionGame::residential(seed))
+    }
+
+    fn new_county(seed: u64) -> Self {
+        Self::with_game(ActionGame::county(seed))
+    }
+
+    fn location_for(&self, tile: Tile3D) -> ZbActionLocation {
+        ZbActionLocation {
+            x: tile.x,
+            y: tile.y,
+            floor: tile.floor,
+            mode: self.game.mode() as u8,
+            district: self.game.district_code(),
+            reserved: 0,
         }
     }
 
@@ -511,6 +541,11 @@ pub extern "C" fn zb_action_v2_create(seed: u64) -> *mut ZbAction {
     Box::into_raw(Box::new(ZbAction::new(seed)))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn zb_action_v2_create_county(seed: u64) -> *mut ZbAction {
+    Box::into_raw(Box::new(ZbAction::new_county(seed)))
+}
+
 /// # Safety
 /// A non-null run must come from zb_action_v2_create and have no active users.
 #[unsafe(no_mangle)]
@@ -581,6 +616,53 @@ pub unsafe extern "C" fn zb_action_v2_frame(
     true
 }
 
+/// # Safety
+/// A non-null run must be live and readable throughout the call. A non-null
+/// output pointer must address aligned, writable storage for one `ZbActionLocation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zb_action_v2_location(
+    run: *const ZbAction,
+    out: *mut ZbActionLocation,
+) -> bool {
+    let Some(run) = (unsafe { run.as_ref() }) else {
+        return false;
+    };
+    if out.is_null() {
+        return false;
+    }
+    let loc = run.location_for(run.game.player_tile());
+    unsafe { out.write(loc) };
+    true
+}
+
+/// # Safety
+/// A non-null run must be live and exclusively accessible for this call.
+/// If `out_resolved` is non-null, it must address aligned, writable storage
+/// for one `ZbActionLocation`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zb_action_v2_teleport(
+    run: *mut ZbAction,
+    x: i32,
+    y: i32,
+    floor: u8,
+    out_resolved: *mut ZbActionLocation,
+) -> bool {
+    let Some(run) = (unsafe { run.as_mut() }) else {
+        return false;
+    };
+    let Some(dest) = run.game.teleport(Tile3D::new(x, y, floor)) else {
+        return false;
+    };
+    run.reset_clock_and_latches();
+    if let Some(renderer) = &mut run.renderer {
+        renderer.notify_teleport();
+    }
+    if !out_resolved.is_null() {
+        unsafe { out_resolved.write(run.location_for(dest)) };
+    }
+    true
+}
+
 fn stick(x: f32, y: f32) -> Vec2 {
     if !x.is_finite() || !y.is_finite() {
         return Vec2::ZERO;
@@ -598,7 +680,7 @@ fn stick(x: f32, y: f32) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zombiebox_core::{CacheLoot, MonsterId, MonsterKind, ProjectileId, Tile3D};
+    use zombiebox_core::{CacheLoot, MonsterId, MonsterKind, ProjectileId};
 
     #[test]
     fn parse_select_weapon_validates_bounds() {

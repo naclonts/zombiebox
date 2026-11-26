@@ -4,6 +4,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -19,13 +20,60 @@ import GameSurface, {
 
 const DEFAULT_MAX_HEALTH = 6;
 const DEFAULT_ZOMBIES_TOTAL = 12;
-const SEED = '42';
+const DEFAULT_SEED = '42';
+const MAX_U64 = BigInt('18446744073709551615');
 
 type Hud = Parameters<NonNullable<NativeProps['onHudChanged']>>[0]['nativeEvent'];
 type Menu = 'start' | 'paused' | 'won' | 'dead';
+type ScenarioId = 'county' | 'birch';
 type ControlSchemeId = 'tap_stick' | 'outer_ring' | 'release_fire';
 
 const VOLUME_STEPS = [0, 25, 50, 75, 100] as const;
+
+const DISTRICT_NAMES: Readonly<Record<number, string>> = {
+  0: 'BIRCH STREET',
+  1: 'RESIDENTIAL',
+  2: 'DOWNTOWN',
+  3: 'HOSPITAL',
+  4: 'POLICE PRECINCT',
+  5: 'ARMY BASE',
+  6: 'COUNTRYSIDE',
+  7: 'WOODS',
+};
+
+function sanitizeSeed(raw: string): string | null {
+  const s = raw.trim();
+  if (!/^\d+$/.test(s)) return null;
+  const value = BigInt(s);
+  if (value > MAX_U64) return null;
+  return value.toString();
+}
+
+function getInteractLabel(interactKind: number, floor: number): string | null {
+  switch (interactKind) {
+    case 1:
+      return 'SEARCH';
+    case 2:
+      return 'OPEN DOOR';
+    case 3:
+      return 'CLOSE DOOR';
+    case 4:
+      return 'CLIMB';
+    case 5:
+      return `DROP ${Math.max(1, floor)}F`;
+    case 6:
+      return `STAIRS ${floor + 2}F`;
+    case 7:
+      return `STAIRS ${Math.max(1, floor)}F`;
+    default:
+      return null;
+  }
+}
+
+const SCENARIO_OPTIONS: ReadonlyArray<{id: ScenarioId; label: string}> = [
+  {id: 'county', label: 'COUNTY'},
+  {id: 'birch', label: 'BIRCH STREET'},
+];
 
 const SCHEME_OPTIONS: ReadonlyArray<{
   id: ControlSchemeId;
@@ -60,37 +108,55 @@ const WEAPON_SLOTS: ReadonlyArray<{
   {slot: 3, short: 'RKT', title: 'ROCKET'},
 ];
 
-const INTERACT_LABELS: Readonly<Record<number, string>> = {
-  1: 'SEARCH',
-  2: 'OPEN DOOR',
-  3: 'CLOSE DOOR',
-  4: 'CLIMB',
-  5: 'DROP 1F',
-  6: 'STAIRS 2F',
-  7: 'STAIRS 1F',
-};
-
-const menuContent = {
-  start: {
-    title: 'Zombiebox',
-    description:
-      'Scavenge the Birch Street houses for tools, firearms, and medkits, then clear the block.',
-    action: 'Enter the block',
+const menuContentByScenario: Record<
+  ScenarioId,
+  Record<Menu, {title: string; description: string | null; action: string}>
+> = {
+  county: {
+    start: {
+      title: 'Zombiebox',
+      description:
+        'Explore a seed-driven 512×512 county: scavenge residential neighborhoods, downtown, hospital, precinct, and army base.',
+      action: 'Enter county',
+    },
+    paused: {
+      title: 'Paused',
+      description: null,
+      action: 'Resume',
+    },
+    won: {
+      title: 'County secured',
+      description: 'Every infected threat in the county is down.',
+      action: 'Play again',
+    },
+    dead: {
+      title: 'Survivor lost',
+      description: 'The infected overwhelmed you in the county.',
+      action: 'Try again',
+    },
   },
-  paused: {
-    title: 'Paused',
-    description: null,
-    action: 'Resume',
-  },
-  won: {
-    title: 'Block cleared',
-    description: 'Birch Street is quiet. Every infected on the block is down.',
-    action: 'Play again',
-  },
-  dead: {
-    title: 'Survivor lost',
-    description: 'The infected overwhelmed you on Birch Street.',
-    action: 'Try again',
+  birch: {
+    start: {
+      title: 'Zombiebox',
+      description:
+        'Scavenge the Birch Street houses for tools, firearms, and medkits, then clear the block.',
+      action: 'Enter the block',
+    },
+    paused: {
+      title: 'Paused',
+      description: null,
+      action: 'Resume',
+    },
+    won: {
+      title: 'Block cleared',
+      description: 'Birch Street is quiet. Every infected on the block is down.',
+      action: 'Play again',
+    },
+    dead: {
+      title: 'Survivor lost',
+      description: 'The infected overwhelmed you on Birch Street.',
+      action: 'Try again',
+    },
   },
 };
 
@@ -98,8 +164,13 @@ function Game() {
   const insets = useSafeAreaInsets();
   const {height, width} = useWindowDimensions();
   const surface = useRef<React.ComponentRef<typeof GameSurface>>(null);
+  const pendingAtlas = useRef(false);
 
   const [run, setRun] = useState(1);
+  const [scenario, setScenario] = useState<ScenarioId>('county');
+  const [seed, setSeed] = useState<string>(DEFAULT_SEED);
+  const [seedInput, setSeedInput] = useState<string>(DEFAULT_SEED);
+  const [runStarted, setRunStarted] = useState<boolean>(false);
   const [menu, setMenu] = useState<Menu | null>('start');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [hud, setHud] = useState<Hud | null>(null);
@@ -117,11 +188,18 @@ function Game() {
   const usableWidth = width - insets.left - insets.right;
   const compact = usableHeight < 340;
   const narrow = usableWidth < 680;
-  const menuWidth = Math.min(392, Math.max(276, Math.floor(width * 0.54)));
+  const menuWidth = Math.min(416, Math.max(284, Math.floor(width * 0.56)));
 
   const playClick = () => {
     if (surface.current) Commands.playUiClick(surface.current);
   };
+
+  useEffect(() => {
+    if (pendingAtlas.current && surface.current) {
+      pendingAtlas.current = false;
+      Commands.openCounty(surface.current);
+    }
+  }, [seed, run]);
 
   useEffect(() => {
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -140,10 +218,71 @@ function Game() {
     return () => back.remove();
   }, [activeMenu, settingsOpen]);
 
+  const applySeedInput = (): string => {
+    const clean = sanitizeSeed(seedInput);
+    if (clean !== null) {
+      setSeedInput(clean);
+      if (clean !== seed) {
+        setHud(null);
+        setSeed(clean);
+        setRun(previous => previous + 1);
+      }
+      return clean;
+    }
+    setSeedInput(seed);
+    return seed;
+  };
+
+  const selectScenario = (next: ScenarioId) => {
+    if (next === scenario) return;
+    playClick();
+    setHud(null);
+    setScenario(next);
+    setRun(previous => previous + 1);
+  };
+
+  const randomizeSeed = () => {
+    playClick();
+    const next = String(Math.floor(Math.random() * 0xffffffff) + 1);
+    setSeedInput(next);
+    if (next !== seed) {
+      setHud(null);
+      setSeed(next);
+      setRun(previous => previous + 1);
+    }
+  };
+
+  const openAtlas = () => {
+    playClick();
+    if (activeMenu === 'start') {
+      const clean = sanitizeSeed(seedInput);
+      if (clean !== null && clean !== seed) {
+        pendingAtlas.current = true;
+        setHud(null);
+        setSeed(clean);
+        setSeedInput(clean);
+        setRun(previous => previous + 1);
+        return;
+      }
+      if (clean === null) setSeedInput(seed);
+    }
+    if (surface.current) Commands.openCounty(surface.current);
+  };
+
+  const startRun = () => {
+    playClick();
+    if (activeMenu === 'start') {
+      applySeedInput();
+      setRunStarted(true);
+    }
+    setMenu(null);
+  };
+
   const restart = () => {
     playClick();
     setHud(null);
     setRun(previous => previous + 1);
+    setRunStarted(true);
     setSettingsOpen(false);
     setMenu(null);
   };
@@ -190,21 +329,26 @@ function Game() {
   const maxHealth = hud?.maxHealth ?? DEFAULT_MAX_HEALTH;
   const health = hud?.health ?? maxHealth;
   const lowHealth = health <= 2;
-  const floorLabel = (hud?.floor ?? 0) > 0 ? '2F' : '1F';
+  const floor = hud?.floor ?? 0;
+  const floorLabel = `${floor + 1}F`;
   const equippedWeapon = hud?.equippedWeapon ?? -1;
   const ownedMask = hud?.ownedWeaponsMask ?? 0;
-  const zombies = hud?.zombies ?? DEFAULT_ZOMBIES_TOTAL;
-  const zombiesTotal = hud?.zombiesTotal ?? DEFAULT_ZOMBIES_TOTAL;
+  const zombies = hud?.zombies ?? (scenario === 'county' ? 0 : DEFAULT_ZOMBIES_TOTAL);
+  const zombiesTotal =
+    hud?.zombiesTotal ?? (scenario === 'county' ? 0 : DEFAULT_ZOMBIES_TOTAL);
   const cachesFound = hud?.cachesFound ?? 0;
   const cachesTotal = hud?.cachesTotal ?? 0;
   const interactKind = hud?.interactKind ?? 0;
-  const interactLabel = INTERACT_LABELS[interactKind] ?? null;
+  const interactLabel = getInteractLabel(interactKind, floor);
   const medkits = hud?.medkits ?? 0;
   const canHeal = !!hud?.canHeal;
   const reloading = !!hud?.reloading;
   const canReload = !!hud?.canReload;
   const lowAmmo = !!hud?.lowAmmo;
   const dangerClose = !!hud?.dangerClose;
+  const district = hud?.district ?? 0;
+  const districtName = DISTRICT_NAMES[district] ?? 'COUNTY';
+  const coordLabel = `${String(hud?.playerX ?? 0).padStart(3, '0')},${String(hud?.playerY ?? 0).padStart(3, '0')}`;
 
   const activeWeaponTitle =
     equippedWeapon >= 0 && equippedWeapon < WEAPON_SLOTS.length
@@ -220,14 +364,26 @@ function Game() {
           ? `RELOAD ${hud?.reloadProgress ?? 0}%`
           : `${hud?.activeMag ?? 0}/${hud?.activeReserve ?? 0}`;
 
+  const objectiveEyebrow = dangerClose
+    ? 'DANGER CLOSE'
+    : scenario === 'county'
+      ? `${districtName} · ${coordLabel}`
+      : 'OBJECTIVE';
+
   const objectiveText =
-    hud?.objectiveKind === 2
-      ? 'Block cleared'
-      : hud?.objectiveKind === 3
+    scenario === 'county'
+      ? hud?.objectiveKind === 3
         ? 'Survivor lost'
-        : hud?.objectiveKind === 1
-          ? `Clear Birch Street (${zombies} left)`
-          : 'Scavenge houses for gear';
+        : hud?.objectiveKind === 0
+          ? 'Scavenge nearby buildings for gear'
+          : 'Explore county & scavenge supplies'
+      : hud?.objectiveKind === 2
+        ? 'Block cleared'
+        : hud?.objectiveKind === 3
+          ? 'Survivor lost'
+          : hud?.objectiveKind === 1
+            ? `Clear Birch Street (${zombies} left)`
+            : 'Scavenge houses for gear';
 
   const activeSchemeInfo =
     SCHEME_OPTIONS.find(item => item.id === controlScheme) ?? SCHEME_OPTIONS[0];
@@ -240,8 +396,14 @@ function Game() {
     return String(hud.rocketMag + hud.rocketReserve);
   };
 
-  const content = activeMenu ? menuContent[activeMenu] : null;
+  const content = activeMenu ? menuContentByScenario[scenario][activeMenu] : null;
   const showGameplayHud = !simPaused;
+  const menuLocationLabel =
+    scenario === 'county'
+      ? activeMenu === 'start'
+        ? `PROCEDURAL COUNTY · SEED ${seed}`
+        : `${districtName} · SEED ${seed}`
+      : 'BIRCH STREET · RESIDENTIAL BLOCK';
 
   return (
     <View style={styles.screen}>
@@ -249,7 +411,9 @@ function Game() {
         ref={surface}
         style={StyleSheet.absoluteFill}
         runId={String(run)}
-        seed={SEED}
+        seed={seed}
+        scenario={scenario}
+        runStarted={runStarted}
         paused={simPaused}
         controlScheme={controlScheme}
         sfxVolumePct={sfxVolumePct}
@@ -257,6 +421,15 @@ function Game() {
         hapticsEnabled={hapticsEnabled}
         aimLookAhead={aimLookAhead}
         onHudChanged={event => setHud(event.nativeEvent)}
+        onAtlasTeleport={event => {
+          const e = event.nativeEvent;
+          setSeed(e.seed);
+          setSeedInput(e.seed);
+          setScenario('county');
+          setRunStarted(true);
+          setSettingsOpen(false);
+          setMenu(null);
+        }}
       />
 
       {showGameplayHud && (
@@ -320,7 +493,7 @@ function Game() {
                     styles.statusLabel,
                     dangerClose && styles.dangerLabel,
                   ]}>
-                  {dangerClose ? 'DANGER CLOSE' : 'OBJECTIVE'}
+                  {objectiveEyebrow}
                 </Text>
                 <Text
                   numberOfLines={1}
@@ -341,14 +514,31 @@ function Game() {
             <View pointerEvents="box-none" style={styles.right}>
               <View
                 accessible
-                accessibilityLabel={`${zombies} of ${zombiesTotal} infected remaining`}
+                accessibilityLabel={
+                  scenario === 'county'
+                    ? `${zombies} infected nearby`
+                    : `${zombies} of ${zombiesTotal} infected remaining`
+                }
                 pointerEvents="none"
                 style={[styles.threats, compact && styles.threatsCompact]}>
-                <Text style={styles.statusLabel}>INFECTED</Text>
+                <Text style={styles.statusLabel}>
+                  {scenario === 'county' ? 'NEARBY' : 'INFECTED'}
+                </Text>
                 <Text style={styles.threatCount}>
-                  {zombies}/{zombiesTotal}
+                  {scenario === 'county' ? zombies : `${zombies}/${zombiesTotal}`}
                 </Text>
               </View>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open county atlas"
+                onPress={openAtlas}
+                style={({pressed}) => [
+                  styles.mapButton,
+                  pressed && styles.controlPressed,
+                ]}>
+                <Text style={styles.mapButtonText}>MAP</Text>
+              </Pressable>
 
               <Pressable
                 accessibilityRole="button"
@@ -535,7 +725,7 @@ function Game() {
               {width: menuWidth},
               compact && styles.menuCompact,
             ]}>
-            <Text style={styles.location}>BIRCH STREET · RESIDENTIAL BLOCK</Text>
+            <Text style={styles.location}>{menuLocationLabel}</Text>
             <Text
               accessibilityRole="header"
               style={[
@@ -549,6 +739,62 @@ function Game() {
               <Text style={styles.description}>{content.description}</Text>
             )}
             {activeMenu === 'start' && (
+              <View style={styles.startSetup}>
+                <View style={styles.scenarioRow}>
+                  {SCENARIO_OPTIONS.map(opt => {
+                    const selected = scenario === opt.id;
+                    return (
+                      <Pressable
+                        key={opt.id}
+                        accessibilityRole="button"
+                        onPress={() => selectScenario(opt.id)}
+                        style={({pressed}) => [
+                          styles.scenarioPill,
+                          selected && styles.scenarioPillSelected,
+                          pressed && styles.controlPressed,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.scenarioPillText,
+                            selected && styles.scenarioPillTextSelected,
+                          ]}>
+                          {opt.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                {scenario === 'county' && (
+                  <View style={styles.seedRow}>
+                    <Text style={styles.seedLabel}>SEED</Text>
+                    <TextInput
+                      accessibilityLabel="County seed"
+                      keyboardType="number-pad"
+                      returnKeyType="done"
+                      value={seedInput}
+                      onChangeText={setSeedInput}
+                      onEndEditing={applySeedInput}
+                      onSubmitEditing={applySeedInput}
+                      placeholder="42"
+                      placeholderTextColor={muted}
+                      style={styles.seedInput}
+                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Randomize seed"
+                      onPress={randomizeSeed}
+                      style={({pressed}) => [
+                        styles.seedRndButton,
+                        pressed && styles.controlPressed,
+                      ]}>
+                      <Text style={styles.seedRndText}>RND</Text>
+                    </Pressable>
+                  </View>
+                )}
+              </View>
+            )}
+            {activeMenu === 'start' && !compact && (
               <View style={styles.instructions}>
                 <Text style={styles.instructionText}>
                   Left stick moves (light tilt walks quietly) · {activeSchemeInfo.label}:{' '}
@@ -565,10 +811,7 @@ function Game() {
                 onPress={
                   activeMenu === 'won' || activeMenu === 'dead'
                     ? restart
-                    : () => {
-                        playClick();
-                        setMenu(null);
-                      }
+                    : startRun
                 }
                 style={({pressed}) => [
                   styles.primary,
@@ -577,13 +820,10 @@ function Game() {
                 <Text style={styles.primaryText}>{content.action}</Text>
               </Pressable>
 
-              {activeMenu === 'start' && (
+              {(activeMenu === 'start' || activeMenu === 'paused') && (
                 <Pressable
                   accessibilityRole="button"
-                  onPress={() => {
-                    playClick();
-                    if (surface.current) Commands.openCounty(surface.current);
-                  }}
+                  onPress={openAtlas}
                   style={({pressed}) => [
                     styles.secondary,
                     pressed && styles.controlPressed,
@@ -905,6 +1145,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  mapButton: {
+    minWidth: 44,
+    minHeight: 44,
+    paddingHorizontal: 8,
+    backgroundColor: glass,
+    borderWidth: 1,
+    borderColor: amber,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mapButtonText: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+    color: amber,
+  },
   sliderGlyph: {width: 18, height: 15, justifyContent: 'space-between'},
   sliderRow: {height: 4, justifyContent: 'center'},
   sliderTrack: {height: 1.5, backgroundColor: bone, width: '100%'},
@@ -1059,6 +1316,67 @@ const styles = StyleSheet.create({
   gameTitle: {fontSize: 48, lineHeight: 50, textTransform: 'uppercase'},
   titleCompact: {fontSize: 32, lineHeight: 35},
   description: {color: bone, fontSize: 13, lineHeight: 18},
+  startSetup: {gap: 6, marginTop: 4},
+  scenarioRow: {flexDirection: 'row', gap: 6},
+  scenarioPill: {
+    flex: 1,
+    minHeight: 34,
+    borderWidth: 1,
+    borderColor: outline,
+    backgroundColor: '#1E252C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  scenarioPillSelected: {
+    borderColor: amber,
+    backgroundColor: amber,
+  },
+  scenarioPillText: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    color: bone,
+  },
+  scenarioPillTextSelected: {color: ink},
+  seedRow: {flexDirection: 'row', alignItems: 'center', gap: 6},
+  seedLabel: {
+    fontFamily: 'monospace',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+    color: muted,
+  },
+  seedInput: {
+    flex: 1,
+    minHeight: 34,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: outline,
+    backgroundColor: '#1E252C',
+    color: bone,
+    fontFamily: 'monospace',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  seedRndButton: {
+    minWidth: 48,
+    minHeight: 34,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: outline,
+    backgroundColor: '#242D35',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  seedRndText: {
+    fontFamily: 'monospace',
+    fontSize: 11,
+    fontWeight: '900',
+    color: amber,
+  },
   instructions: {
     borderTopWidth: 1,
     borderColor: outline,

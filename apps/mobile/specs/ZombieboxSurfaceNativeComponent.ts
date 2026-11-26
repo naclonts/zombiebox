@@ -33,11 +33,26 @@ type Hud = Readonly<{
   lowAmmo: boolean;
   indoors: boolean;
   dangerClose: boolean;
+  playerX: CodegenTypes.Int32;
+  playerY: CodegenTypes.Int32;
+  district: CodegenTypes.Int32;
+  worldMode: CodegenTypes.Int32;
+}>;
+
+type AtlasTeleportEvent = Readonly<{
+  seed: string;
+  x: CodegenTypes.Int32;
+  y: CodegenTypes.Int32;
+  floor: CodegenTypes.Int32;
+  preservedRun: boolean;
+  snapped: boolean;
 }>;
 
 export interface NativeProps extends ViewProps {
   readonly runId: string;
   readonly seed: string;
+  readonly scenario?: string;
+  readonly runStarted?: CodegenTypes.WithDefault<boolean, false>;
   readonly paused: boolean;
   readonly controlScheme?: string;
   readonly sfxVolumePct?: CodegenTypes.WithDefault<CodegenTypes.Int32, 75>;
@@ -45,6 +60,7 @@ export interface NativeProps extends ViewProps {
   readonly hapticsEnabled?: CodegenTypes.WithDefault<boolean, true>;
   readonly aimLookAhead?: CodegenTypes.WithDefault<boolean, true>;
   readonly onHudChanged?: CodegenTypes.DirectEventHandler<Hud>;
+  readonly onAtlasTeleport?: CodegenTypes.DirectEventHandler<AtlasTeleportEvent>;
 }
 
 interface NativeCommands {

@@ -106,8 +106,34 @@ enum ZbObjectiveKind {
     ZB_OBJECTIVE_SCAVENGE = 0,
     ZB_OBJECTIVE_CLEAR_BLOCK = 1,
     ZB_OBJECTIVE_WON = 2,
-    ZB_OBJECTIVE_DEAD = 3
+    ZB_OBJECTIVE_DEAD = 3,
+    ZB_OBJECTIVE_EXPLORE = 4
 };
+
+enum ZbActionMode {
+    ZB_MODE_BIRCH_STREET = 0,
+    ZB_MODE_COUNTY = 1
+};
+
+enum ZbDistrict {
+    ZB_DISTRICT_BIRCH_STREET = 0,
+    ZB_DISTRICT_RESIDENTIAL = 1,
+    ZB_DISTRICT_DOWNTOWN = 2,
+    ZB_DISTRICT_HOSPITAL = 3,
+    ZB_DISTRICT_POLICE = 4,
+    ZB_DISTRICT_ARMY_BASE = 5,
+    ZB_DISTRICT_COUNTRYSIDE = 6,
+    ZB_DISTRICT_WOODS = 7
+};
+
+typedef struct {
+    int32_t x;
+    int32_t y;
+    uint8_t floor;
+    uint8_t mode;
+    uint8_t district;
+    uint8_t reserved;
+} ZbActionLocation;
 
 enum ZbActionV2Status {
     ZB_V2_WON = 1u << 0,
@@ -186,7 +212,9 @@ typedef struct {
     uint8_t objective_kind;
 } ZbActionFrameOutput;
 
+/* Create either the Birch Street encounter or the procedural county run. */
 ZbAction *zb_action_v2_create(uint64_t seed);
+ZbAction *zb_action_v2_create_county(uint64_t seed);
 void zb_action_v2_destroy(ZbAction *run);
 /* Suspend the run between display callbacks and discard all latched input. */
 void zb_action_v2_reset_clock(ZbAction *run);
@@ -196,6 +224,13 @@ bool zb_action_v2_frame(ZbAction *run, uint8_t *pixels, uint32_t width,
                         uint32_t height, size_t stride, uint64_t frame_time_ns,
                         const ZbActionFrameInput *input,
                         ZbActionFrameOutput *out);
+/* Read the survivor's current world tile, mode, and district code. */
+bool zb_action_v2_location(const ZbAction *run, ZbActionLocation *out);
+/* Move the survivor in an active County run to (x, y, floor) or a nearby
+ * walkable tile. Returns false when the run or destination is unavailable.
+ * Pass NULL for out_resolved when the resolved location is unneeded. */
+bool zb_action_v2_teleport(ZbAction *run, int32_t x, int32_t y, uint8_t floor,
+                           ZbActionLocation *out_resolved);
 
 #ifdef __cplusplus
 }

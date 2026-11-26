@@ -3,15 +3,17 @@
 
 pub mod ai;
 pub mod block;
+pub mod county;
 pub mod types;
 pub mod weapons;
 
 pub use types::*;
 pub use weapons::{Inventory, Projectile, ReloadMode, WeaponSpec, weapon_spec};
 
-use crate::{House, Position, World};
+use crate::{District, House, Position, World};
 use ai::{AiSystem, Monster, damage_monster, propagate_noise};
-use block::ResidentialBlock;
+use block::{ResidentialBlock, SupplyCache};
+use county::CountyStage;
 use weapons::{is_rocket_danger_close, step_projectiles, try_fire_or_swing};
 
 pub const PLAYER_MAX_SPEED: f32 = 5.2;
@@ -31,7 +33,7 @@ const DUSK_LEVEL: f32 = 0.72;
 
 #[derive(Clone, Copy, Debug)]
 enum InteractAction {
-    Search(u8, Tile3D),
+    Search(CacheId, Tile3D),
     ToggleDoor(Tile3D, bool), // bool = true if currently closed (so prompt is OpenDoor)
     DropWindow(Tile3D, Tile3D),
     ClimbWindow(Tile3D, Tile3D),
@@ -62,10 +64,276 @@ impl InteractAction {
     }
 }
 
+enum Stage {
+    Residential(Box<ResidentialBlock>),
+    County(Box<CountyStage>),
+}
+
+impl Stage {
+    const fn mode(&self) -> ActionMode {
+        match self {
+            Self::Residential(_) => ActionMode::BirchStreet,
+            Self::County(_) => ActionMode::County,
+        }
+    }
+
+    const fn is_county(&self) -> bool {
+        matches!(self, Self::County(_))
+    }
+
+    fn residential(&self) -> Option<&ResidentialBlock> {
+        match self {
+            Self::Residential(b) => Some(b),
+            Self::County(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn residential_mut(&mut self) -> Option<&mut ResidentialBlock> {
+        match self {
+            Self::Residential(b) => Some(b),
+            Self::County(_) => None,
+        }
+    }
+
+    fn move_body(
+        &self,
+        position: &mut Vec2,
+        floor: Floor,
+        delta: Vec2,
+        radius: f32,
+        can_vault_window: bool,
+        doorway_assist: bool,
+    ) {
+        match self {
+            Self::Residential(b) => b.move_body(
+                position,
+                floor,
+                delta,
+                radius,
+                can_vault_window,
+                doorway_assist,
+            ),
+            Self::County(c) => c.move_body(
+                position,
+                floor,
+                delta,
+                radius,
+                can_vault_window,
+                doorway_assist,
+            ),
+        }
+    }
+
+    fn circle_walkable(
+        &self,
+        center: Vec2,
+        floor: Floor,
+        radius: f32,
+        can_vault_window: bool,
+    ) -> bool {
+        match self {
+            Self::Residential(b) => b.circle_walkable(center, floor, radius, can_vault_window),
+            Self::County(c) => c.circle_walkable(center, floor, radius, can_vault_window),
+        }
+    }
+
+    fn tile_kind(&self, tile: Tile3D) -> TileKind {
+        match self {
+            Self::Residential(b) => b.tile_kind(tile),
+            Self::County(c) => c.tile_kind(tile),
+        }
+    }
+
+    fn is_indoor(&self, tile: Tile3D) -> bool {
+        match self {
+            Self::Residential(b) => b.is_indoor(tile),
+            Self::County(c) => c.is_indoor(tile),
+        }
+    }
+
+    fn tile_render_info(&self, pos: Position, floor: Floor) -> Option<TileRenderInfo> {
+        match self {
+            Self::Residential(b) => b.tile_render_info(pos, floor),
+            Self::County(c) => c.tile_render_info(pos, floor),
+        }
+    }
+
+    fn buildings(&self) -> &[BuildingInfo] {
+        match self {
+            Self::Residential(b) => b.buildings(),
+            Self::County(c) => c.buildings(),
+        }
+    }
+
+    fn caches(&self) -> &[SupplyCache] {
+        match self {
+            Self::Residential(b) => b.caches(),
+            Self::County(c) => c.caches(),
+        }
+    }
+
+    fn take_cache(&mut self, id: CacheId) -> Option<CacheLoot> {
+        match self {
+            Self::Residential(b) => b.take_cache(id),
+            Self::County(c) => c.take_cache(id),
+        }
+    }
+
+    fn cache_views(
+        &self,
+        player_pos: Vec2,
+        player_floor: Floor,
+        interact_radius: f32,
+    ) -> Vec<CacheView> {
+        match self {
+            Self::Residential(b) => b.cache_views(player_pos, player_floor, interact_radius),
+            Self::County(c) => c.cache_views(player_pos, player_floor, interact_radius),
+        }
+    }
+
+    fn light_sources(&self) -> Vec<LightSourceView> {
+        match self {
+            Self::Residential(b) => b.light_sources(),
+            Self::County(c) => c.light_sources(),
+        }
+    }
+
+    fn update_visibility(&mut self, viewer: Vec2, floor: Floor) {
+        match self {
+            Self::Residential(b) => b.update_visibility(viewer, floor),
+            Self::County(c) => c.update_visibility(viewer, floor),
+        }
+    }
+
+    fn tick_flashes(&mut self) {
+        match self {
+            Self::Residential(b) => b.tick_flashes(),
+            Self::County(c) => c.tick_flashes(),
+        }
+    }
+
+    fn take_collapsed_tiles(&mut self) -> Vec<Tile3D> {
+        match self {
+            Self::Residential(b) => b.take_collapsed_tiles(),
+            Self::County(c) => c.take_collapsed_tiles(),
+        }
+    }
+}
+
+impl CombatWorld for Stage {
+    fn bounds(&self) -> (Position, Position, u8) {
+        match self {
+            Self::Residential(b) => b.bounds(),
+            Self::County(c) => c.bounds(),
+        }
+    }
+
+    fn terrain_version(&self) -> u64 {
+        match self {
+            Self::Residential(b) => b.terrain_version(),
+            Self::County(c) => c.terrain_version(),
+        }
+    }
+
+    fn obstruction(&self, tile: Tile3D) -> TileObstruction {
+        match self {
+            Self::Residential(b) => b.obstruction(tile),
+            Self::County(c) => c.obstruction(tile),
+        }
+    }
+
+    fn has_floor(&self, tile: Tile3D) -> bool {
+        match self {
+            Self::Residential(b) => b.has_floor(tile),
+            Self::County(c) => c.has_floor(tile),
+        }
+    }
+
+    fn is_walkable(&self, tile: Tile3D, can_vault_window: bool) -> bool {
+        match self {
+            Self::Residential(b) => b.is_walkable(tile, can_vault_window),
+            Self::County(c) => c.is_walkable(tile, can_vault_window),
+        }
+    }
+
+    fn building_id(&self, tile: Tile3D) -> BuildingId {
+        match self {
+            Self::Residential(b) => b.building_id(tile),
+            Self::County(c) => c.building_id(tile),
+        }
+    }
+
+    fn stair_link(&self, tile: Tile3D) -> Option<(Tile3D, (i8, i8))> {
+        match self {
+            Self::Residential(b) => b.stair_link(tile),
+            Self::County(c) => c.stair_link(tile),
+        }
+    }
+
+    fn stair_links(&self, tile: Tile3D) -> ([Option<(Tile3D, (i8, i8))>; 2], usize) {
+        match self {
+            Self::Residential(b) => b.stair_links(tile),
+            Self::County(c) => c.stair_links(tile),
+        }
+    }
+
+    fn window_drop_target(&self, tile: Tile3D) -> Option<Tile3D> {
+        match self {
+            Self::Residential(b) => b.window_drop_target(tile),
+            Self::County(c) => c.window_drop_target(tile),
+        }
+    }
+
+    fn window_vault_target(&self, from: Tile3D, window: Tile3D) -> Option<Tile3D> {
+        match self {
+            Self::Residential(b) => b.window_vault_target(from, window),
+            Self::County(c) => c.window_vault_target(from, window),
+        }
+    }
+
+    fn light_level(&self, tile: Tile3D) -> f32 {
+        match self {
+            Self::Residential(b) => b.light_level(tile),
+            Self::County(c) => c.light_level(tile),
+        }
+    }
+
+    fn damage_tile(&mut self, tile: Tile3D, kind: DamageKind) -> Option<TileDamageResult> {
+        match self {
+            Self::Residential(b) => b.damage_tile(tile, kind),
+            Self::County(c) => c.damage_tile(tile, kind),
+        }
+    }
+
+    fn toggle_door(&mut self, tile: Tile3D) -> Option<bool> {
+        match self {
+            Self::Residential(b) => b.toggle_door(tile),
+            Self::County(c) => c.toggle_door(tile),
+        }
+    }
+
+    fn register_dynamic_flash(
+        &mut self,
+        pos: Vec2,
+        floor: Floor,
+        radius: f32,
+        intensity: u8,
+        ttl_ticks: u8,
+    ) {
+        match self {
+            Self::Residential(b) => {
+                b.register_dynamic_flash(pos, floor, radius, intensity, ttl_ticks)
+            }
+            Self::County(c) => c.register_dynamic_flash(pos, floor, radius, intensity, ttl_ticks),
+        }
+    }
+}
+
 pub struct ActionGame {
     seed: u64,
     world: World,
-    block: ResidentialBlock,
+    stage: Stage,
     tick: u64,
     player: Pose,
     player_knockback: Vec2,
@@ -76,6 +344,7 @@ pub struct ActionGame {
     drop_recovery_ticks: u8,
     stair_cooldown: u8,
     must_leave_stair: Option<Position>,
+    last_stair_travel_up: bool,
     quiet_walking: bool,
     aim_explicit: bool,
     inventory: Inventory,
@@ -91,6 +360,55 @@ pub struct ActionGame {
 }
 
 impl ActionGame {
+    pub fn new(seed: u64) -> Self {
+        Self::county(seed)
+    }
+
+    pub fn county(seed: u64) -> Self {
+        Self::county_with_world(World::new(seed))
+    }
+
+    pub fn county_with_world(world: World) -> Self {
+        let seed = world.seed();
+        let (mut county, spawn, monsters) = CountyStage::new(&world, seed);
+        let player = Pose {
+            position: spawn.center(),
+            facing: Vec2::new(0.0, -1.0),
+            floor: spawn.floor,
+        };
+        let zombies_total = county.total_monsters_spawned();
+        county.update_visibility(player.position, player.floor);
+
+        Self {
+            seed,
+            world,
+            stage: Stage::County(Box::new(county)),
+            tick: 0,
+            player,
+            player_knockback: Vec2::ZERO,
+            health: PLAYER_MAX_HEALTH,
+            max_health: PLAYER_MAX_HEALTH,
+            hurt_iframes: 0,
+            footstep_timer: 0,
+            drop_recovery_ticks: 0,
+            stair_cooldown: 0,
+            must_leave_stair: None,
+            last_stair_travel_up: false,
+            quiet_walking: false,
+            aim_explicit: false,
+            inventory: Inventory::new(),
+            monsters,
+            zombies_total,
+            next_monster_id: 1,
+            projectiles: Vec::new(),
+            next_proj_id: 1,
+            ai: AiSystem::new(),
+            events: Vec::new(),
+            noises: Vec::new(),
+            outcome: ActionOutcome::Playing,
+        }
+    }
+
     pub fn residential(seed: u64) -> Self {
         let world = World::birch_street(seed);
         let mut block = ResidentialBlock::new(&world, seed);
@@ -118,7 +436,7 @@ impl ActionGame {
         Self {
             seed,
             world,
-            block,
+            stage: Stage::Residential(Box::new(block)),
             tick: 0,
             player,
             player_knockback: Vec2::ZERO,
@@ -129,6 +447,7 @@ impl ActionGame {
             drop_recovery_ticks: 0,
             stair_cooldown: 0,
             must_leave_stair: None,
+            last_stair_travel_up: false,
             quiet_walking: false,
             aim_explicit: false,
             inventory: Inventory::new(),
@@ -144,6 +463,71 @@ impl ActionGame {
         }
     }
 
+    pub fn mode(&self) -> ActionMode {
+        self.stage.mode()
+    }
+
+    pub fn is_county(&self) -> bool {
+        self.stage.is_county()
+    }
+
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    pub fn player_tile(&self) -> Tile3D {
+        Tile3D::from_vec2(self.player.position, self.player.floor)
+    }
+
+    pub fn current_district(&self) -> District {
+        if !self.is_county() {
+            return District::Residential;
+        }
+        self.world
+            .district_at(self.player_tile().pos())
+            .unwrap_or(District::Farm)
+    }
+
+    pub fn district_code(&self) -> u8 {
+        if !self.is_county() {
+            return 0;
+        }
+        match self.current_district() {
+            District::Residential => 1,
+            District::City => 2,
+            District::Hospital => 3,
+            District::Police => 4,
+            District::MilitaryBase => 5,
+            District::Farm => 6,
+            District::Woods => 7,
+        }
+    }
+
+    pub fn teleport(&mut self, target: Tile3D) -> Option<Tile3D> {
+        if self.mode() != ActionMode::County || self.outcome != ActionOutcome::Playing {
+            return None;
+        }
+        let current_pos = self.player_tile().pos();
+        let Stage::County(county) = &mut self.stage else {
+            return None;
+        };
+        let dest = county.find_teleport_destination(&self.world, target);
+        let Some(dest) = dest else {
+            county.sync_active_window(&self.world, current_pos, &mut self.monsters);
+            return None;
+        };
+
+        county.sync_active_window(&self.world, dest.pos(), &mut self.monsters);
+        self.player.position = dest.center();
+        self.player.floor = dest.floor;
+        self.player_knockback = Vec2::ZERO;
+        self.drop_recovery_ticks = 0;
+        self.stair_cooldown = STAIR_COOLDOWN_TICKS;
+        self.must_leave_stair = Some(dest.pos());
+        county.update_visibility(self.player.position, self.player.floor);
+        Some(dest)
+    }
+
     pub fn step(&mut self, input: ActionInput) {
         self.events.clear();
         self.noises.clear();
@@ -153,7 +537,7 @@ impl ActionGame {
         self.tick += 1;
 
         // 1. Tick timers & dynamic light flashes.
-        self.block.tick_flashes();
+        self.stage.tick_flashes();
         self.inventory.tick_timers(&mut self.events);
         self.hurt_iframes = self.hurt_iframes.saturating_sub(1);
         self.drop_recovery_ticks = self.drop_recovery_ticks.saturating_sub(1);
@@ -182,6 +566,10 @@ impl ActionGame {
 
         // 3. Player analog movement, quiet walk, knockback, and stair transitions.
         self.step_player_movement(input);
+        let focus = self.player_tile().pos();
+        if let Stage::County(county) = &mut self.stage {
+            county.sync_active_window(&self.world, focus, &mut self.monsters);
+        }
 
         // 4. Aim / facing update (right-stick retains facing on release).
         if let Some(aim) = input.aim {
@@ -197,7 +585,7 @@ impl ActionGame {
             }
         }
 
-        // 5. Contextual interaction (cache -> door -> F1 drop -> F0 vault -> stairs).
+        // 5. Contextual interaction (cache -> door -> upper drop -> F0 vault -> stairs).
         if input.interact {
             self.resolve_interact();
         }
@@ -205,7 +593,7 @@ impl ActionGame {
         // 6. Firing / melee swing.
         if input.fire {
             try_fire_or_swing(
-                &mut self.block,
+                &mut self.stage,
                 &mut self.inventory,
                 self.player,
                 &mut self.monsters,
@@ -220,7 +608,7 @@ impl ActionGame {
 
         // 7. Advance active rockets and shooter bolts.
         step_projectiles(
-            &mut self.block,
+            &mut self.stage,
             &mut self.projectiles,
             self.player,
             PLAYER_RADIUS,
@@ -232,12 +620,12 @@ impl ActionGame {
             &mut self.noises,
         );
 
-        // 8. Resolve any structural F0 -> F1 overhang collapses caused by breaching.
+        // 8. Resolve any structural overhang collapses caused by breaching.
         self.process_collapses();
 
         // 9. Propagate player/combat noises to monsters.
         propagate_noise(
-            &self.block,
+            &self.stage,
             &mut self.monsters,
             &self.noises,
             &mut self.events,
@@ -245,7 +633,7 @@ impl ActionGame {
 
         // 10. Advance sight/sound-reactive AI, 3D pathfinding, and monster attacks.
         self.ai.step_monsters(
-            &mut self.block,
+            &mut self.stage,
             &mut self.monsters,
             self.player,
             PLAYER_RADIUS,
@@ -270,13 +658,13 @@ impl ActionGame {
         if self.health == 0 {
             self.outcome = ActionOutcome::Dead;
             self.events.push(ActionEvent::Died);
-        } else if self.monsters.is_empty() {
+        } else if !self.is_county() && self.monsters.is_empty() {
             self.outcome = ActionOutcome::Won;
             self.events.push(ActionEvent::Won);
         }
 
-        // 12. Update room-based LOS visibility (cached by tile + floor + terrain_version).
-        self.block
+        // 12. Update room-based LOS visibility.
+        self.stage
             .update_visibility(self.player.position, self.player.floor);
     }
 
@@ -300,7 +688,7 @@ impl ActionGame {
 
         let cur_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
         let mut speed_mult = self.inventory.move_speed_mult();
-        if self.block.obstruction(cur_tile) == TileObstruction::BrokenWindow {
+        if self.stage.obstruction(cur_tile) == TileObstruction::BrokenWindow {
             speed_mult *= WINDOW_VAULT_SPEED_MULT;
         }
         if self.drop_recovery_ticks > 0 {
@@ -309,7 +697,7 @@ impl ActionGame {
 
         let move_delta = dir * (mag * PLAYER_MAX_SPEED * speed_mult * DT) + self.player_knockback;
         if move_delta.length_squared() > 1e-8 {
-            self.block.move_body(
+            self.stage.move_body(
                 &mut self.player.position,
                 self.player.floor,
                 move_delta,
@@ -339,15 +727,23 @@ impl ActionGame {
             });
         }
 
-        // Safety drop if standing on an F1 tile that lacks flooring (e.g. collapsed).
+        // Safety drop if standing on an upper-floor tile that lacks flooring (e.g. collapsed).
         let now_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
-        if self.player.floor > 0 && !self.block.has_floor(now_tile) {
+        if self.player.floor > 0 && !self.stage.has_floor(now_tile) {
             let from_floor = self.player.floor;
-            self.player.floor = 0;
+            let mut target_floor = from_floor - 1;
+            while target_floor > 0
+                && !self
+                    .stage
+                    .has_floor(Tile3D::new(now_tile.x, now_tile.y, target_floor))
+            {
+                target_floor -= 1;
+            }
+            self.player.floor = target_floor;
             self.events.push(ActionEvent::FloorChanged {
                 from_floor,
-                to_floor: 0,
-                at: Tile3D::new(now_tile.x, now_tile.y, 0),
+                to_floor: target_floor,
+                at: Tile3D::new(now_tile.x, now_tile.y, target_floor),
                 via: FloorTransition::Collapse,
             });
         }
@@ -361,7 +757,7 @@ impl ActionGame {
         }
         if self.stair_cooldown == 0 && self.must_leave_stair.is_none() {
             let p_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
-            if let Some((dest, landing)) = self.block.stair_link(p_tile)
+            if let Some((dest, landing)) = self.pick_stair_link(p_tile)
                 && self.player.position.distance(p_tile.center()) <= 0.38
             {
                 self.take_stairs(p_tile, dest, landing);
@@ -369,8 +765,26 @@ impl ActionGame {
         }
     }
 
+    fn pick_stair_link(&self, tile: Tile3D) -> Option<(Tile3D, (i8, i8))> {
+        let (links, count) = self.stage.stair_links(tile);
+        match count {
+            0 => None,
+            1 => links[0],
+            _ => {
+                let want_up = self.last_stair_travel_up;
+                links
+                    .into_iter()
+                    .take(count)
+                    .flatten()
+                    .find(|(dest, _)| (dest.floor > tile.floor) == want_up)
+                    .or(links[0])
+            }
+        }
+    }
+
     fn take_stairs(&mut self, stair_tile: Tile3D, dest: Tile3D, landing: (i8, i8)) {
         let from_floor = self.player.floor;
+        self.last_stair_travel_up = dest.floor > from_floor;
         self.player.floor = dest.floor;
         self.player.position = Vec2::new(
             dest.x as f32 + landing.0 as f32 * 0.42,
@@ -392,8 +806,8 @@ impl ActionGame {
         let facing = self.player.facing.normalized();
 
         // Priority 1: Unopened supply cache within reach.
-        let mut best_cache: Option<(f32, u8, Tile3D)> = None;
-        for c in self.block.caches() {
+        let mut best_cache: Option<(f32, CacheId, Tile3D)> = None;
+        for c in self.stage.caches() {
             if c.opened || c.pos.floor != floor {
                 continue;
             }
@@ -413,7 +827,7 @@ impl ActionGame {
         for dy in -1..=1 {
             for dx in -1..=1 {
                 let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, floor);
-                if let TileKind::Door { open, .. } = self.block.tile_kind(t) {
+                if let TileKind::Door { open, .. } = self.stage.tile_kind(t) {
                     let d = p.distance(t.center());
                     if d <= INTERACT_FEATURE_RADIUS {
                         let dir_bias = if d > 0.05 {
@@ -433,15 +847,15 @@ impl ActionGame {
             return Some(InteractAction::ToggleDoor(t, is_closed));
         }
 
-        // Priority 3: Floor 1 broken window / collapsed exterior edge -> Drop down.
-        if floor == 1 {
+        // Priority 3: Upper-floor broken window / collapsed exterior edge -> Drop down.
+        if floor >= 1 {
             let mut best_drop: Option<(f32, Tile3D, Tile3D)> = None;
             for dy in -1..=1 {
                 for dx in -1..=1 {
-                    let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, 1);
+                    let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, floor);
                     let d = p.distance(t.center());
                     if d <= INTERACT_FEATURE_RADIUS
-                        && let Some(landing) = self.block.window_drop_target(t)
+                        && let Some(landing) = self.stage.window_drop_target(t)
                         && best_drop.is_none_or(|(bd, _, _)| d < bd)
                     {
                         best_drop = Some((d, t, landing));
@@ -464,8 +878,8 @@ impl ActionGame {
                     let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, 0);
                     let d = p.distance(t.center());
                     if d <= 1.05
-                        && self.block.tile_kind(t) == TileKind::BrokenWindow
-                        && let Some(dest) = self.block.window_vault_target(center_tile, t)
+                        && self.stage.tile_kind(t) == TileKind::BrokenWindow
+                        && let Some(dest) = self.stage.window_vault_target(center_tile, t)
                         && best_vault.is_none_or(|(bd, _, _)| d < bd)
                     {
                         best_vault = Some((d, t, dest));
@@ -484,7 +898,7 @@ impl ActionGame {
                 let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, floor);
                 let d = p.distance(t.center());
                 if d <= 1.05
-                    && let Some((dest, landing)) = self.block.stair_link(t)
+                    && let Some((dest, landing)) = self.pick_stair_link(t)
                     && best_stair.is_none_or(|(bd, _)| d < bd)
                 {
                     best_stair = Some((
@@ -507,7 +921,7 @@ impl ActionGame {
         };
         match action {
             InteractAction::Search(id, at) => {
-                if let Some(loot) = self.block.take_cache(id) {
+                if let Some(loot) = self.stage.take_cache(id) {
                     self.inventory.collect_loot(loot, &mut self.events);
                     self.events.push(ActionEvent::Looted { at, loot });
                 }
@@ -529,7 +943,7 @@ impl ActionGame {
                         return;
                     }
                 }
-                if let Some(opened) = self.block.toggle_door(tile) {
+                if let Some(opened) = self.stage.toggle_door(tile) {
                     self.events
                         .push(ActionEvent::DoorToggled { at: tile, opened });
                     self.noises.push(NoiseEvent {
@@ -563,7 +977,7 @@ impl ActionGame {
             }
             InteractAction::ClimbWindow(win, dest) => {
                 if self
-                    .block
+                    .stage
                     .circle_walkable(dest.center(), dest.floor, PLAYER_RADIUS, true)
                 {
                     self.player.position = dest.center();
@@ -595,7 +1009,7 @@ impl ActionGame {
     }
 
     fn process_collapses(&mut self) {
-        let collapsed = self.block.take_collapsed_tiles();
+        let collapsed = self.stage.take_collapsed_tiles();
         if collapsed.is_empty() {
             return;
         }
@@ -604,7 +1018,7 @@ impl ActionGame {
             self.events.push(ActionEvent::StructuralCollapse { at: c });
             self.noises.push(NoiseEvent {
                 origin: center,
-                floor: 0,
+                floor: c.floor,
                 radius: 16.0,
                 priority: 4,
                 kind: NoiseKind::Collapse,
@@ -612,16 +1026,26 @@ impl ActionGame {
 
             // Player caught above or under collapsed overhang.
             if self.player.position.distance(center) <= 0.72 {
-                if self.player.floor == 1 {
-                    self.player.floor = 0;
+                let mut fell = false;
+                if self.player.floor > c.floor
+                    && !self
+                        .stage
+                        .has_floor(Tile3D::from_vec2(self.player.position, self.player.floor))
+                {
+                    let from_floor = self.player.floor;
+                    self.player.floor = c.floor;
+                    fell = true;
                     self.events.push(ActionEvent::FloorChanged {
-                        from_floor: 1,
-                        to_floor: 0,
+                        from_floor,
+                        to_floor: c.floor,
                         at: c,
                         via: FloorTransition::Collapse,
                     });
                 }
-                if self.hurt_iframes == 0 && self.health > 0 {
+                if (fell || self.player.floor == c.floor)
+                    && self.hurt_iframes == 0
+                    && self.health > 0
+                {
                     self.health = self.health.saturating_sub(1);
                     self.hurt_iframes = PLAYER_HURT_IFRAMES;
                     self.events.push(ActionEvent::PlayerHurt {
@@ -640,11 +1064,16 @@ impl ActionGame {
                     continue;
                 }
                 if m.pos.distance(center) <= 0.85 {
-                    if m.floor == 1 {
-                        m.floor = 0;
+                    let mut fell = false;
+                    if m.floor > c.floor && !self.stage.has_floor(Tile3D::from_vec2(m.pos, m.floor))
+                    {
+                        m.floor = c.floor;
                         m.invalidate_path();
+                        fell = true;
                     }
-                    let _ = damage_monster(m, 2, Vec2::ZERO, 12, false, &mut self.events);
+                    if fell || m.floor == c.floor {
+                        let _ = damage_monster(m, 2, Vec2::ZERO, 12, false, &mut self.events);
+                    }
                 }
             }
         }
@@ -666,12 +1095,12 @@ impl ActionGame {
             ammo_in_equipped: self.inventory.equipped_ammo_total(),
             health: self.health,
             max_health: self.max_health,
-            indoors: self.block.is_indoor(p_tile),
+            indoors: self.stage.is_indoor(p_tile),
             quiet_walking: self.quiet_walking,
             near_interact_tile: interact.map(InteractAction::tile),
             interact_prompt: interact.map_or(InteractPrompt::None, InteractAction::prompt),
             rocket_danger_close: self.inventory.equipped == Some(Weapon::RocketLauncher)
-                && is_rocket_danger_close(&self.block, self.player, &self.monsters),
+                && is_rocket_danger_close(&self.stage, self.player, &self.monsters),
         }
     }
 
@@ -679,33 +1108,35 @@ impl ActionGame {
         &self.world
     }
 
-    pub fn block(&self) -> &ResidentialBlock {
-        &self.block
+    pub fn block(&self) -> Option<&ResidentialBlock> {
+        self.stage.residential()
     }
 
     pub fn house(&self) -> Option<House> {
-        Some(self.block.starter_house())
+        self.stage
+            .residential()
+            .map(ResidentialBlock::starter_house)
     }
 
     pub fn buildings(&self) -> &[BuildingInfo] {
-        self.block.buildings()
+        self.stage.buildings()
     }
 
     pub fn block_bounds(&self) -> Option<(Position, Position)> {
-        let (min, max, _) = self.block.bounds();
+        let (min, max, _) = self.stage.bounds();
         Some((min, max))
     }
 
     pub fn tile_render_info(&self, pos: Position, floor: Floor) -> Option<TileRenderInfo> {
-        self.block.tile_render_info(pos, floor)
+        self.stage.tile_render_info(pos, floor)
     }
 
     pub fn light_sources(&self) -> Vec<LightSourceView> {
-        self.block.light_sources()
+        self.stage.light_sources()
     }
 
     pub fn caches(&self) -> Vec<CacheView> {
-        self.block.cache_views(
+        self.stage.cache_views(
             self.player.position,
             self.player.floor,
             INTERACT_CACHE_RADIUS,
@@ -713,7 +1144,7 @@ impl ActionGame {
     }
 
     pub fn has_cache_at(&self, p: Position) -> bool {
-        self.block.caches().iter().any(|c| {
+        self.stage.caches().iter().any(|c| {
             !c.opened && c.pos.x == p.x && c.pos.y == p.y && c.pos.floor == self.player.floor
         })
     }
@@ -725,19 +1156,28 @@ impl ActionGame {
         )
     }
 
-    /// Starter pistol cache position inside House 1.
+    /// Starter pistol cache position inside House 1 (or starter Residential house in County mode).
     pub fn cache_position(&self) -> Position {
-        self.block
+        if self.is_county() {
+            return self
+                .stage
+                .caches()
+                .iter()
+                .find(|c| c.loot.weapon == Some(Weapon::Pistol))
+                .or_else(|| self.stage.caches().get(1))
+                .map_or_else(|| self.player_tile().pos(), |c| c.pos.pos());
+        }
+        self.stage
             .caches()
             .get(1)
-            .map_or_else(|| self.block.player_spawn().pos(), |c| c.pos.pos())
+            .map_or_else(|| self.player_tile().pos(), |c| c.pos.pos())
     }
 
     pub fn monster_views(&self) -> Vec<MonsterView> {
         self.monsters
             .iter()
             .filter(|m| m.is_alive() || m.is_swelling())
-            .map(|m| m.to_view(&self.block))
+            .map(|m| m.to_view(&self.stage))
             .collect()
     }
 
@@ -788,14 +1228,22 @@ impl ActionGame {
             }
             None => (0, 0, 0),
         };
-        let caches_total = self.block.caches().len() as u8;
-        let caches_found = self.block.caches().iter().filter(|c| c.opened).count() as u8;
+        let caches_total = self.stage.caches().len().min(u8::MAX as usize) as u8;
+        let caches_found = self
+            .stage
+            .caches()
+            .iter()
+            .filter(|c| c.opened)
+            .count()
+            .min(u8::MAX as usize) as u8;
         let objective_kind = match self.outcome {
             ActionOutcome::Won => ObjectiveKind::Won,
             ActionOutcome::Dead => ObjectiveKind::Dead,
             ActionOutcome::Playing => {
                 if self.inventory.owned_mask == 0 {
                     ObjectiveKind::Scavenge
+                } else if self.is_county() {
+                    ObjectiveKind::Explore
                 } else {
                     ObjectiveKind::ClearBlock
                 }
@@ -833,15 +1281,17 @@ impl ActionGame {
             interact_prompt,
             objective_kind,
             rocket_danger_close: equipped == Some(Weapon::RocketLauncher)
-                && is_rocket_danger_close(&self.block, self.player, &self.monsters),
-            indoors: self.block.is_indoor(p_tile),
+                && is_rocket_danger_close(&self.stage, self.player, &self.monsters),
+            indoors: self.stage.is_indoor(p_tile),
             outcome: self.outcome,
+            player_pos: p_tile.pos(),
+            district: self.current_district(),
         }
     }
 
     /// Spawn additional varied infected on walkable street/yard tiles for performance benchmarking.
     pub fn spawn_stress_monsters(&mut self, target_total: usize) {
-        let (min, max, _) = self.block.bounds();
+        let (min, max, _) = self.stage.bounds();
         let kinds = [
             MonsterKind::Shambler,
             MonsterKind::Brisk,
@@ -855,15 +1305,21 @@ impl ActionGame {
             let x = min.x + (h % (max.x - min.x + 1) as u64) as i32;
             let y = min.y + ((h >> 16) % (max.y - min.y + 1) as u64) as i32;
             let tile = Tile3D::new(x, y, 0);
-            if !self.block.is_walkable(tile, false) {
+            if !self.stage.is_walkable(tile, false) {
                 continue;
             }
             if tile.center().distance(self.player.position) < 2.2 {
                 continue;
             }
             let kind = kinds[(cursor as usize) % kinds.len()];
-            let id = MonsterId(self.next_monster_id);
-            self.next_monster_id += 1;
+            let id = match &mut self.stage {
+                Stage::Residential(_) => {
+                    let id = MonsterId(self.next_monster_id);
+                    self.next_monster_id += 1;
+                    id
+                }
+                Stage::County(county) => county.alloc_monster_id(),
+            };
             self.monsters
                 .push(Monster::new(id, kind, (cursor % 3) as u8, tile));
         }
@@ -874,6 +1330,7 @@ impl ActionGame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WORLD_SIZE;
 
     #[test]
     fn brisk_analog_movement_respects_quiet_walk_and_walls() {
@@ -915,7 +1372,7 @@ mod tests {
         assert!(!game.hud().armed);
 
         // Collect starter Axe on front stoop (cache 0).
-        let axe_pos = game.block.caches()[0].pos;
+        let axe_pos = game.stage.caches()[0].pos;
         game.player.position = axe_pos.center();
         game.step(ActionInput {
             interact: true,
@@ -927,17 +1384,17 @@ mod tests {
         // Aim north at Starter House south window and shatter it in 1 axe swing!
         let h = game.house().unwrap();
         let win_tile = Tile3D::new(h.x + 2, h.y + h.height - 1, 0);
-        assert_eq!(game.block.tile_kind(win_tile), TileKind::Window);
+        assert_eq!(game.stage.tile_kind(win_tile), TileKind::Window);
         game.player.position = Vec2::new(win_tile.x as f32, win_tile.y as f32 + 0.9);
         game.player.facing = Vec2::new(0.0, -1.0);
         game.step(ActionInput {
             fire: true,
             ..ActionInput::default()
         });
-        assert_eq!(game.block.tile_kind(win_tile), TileKind::BrokenWindow);
+        assert_eq!(game.stage.tile_kind(win_tile), TileKind::BrokenWindow);
 
         // Collect Pistol cache inside Starter House, switch to Pistol, kill last monster -> Won.
-        let pistol_pos = game.block.caches()[1].pos;
+        let pistol_pos = game.stage.caches()[1].pos;
         game.player.position = pistol_pos.center();
         game.step(ActionInput {
             interact: true,
@@ -976,10 +1433,10 @@ mod tests {
     #[test]
     fn stairs_transition_to_floor_1_and_f1_window_drop_returns_to_floor_0() {
         let mut game = ActionGame::residential(42);
-        let origin = game.block.origin();
+        let origin = game.stage.residential().unwrap().origin();
         // Starter House stairs are at local (12, 21).
         let stair_f0 = Tile3D::new(origin.x + 12, origin.y + 21, 0);
-        assert_eq!(game.block.tile_kind(stair_f0), TileKind::StairsUp);
+        assert_eq!(game.stage.tile_kind(stair_f0), TileKind::StairsUp);
 
         game.player.position = stair_f0.center();
         game.step(ActionInput::default());
@@ -1003,9 +1460,13 @@ mod tests {
         // Shatter a Floor 1 south window and interact to drop safely to Floor 0 exterior.
         let h = game.house().unwrap();
         let f1_win = Tile3D::new(h.x + 2, h.y + h.height - 1, 1);
-        assert_eq!(game.block.tile_kind(f1_win), TileKind::Window);
-        let _ = game.block.damage_tile(f1_win, DamageKind::Axe);
-        assert_eq!(game.block.tile_kind(f1_win), TileKind::BrokenWindow);
+        assert_eq!(game.stage.tile_kind(f1_win), TileKind::Window);
+        let _ = game
+            .stage
+            .residential_mut()
+            .unwrap()
+            .damage_tile(f1_win, DamageKind::Axe);
+        assert_eq!(game.stage.tile_kind(f1_win), TileKind::BrokenWindow);
 
         game.player.position = Vec2::new(f1_win.x as f32, (f1_win.y - 1) as f32);
         assert_eq!(game.hud().interact_prompt, InteractPrompt::DropWindow);
@@ -1062,5 +1523,307 @@ mod tests {
             assert_eq!(a.player_pose(), b.player_pose());
             assert_eq!(a.zombie_poses(), b.zombie_poses());
         }
+    }
+
+    #[test]
+    fn county_spawn_streams_chunks_and_does_not_auto_win() {
+        let mut game = ActionGame::county(42);
+        assert!(game.is_county());
+        assert_eq!(game.mode(), ActionMode::County);
+        assert_eq!(game.current_district(), District::Residential);
+        assert_eq!(game.district_code(), 1);
+        assert!(game.house().is_none());
+
+        let spawn_tile = game.player_tile();
+        assert!(game.stage.is_walkable(spawn_tile, false));
+        assert!(!game.caches().is_empty());
+        assert!(
+            game.stage
+                .caches()
+                .iter()
+                .any(|c| c.loot.weapon == Some(Weapon::Axe)),
+            "starter Axe cache must be spawned"
+        );
+        assert!(
+            game.stage
+                .caches()
+                .iter()
+                .any(|c| c.loot.weapon == Some(Weapon::Pistol) && c.loot.pistol_ammo >= 12),
+            "starter house must have Pistol + 12 rounds"
+        );
+        assert!(
+            !game.monsters.is_empty(),
+            "county window must contain infected"
+        );
+        for m in &game.monsters {
+            assert!(
+                m.pos.distance(game.player_pose().position) >= 4.4,
+                "no monster should spawn right on top of wake_position"
+            );
+        }
+
+        // Clearing local active monsters must NOT end a County run.
+        game.monsters.clear();
+        game.step(ActionInput::default());
+        assert_eq!(game.outcome(), ActionOutcome::Playing);
+
+        // Walking > 32 tiles across chunk seams via step() shifts the active 7x7 window seamlessly.
+        let initial_bounds = game.block_bounds().unwrap();
+        let mut dir = Vec2::new(1.0, 0.0);
+        let mut walked_far = false;
+        for step_idx in 0..800 {
+            let p = game.player_tile().pos();
+            if p.distance(spawn_tile.pos()) >= 34 {
+                walked_far = true;
+                break;
+            }
+            // Pick an unobstructed walkable cardinal neighbor moving away from spawn when stuck.
+            let ahead = Position::new(
+                (game.player_pose().position.x + dir.x * 0.9).round() as i32,
+                (game.player_pose().position.y + dir.y * 0.9).round() as i32,
+            );
+            if !game.stage.is_walkable(Tile3D::from_pos(ahead, 0), false) || step_idx % 45 == 44 {
+                let mut best_dir = dir;
+                let mut best_score = i32::MIN;
+                for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
+                    let cand = Position::new(p.x + dx, p.y + dy);
+                    let cand2 = Position::new(p.x + dx * 2, p.y + dy * 2);
+                    if game.stage.is_walkable(Tile3D::from_pos(cand, 0), false)
+                        && game.stage.is_walkable(Tile3D::from_pos(cand2, 0), false)
+                    {
+                        let d_spawn = cand.distance(spawn_tile.pos()) as i32;
+                        let road_bonus = if game
+                            .world()
+                            .tile_at(cand)
+                            .is_some_and(|t| t.ground.is_road())
+                        {
+                            20
+                        } else {
+                            0
+                        };
+                        let score = d_spawn + road_bonus;
+                        if score > best_score {
+                            best_score = score;
+                            best_dir = Vec2::new(dx as f32, dy as f32);
+                        }
+                    }
+                }
+                dir = best_dir;
+            }
+            game.step(ActionInput {
+                movement: dir,
+                ..ActionInput::default()
+            });
+        }
+        assert!(walked_far, "player walked > 32 tiles across chunk seams");
+        let after_bounds = game.block_bounds().unwrap();
+        assert_ne!(initial_bounds, after_bounds);
+    }
+
+    #[test]
+    fn county_army_base_subbuildings_and_3f_collapse_work() {
+        let mut game = ActionGame::county(42);
+        let world = game.world().clone();
+        let sites = world.sites().unwrap();
+
+        // ArmyBase splits into 3 sub-buildings while keeping the compound yard outdoors.
+        let army = sites
+            .buildings
+            .iter()
+            .find(|b| b.kind == crate::BuildingKind::ArmyBase)
+            .expect("army base exists");
+        assert!(game.teleport(Tile3D::from_pos(army.entry, 0)).is_some());
+        assert_eq!(game.current_district(), District::MilitaryBase);
+        let sub_buildings: Vec<_> = game
+            .buildings()
+            .iter()
+            .filter(|b| b.style == BuildingStyle::ArmyBarracks)
+            .collect();
+        assert_eq!(sub_buildings.len(), 3);
+        for sb in sub_buildings {
+            assert_eq!(sb.floors, 1);
+        }
+
+        // Breaching an F0 load-bearing wall in 3F Apartments collapses F1 and F2 overhang onto F0.
+        let apt = sites
+            .buildings
+            .iter()
+            .find(|b| b.kind == crate::BuildingKind::Apartments)
+            .expect("apartments exists");
+        assert!(game.teleport(Tile3D::from_pos(apt.entry, 0)).is_some());
+        let corner = Tile3D::new(apt.max.x, apt.max.y, 0);
+        let adj_wall = Tile3D::new(apt.max.x - 1, apt.max.y, 0);
+        let Stage::County(county) = &mut game.stage else {
+            unreachable!();
+        };
+        let _ = county.damage_tile(adj_wall, DamageKind::RocketBlast);
+        let res = county
+            .damage_tile(corner, DamageKind::RocketBlast)
+            .expect("breach corner pillar");
+        assert!(res.collapsed_cells > 0);
+        assert!(!county.has_floor(Tile3D::new(apt.max.x, apt.max.y, 1)));
+        assert!(!county.has_floor(Tile3D::new(apt.max.x, apt.max.y, 2)));
+    }
+
+    #[test]
+    fn county_teleport_persists_state_across_3f_apartments_and_hospital() {
+        let mut game = ActionGame::county(42);
+        let world = game.world().clone();
+        let sites = world.sites().unwrap();
+
+        // Find starter Axe cache, collect it, and shatter a nearby window in starter neighborhood.
+        let axe_cache = game
+            .stage
+            .caches()
+            .iter()
+            .find(|c| c.loot.weapon == Some(Weapon::Axe))
+            .copied()
+            .expect("starter Axe cache");
+        let axe_pos = axe_cache.pos;
+        assert!(game.teleport(axe_pos).is_some());
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert_eq!(game.hud().equipped, Some(Weapon::Axe));
+        assert_eq!(game.hud().objective_kind, ObjectiveKind::Explore);
+
+        // Find a Floor 0 window in the current window and break it with the Axe.
+        let (bmin, bmax) = game.block_bounds().unwrap();
+        let win_tile = (bmin.y..=bmax.y)
+            .flat_map(|y| (bmin.x..=bmax.x).map(move |x| Tile3D::new(x, y, 0)))
+            .find(|&t| {
+                game.stage.tile_kind(t) == TileKind::Window
+                    && [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                        .into_iter()
+                        .any(|(dx, dy)| {
+                            game.stage
+                                .is_walkable(Tile3D::new(t.x + dx, t.y + dy, 0), false)
+                        })
+            })
+            .expect("window in starter window");
+        let adj_walk = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+            .into_iter()
+            .map(|(dx, dy)| Tile3D::new(win_tile.x + dx, win_tile.y + dy, 0))
+            .find(|&t| game.stage.is_walkable(t, false))
+            .unwrap();
+        assert!(game.teleport(adj_walk).is_some());
+        game.player.facing = (win_tile.center() - game.player.position).normalized();
+        game.step(ActionInput {
+            fire: true,
+            ..ActionInput::default()
+        });
+        assert_eq!(game.stage.tile_kind(win_tile), TileKind::BrokenWindow);
+
+        // Teleport to Hospital, then to 3F Apartments and traverse 3F stairs (0 -> 1 -> 2 -> 1 -> 0).
+        let hospital = sites
+            .buildings
+            .iter()
+            .find(|b| b.kind == crate::BuildingKind::Hospital)
+            .expect("hospital exists");
+        assert!(game.teleport(Tile3D::from_pos(hospital.entry, 0)).is_some());
+        assert_eq!(game.current_district(), District::Hospital);
+        assert_eq!(game.district_code(), 3);
+
+        let apt = sites
+            .buildings
+            .iter()
+            .find(|b| b.kind == crate::BuildingKind::Apartments)
+            .expect("3F apartments exists");
+        let stair_pos = (apt.min.y..=apt.max.y)
+            .flat_map(|y| (apt.min.x..=apt.max.x).map(move |x| Position::new(x, y)))
+            .find(|&p| apt.feature_at(p, 0) == Some(crate::Feature::Stairs))
+            .expect("apartments stair shaft");
+        let stair_f0 = Tile3D::from_pos(stair_pos, 0);
+        assert!(game.teleport(stair_f0).is_some());
+        assert_eq!(game.stage.tile_kind(stair_f0), TileKind::StairsUp);
+        assert_eq!(
+            game.stage.tile_kind(Tile3D::from_pos(stair_pos, 1)),
+            TileKind::StairsBoth
+        );
+        assert_eq!(
+            game.stage.tile_kind(Tile3D::from_pos(stair_pos, 2)),
+            TileKind::StairsDown
+        );
+
+        // Step off stair, then traverse 0 -> 1 -> 2 -> 1 -> 0.
+        game.must_leave_stair = None;
+        game.stair_cooldown = 0;
+        game.player.position = stair_f0.center();
+        game.step(ActionInput::default());
+        assert_eq!(game.player_pose().floor, 1);
+
+        game.must_leave_stair = None;
+        game.stair_cooldown = 0;
+        game.player.position = Tile3D::from_pos(stair_pos, 1).center();
+        game.step(ActionInput::default());
+        assert_eq!(game.player_pose().floor, 2);
+
+        game.must_leave_stair = None;
+        game.stair_cooldown = 0;
+        game.player.position = Tile3D::from_pos(stair_pos, 2).center();
+        game.step(ActionInput::default());
+        assert_eq!(game.player_pose().floor, 1);
+
+        game.must_leave_stair = None;
+        game.stair_cooldown = 0;
+        game.player.position = Tile3D::from_pos(stair_pos, 1).center();
+        game.step(ActionInput::default());
+        assert_eq!(game.player_pose().floor, 0);
+
+        // Teleport back to chunk A and verify Axe, health, opened cache, and broken window persist!
+        assert!(game.teleport(adj_walk).is_some());
+        assert_eq!(game.hud().equipped, Some(Weapon::Axe));
+        assert_eq!(game.hud().health, PLAYER_MAX_HEALTH);
+        assert_eq!(game.stage.tile_kind(win_tile), TileKind::BrokenWindow);
+        assert!(
+            game.stage
+                .caches()
+                .iter()
+                .find(|c| c.id == axe_cache.id)
+                .is_some_and(|c| c.opened)
+        );
+    }
+
+    #[test]
+    fn county_teleport_rejects_deep_water_or_mountain_and_snaps_wall_to_walkable() {
+        let mut game = ActionGame::county(42);
+        let world = game.world().clone();
+
+        // Find a deep water/mountain tile whose r <= 8 neighborhood has NO walkable tiles.
+        let impassable_core = (0..WORLD_SIZE)
+            .flat_map(|y| (0..WORLD_SIZE).map(move |x| Position::new(x, y)))
+            .find(|&p| {
+                (-8..=8_i32).all(|dy| {
+                    (-8..=8_i32).all(|dx| {
+                        let q = Position::new(p.x + dx, p.y + dy);
+                        world.tile_at(q).is_some_and(|t| !t.ground.walkable())
+                    })
+                })
+            })
+            .expect("county has deep water or mountain core");
+
+        let before_pose = game.player_pose();
+        let before_bounds = game.block_bounds();
+        assert_eq!(game.teleport(Tile3D::from_pos(impassable_core, 0)), None);
+        assert_eq!(game.player_pose(), before_pose);
+        assert_eq!(game.block_bounds(), before_bounds);
+
+        // Teleporting onto a building wall snaps cleanly to a walkable interior/entry tile.
+        let sites = world.sites().unwrap();
+        let b = sites
+            .buildings
+            .iter()
+            .find(|b| b.kind != crate::BuildingKind::ArmyBase)
+            .expect("non-army building");
+        let wall_tile = Tile3D::new(b.min.x, b.min.y, 0);
+        let snapped = game
+            .teleport(wall_tile)
+            .expect("wall teleport snaps to walkable tile");
+        assert!(game.stage.is_walkable(snapped, false));
+        assert!(
+            game.stage
+                .circle_walkable(snapped.center(), snapped.floor, PLAYER_RADIUS, false)
+        );
     }
 }

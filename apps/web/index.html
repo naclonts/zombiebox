@@ -3,162 +3,283 @@
   <head>
     <meta charset="utf-8" />
     <meta
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
       name="viewport"
     />
     <meta content="#101b19" name="theme-color" />
-    <title>Zombiebox — Last Light</title>
+    <title>Zombiebox — Real-Time Action</title>
     <link href="style.css" rel="stylesheet" />
   </head>
-  <body>
-    <main class="shell">
-      <header class="top" inert>
-        <div class="brand">
-          <span class="brand-mark">
-            Z
-            <span> ✳ </span>
-          </span>
-          <div>
-            <strong> ZOMBIEBOX </strong>
+  <body class="action-body">
+    <main class="action-shell">
+      <section aria-label="Zombiebox real-time stage" class="action-stage">
+        <canvas
+          aria-label="Isometric procedural county"
+          id="action-canvas"
+        ></canvas>
+
+        <div aria-hidden="true" class="stick-overlay">
+          <div class="stick-base" hidden id="stick-move">
+            <div class="stick-knob" id="stick-move-knob"></div>
+          </div>
+          <div class="stick-base stick-aim" hidden id="stick-aim">
+            <div class="stick-outer-ring"></div>
+            <div class="stick-knob" id="stick-aim-knob"></div>
           </div>
         </div>
-        <div class="toolbar">
-          <button aria-label="Mute sound" aria-pressed="false" class="icon-button" id="sound">
-            <span aria-hidden="true">♪</span>
-          </button>
-          <button aria-label="Pause and show controls" class="icon-button" id="help">
-            <span aria-hidden="true">Ⅱ</span>
-          </button>
-        </div>
-      </header>
-      <section aria-label="Zombie survival game" class="game">
-        <div class="hud" inert>
-          <div class="hud-block">
-            <span class="eyebrow"> SURVIVOR </span>
-            <div class="health-row">
-              <span class="cross"> ✚ </span>
-              <div class="health-track">
-                <div id="health-bar"></div>
-              </div>
-              <strong id="health"> — </strong>
+
+        <header class="action-hud" id="action-hud">
+          <div class="hud-cluster hud-left">
+            <span class="floor-badge" id="hud-floor">1F</span>
+            <div
+              aria-label="Health"
+              class="health-segs"
+              id="hud-health-bar"
+              role="img"
+            >
+              <span class="health-seg is-filled"></span>
+              <span class="health-seg is-filled"></span>
+              <span class="health-seg is-filled"></span>
+              <span class="health-seg is-filled"></span>
+              <span class="health-seg is-filled"></span>
+              <span class="health-seg is-filled"></span>
+            </div>
+            <div class="weapon-readout">
+              <span class="hud-label" id="hud-weapon-title">UNARMED</span>
+              <strong class="hud-value" id="hud-weapon-readout">Shove</strong>
             </div>
           </div>
-          <div class="hud-stats">
-            <div>
-              <span class="eyebrow" id="weapon-label">UNARMED</span>
-              <strong id="supplies"> — </strong>
-            </div>
-            <div>
-              <span class="eyebrow"> THREATS </span>
-              <strong id="threats"> — </strong>
-            </div>
-          </div>
-        </div>
-        <div class="world" inert>
-          <canvas aria-label="Isometric game world" id="world"> </canvas>
-          <div class="world-top">
-            <span>
-              <i> </i>
-              BIRCH STREET
+
+          <div class="hud-center" id="hud-center">
+            <span class="hud-center-eyebrow" id="hud-eyebrow">
+              RESIDENTIAL · 0,0
             </span>
-            <span id="tick" aria-label="Elapsed time">00:00</span>
+            <strong class="hud-center-obj" id="hud-objective">
+              Explore county &amp; scavenge supplies
+            </strong>
+            <span class="hud-center-caches" hidden id="hud-caches">
+              CACHES 0/0
+            </span>
           </div>
-          <div class="toast" id="toast" role="status" hidden></div>
-        </div>
-        <div class="bottom" inert>
-          <div class="mission">
-            <div class="mission-icon">✳</div>
-            <div>
-              <span class="eyebrow"> YOUR OBJECTIVE </span>
-              <strong id="objective">
-                Find the pistol inside the house.
-              </strong>
-            </div>
-          </div>
-          <div class="controls">
-            <div aria-label="Movement controls" class="pad">
-              <button aria-label="Move northwest" class="up" data-move="W">
-                ↖
-              </button>
-              <button aria-label="Move northeast" class="right" data-move="N">
-                ↗
-              </button>
-              <button aria-label="Move southwest" class="left" data-move="S">
-                ↙
-              </button>
-              <button aria-label="Move southeast" class="down" data-move="E">
-                ↘
-              </button>
-              <span class="pad-center"> MOVE </span>
-            </div>
-            <div class="actions">
-              <button class="action loot" id="loot">
-                <span class="action-icon"> ▣ </span>
-                <span>
-                  SCAVENGE
-                  <small id="loot-hint">AT A CACHE</small>
-                </span>
-              </button>
-              <button class="action attack" id="attack">
-                <span class="action-icon"> ✳ </span>
-                <span>
-                  FIRE
-                  <small id="fire-hint">UNARMED</small>
-                </span>
-              </button>
-            </div>
-          </div>
-          <div class="controls-note">
-            ARROW KEYS / WASD TO MOVE
-            <span> · </span>
-            L TO SCAVENGE
-            <span> · </span>
-            SPACE TO FIRE
-          </div>
-        </div>
-        <div class="overlay" id="overlay">
-          <div
-            class="modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="modal-title"
-            aria-describedby="modal-copy"
-          >
-            <div class="modal-symbol">✳</div>
-            <h1 id="modal-title">
-              Last light
-              <br />
-              <em> on the block. </em>
-            </h1>
-            <p id="modal-copy">
-              There’s a pistol in the house on Birch Street. Get inside,
-              scavenge the marked crate, and clear the block.
-            </p>
-            <div class="instructions" id="instructions">
-              <div>
-                <span>
-                  Follow the lit doorway into the house.
-                </span>
-              </div>
-              <div>
-                <span>
-                  Stand on the marked crate and tap Scavenge.
-                </span>
-              </div>
-              <div>
-                <span>Get a clear shot and tap Fire.</span>
-              </div>
-            </div>
-            <a class="county-link" href="county.html">OPEN THE COUNTY FIELD ATLAS ↗</a>
-            <button class="primary" id="start" autofocus>
-              ENTER THE BLOCK
-              <span> ↗ </span>
+
+          <div class="hud-cluster hud-right">
+            <span class="threat-readout" id="hud-threats">NEARBY: 0</span>
+            <button
+              class="hud-pill"
+              id="btn-atlas"
+              title="Open County Field Atlas (M)"
+              type="button"
+            >
+              ATLAS [M]
             </button>
+            <button
+              aria-label="Toggle camera aim look-ahead"
+              aria-pressed="true"
+              class="hud-pill is-active"
+              id="btn-look"
+              title="Camera aim look-ahead"
+              type="button"
+            >
+              LOOK
+            </button>
+            <button
+              aria-label="Mute sound"
+              aria-pressed="false"
+              class="hud-icon"
+              id="btn-sound"
+              title="Toggle sound"
+              type="button"
+            >
+              <span aria-hidden="true">♪</span>
+            </button>
+            <button
+              aria-label="Pause game"
+              class="hud-icon"
+              id="btn-pause"
+              title="Pause (Esc)"
+              type="button"
+            >
+              <span aria-hidden="true">Ⅱ</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="action-toast" hidden id="action-toast" role="status"></div>
+
+        <button
+          class="interact-pill"
+          hidden
+          id="btn-interact"
+          type="button"
+        >
+          [E] SEARCH
+        </button>
+
+        <nav aria-label="Weapon and item hotbar" class="action-hotbar" id="action-hotbar">
+          <button
+            class="hotbar-slot"
+            data-weapon="0"
+            id="slot-0"
+            type="button"
+          >
+            <span class="slot-key">1 AXE</span>
+            <strong class="slot-ammo">--</strong>
+          </button>
+          <button
+            class="hotbar-slot"
+            data-weapon="1"
+            id="slot-1"
+            type="button"
+          >
+            <span class="slot-key">2 PST</span>
+            <strong class="slot-ammo">--</strong>
+          </button>
+          <button
+            class="hotbar-slot"
+            data-weapon="2"
+            id="slot-2"
+            type="button"
+          >
+            <span class="slot-key">3 SHT</span>
+            <strong class="slot-ammo">--</strong>
+          </button>
+          <button
+            class="hotbar-slot"
+            data-weapon="3"
+            id="slot-3"
+            type="button"
+          >
+            <span class="slot-key">4 RKT</span>
+            <strong class="slot-ammo">--</strong>
+          </button>
+          <button
+            class="hotbar-pill heal-pill"
+            disabled
+            id="btn-heal"
+            type="button"
+          >
+            + MED x0 <small>[Q/H]</small>
+          </button>
+          <button
+            class="hotbar-pill reload-pill"
+            hidden
+            id="btn-reload"
+            type="button"
+          >
+            RLD [R]
+          </button>
+        </nav>
+
+        <div class="action-overlay" id="action-overlay">
+          <div
+            aria-describedby="modal-copy"
+            aria-labelledby="modal-title"
+            aria-modal="true"
+            class="action-modal"
+            role="dialog"
+          >
+            <div class="modal-eyebrow" id="modal-eyebrow">
+              PROCEDURAL COUNTY · SEED 42
+            </div>
+            <h1 id="modal-title">Zombiebox</h1>
+            <p class="modal-copy" id="modal-copy">
+              Real-time isometric survival across a seed-driven county. Scavenge
+              buildings, watch your noise, and outlast the dusk.
+            </p>
+
+            <section class="modal-setup" id="modal-setup">
+              <div class="setup-label" hidden id="setup-heading">
+                NEW RUN SETUP
+              </div>
+              <div
+                aria-label="Scenario"
+                class="scenario-toggle"
+                role="group"
+              >
+                <button
+                  aria-pressed="true"
+                  class="scenario-btn is-selected"
+                  data-scenario="county"
+                  id="scenario-county"
+                  type="button"
+                >
+                  COUNTY (PROCEDURAL)
+                </button>
+                <button
+                  aria-pressed="false"
+                  class="scenario-btn"
+                  data-scenario="birch"
+                  id="scenario-birch"
+                  type="button"
+                >
+                  BIRCH STREET
+                </button>
+              </div>
+              <div class="seed-row">
+                <label class="seed-label" for="seed-input">SEED</label>
+                <input
+                  autocomplete="off"
+                  class="seed-input"
+                  id="seed-input"
+                  inputmode="numeric"
+                  spellcheck="false"
+                  type="text"
+                  value="42"
+                />
+                <button
+                  class="seed-random-btn"
+                  id="btn-random-seed"
+                  type="button"
+                >
+                  RANDOM
+                </button>
+              </div>
+              <p class="seed-error" hidden id="seed-error" role="alert">
+                Enter an unsigned integer seed (0 to 18446744073709551615).
+              </p>
+            </section>
+
+            <p class="modal-controls">
+              WASD / Arrows: Move (Shift: Quiet Walk) · Mouse: Aim &amp;
+              Click/Hold Fire (or Space) · E: Interact · 1–4: Weapons · R:
+              Reload · Q/H: Medkit · M: Field Atlas · Esc: Pause
+            </p>
+
+            <div class="modal-actions">
+              <button
+                autofocus
+                class="action-primary"
+                id="btn-primary"
+                type="button"
+              >
+                Enter the county
+              </button>
+              <button
+                class="action-secondary"
+                hidden
+                id="btn-new-run"
+                type="button"
+              >
+                Start New Run
+              </button>
+              <button
+                class="action-atlas-btn"
+                id="btn-modal-atlas"
+                type="button"
+              >
+                Open County Field Atlas [M] ↗
+              </button>
+            </div>
+
+            <footer class="modal-footer">
+              <a class="legacy-link" href="legacy.html">
+                Legacy 20 Hz turn-based harness
+              </a>
+            </footer>
           </div>
         </div>
       </section>
     </main>
-    <script src="scene.js"></script>
-    <script src="game.js"></script>
+    <script src="action.js"></script>
   </body>
 </html>

@@ -1,6 +1,5 @@
 package game.zombiebox.mobile
 
-import android.content.Intent
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.module.annotations.ReactModule
@@ -38,6 +37,16 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
         view.seed = seed?.toULongOrNull()?.toLong()
     }
 
+    @ReactProp(name = "scenario")
+    override fun setScenario(view: ZombieboxSurfaceView, scenario: String?) {
+        view.scenario = if (scenario == "birch") "birch" else "county"
+    }
+
+    @ReactProp(name = "runStarted", defaultBoolean = false)
+    override fun setRunStarted(view: ZombieboxSurfaceView, runStarted: Boolean) {
+        view.runStarted = runStarted
+    }
+
     @ReactProp(name = "paused")
     override fun setPaused(view: ZombieboxSurfaceView, paused: Boolean) {
         view.paused = paused
@@ -68,9 +77,7 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
         view.aimLookAhead = aimLookAhead
     }
 
-    override fun openCounty(view: ZombieboxSurfaceView) {
-        view.context.startActivity(Intent(view.context, CountyActivity::class.java))
-    }
+    override fun openCounty(view: ZombieboxSurfaceView) = view.openCounty()
 
     override fun requestInteract(view: ZombieboxSurfaceView) = view.requestInteract()
 
@@ -88,7 +95,10 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
     }
 
     override fun getExportedCustomDirectEventTypeConstants(): Map<String, Any> =
-        mapOf(HudChangedEvent.NAME to mapOf("registrationName" to "onHudChanged"))
+        mapOf(
+            HudChangedEvent.NAME to mapOf("registrationName" to "onHudChanged"),
+            AtlasTeleportEvent.NAME to mapOf("registrationName" to "onAtlasTeleport"),
+        )
 
     companion object {
         const val NAME = "ZombieboxSurface"

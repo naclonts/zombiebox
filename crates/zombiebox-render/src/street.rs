@@ -1,10 +1,12 @@
-//! Multi-level Birch Street architecture, 4 house palettes, Bayer-dissolve cutaways,
-//! destructible structures & props, stairs, streetlights, and supply caches.
+//! Multi-level county & Birch Street architecture, 12 building palettes, Bayer-dissolve cutaways,
+//! destructible structures & props, stairs, streetlights, terrain, and supply caches.
+
+use std::collections::HashMap;
 
 use zombiebox_core::{
-    ActionGame, BuildingInfo, BuildingStyle, CacheKind, CacheView, Floor, Ground, InteractPrompt,
-    Material, Position, PropKind, Surface, Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2,
-    WallOrientation,
+    ActionGame, BuildingId, BuildingInfo, BuildingStyle, CacheKind, CacheView, Floor, Ground,
+    InteractPrompt, Material, Position, PropKind, Surface, Tile3D, TileKind, TileRenderInfo,
+    TileVisibility, Vec2, WallOrientation,
 };
 
 use crate::actors::draw_peeking_shooter;
@@ -23,9 +25,9 @@ pub(crate) enum DrawItemKind {
         x: i32,
         y: i32,
         floor: Floor,
-        closed_building: Option<u8>,
+        closed_building: Option<BuildingId>,
         stipple: u8,
-        f0_support_only: bool,
+        support_floors: u8,
     },
     DoorJambFront {
         x: i32,
@@ -36,6 +38,17 @@ pub(crate) enum DrawItemKind {
     Roof {
         building_idx: usize,
         stipple: u8,
+    },
+    RoofTile {
+        x: i32,
+        y: i32,
+        bid: BuildingId,
+        floors: u8,
+        stipple: u8,
+    },
+    Mountain {
+        x: i32,
+        y: i32,
     },
     Cache {
         idx: usize,
@@ -136,18 +149,138 @@ fn building_palette(style: BuildingStyle) -> HousePalette {
             carpet: [124, 104, 88, 255],
             carpet_trim: [166, 142, 118, 210],
         },
+        BuildingStyle::DowntownStorefront => HousePalette {
+            wall_lit: [176, 108, 86, 255],
+            wall_shade: [132, 78, 66, 255],
+            trim: [222, 212, 184, 255],
+            course: [96, 56, 48, 150],
+            plinth: [88, 82, 78, 255],
+            roof_front: [94, 88, 86, 255],
+            roof_side: [72, 68, 70, 255],
+            roof_back: [58, 56, 60, 255],
+            roof_ridge: [148, 140, 128, 255],
+            roof_eave: [48, 46, 50, 255],
+            carpet: [128, 92, 82, 255],
+            carpet_trim: [174, 134, 118, 210],
+        },
+        BuildingStyle::DowntownOffice => HousePalette {
+            wall_lit: [164, 166, 160, 255],
+            wall_shade: [118, 124, 128, 255],
+            trim: [212, 214, 206, 255],
+            course: [84, 90, 96, 145],
+            plinth: [74, 80, 88, 255],
+            roof_front: [76, 84, 94, 255],
+            roof_side: [58, 64, 74, 255],
+            roof_back: [46, 52, 62, 255],
+            roof_ridge: [132, 140, 150, 255],
+            roof_eave: [38, 44, 52, 255],
+            carpet: [78, 94, 114, 255],
+            carpet_trim: [118, 134, 154, 210],
+        },
+        BuildingStyle::DowntownApartments => HousePalette {
+            wall_lit: [142, 92, 76, 255],
+            wall_shade: [104, 66, 58, 255],
+            trim: [188, 174, 150, 255],
+            course: [76, 48, 42, 155],
+            plinth: [78, 70, 68, 255],
+            roof_front: [74, 68, 66, 255],
+            roof_side: [56, 52, 52, 255],
+            roof_back: [44, 42, 44, 255],
+            roof_ridge: [126, 116, 108, 255],
+            roof_eave: [38, 36, 38, 255],
+            carpet: [116, 82, 76, 255],
+            carpet_trim: [158, 118, 108, 210],
+        },
+        BuildingStyle::HospitalClinical => HousePalette {
+            wall_lit: [204, 212, 210, 255],
+            wall_shade: [154, 172, 174, 255],
+            trim: [86, 152, 148, 255],
+            course: [118, 138, 140, 140],
+            plinth: [82, 112, 114, 255],
+            roof_front: [108, 122, 126, 255],
+            roof_side: [82, 96, 102, 255],
+            roof_back: [64, 78, 84, 255],
+            roof_ridge: [158, 176, 178, 255],
+            roof_eave: [54, 68, 74, 255],
+            carpet: [84, 136, 134, 255],
+            carpet_trim: [134, 182, 178, 210],
+        },
+        BuildingStyle::PolicePrecinct => HousePalette {
+            wall_lit: [114, 132, 156, 255],
+            wall_shade: [82, 98, 120, 255],
+            trim: [188, 194, 202, 255],
+            course: [58, 70, 88, 150],
+            plinth: [64, 72, 84, 255],
+            roof_front: [68, 78, 92, 255],
+            roof_side: [52, 60, 74, 255],
+            roof_back: [42, 48, 60, 255],
+            roof_ridge: [124, 136, 152, 255],
+            roof_eave: [34, 40, 50, 255],
+            carpet: [68, 84, 108, 255],
+            carpet_trim: [108, 128, 154, 210],
+        },
+        BuildingStyle::ArmyBarracks => HousePalette {
+            wall_lit: [122, 130, 100, 255],
+            wall_shade: [88, 96, 74, 255],
+            trim: [174, 166, 134, 255],
+            course: [64, 70, 54, 150],
+            plinth: [76, 78, 66, 255],
+            roof_front: [82, 88, 72, 255],
+            roof_side: [62, 68, 56, 255],
+            roof_back: [48, 54, 44, 255],
+            roof_ridge: [128, 132, 108, 255],
+            roof_eave: [40, 44, 38, 255],
+            carpet: [98, 102, 74, 255],
+            carpet_trim: [142, 144, 108, 210],
+        },
+        BuildingStyle::WoodlandCabin => HousePalette {
+            wall_lit: [144, 102, 66, 255],
+            wall_shade: [106, 72, 48, 255],
+            trim: [188, 158, 114, 255],
+            course: [68, 46, 32, 165],
+            plinth: [84, 78, 72, 255],
+            roof_front: [64, 76, 64, 255],
+            roof_side: [48, 58, 50, 255],
+            roof_back: [38, 46, 42, 255],
+            roof_ridge: [104, 116, 94, 255],
+            roof_eave: [32, 40, 36, 255],
+            carpet: [118, 86, 62, 255],
+            carpet_trim: [164, 126, 90, 210],
+        },
+        BuildingStyle::RuralBarn => HousePalette {
+            wall_lit: [156, 68, 58, 255],
+            wall_shade: [114, 48, 44, 255],
+            trim: [216, 212, 198, 255],
+            course: [80, 34, 32, 155],
+            plinth: [90, 84, 78, 255],
+            roof_front: [76, 72, 76, 255],
+            roof_side: [58, 54, 60, 255],
+            roof_back: [44, 42, 48, 255],
+            roof_ridge: [128, 124, 124, 255],
+            roof_eave: [36, 34, 40, 255],
+            carpet: [112, 92, 68, 255],
+            carpet_trim: [154, 132, 98, 210],
+        },
     }
 }
 
-fn find_building(game: &ActionGame, bid: u8) -> Option<&BuildingInfo> {
+fn find_building(game: &ActionGame, bid: BuildingId) -> Option<&BuildingInfo> {
     if bid == 0 {
         return None;
     }
     game.buildings().iter().find(|b| b.id == bid)
 }
 
-fn style_for_building(game: &ActionGame, bid: u8) -> BuildingStyle {
+fn style_for_building(game: &ActionGame, bid: BuildingId) -> BuildingStyle {
     find_building(game, bid).map_or(BuildingStyle::BirchSage, |b| b.style)
+}
+
+#[inline]
+pub(crate) fn building_stipple(cutaway: &HashMap<BuildingId, f32>, bid: BuildingId) -> u8 {
+    if bid == 0 {
+        return 0;
+    }
+    cutaway_to_stipple(cutaway.get(&bid).copied().unwrap_or(0.0))
 }
 
 /// Convert cutaway openness `0.0..=1.0` to 4-step 2×2 Bayer stipple opacity `0..=4`.
@@ -176,7 +309,8 @@ pub(crate) fn draw_ground_pass(
     grid: &LightGrid,
     bounds: (i32, i32, i32, i32),
     only_outdoor: bool,
-    cutaway: &[f32; 8],
+    cutaway: &HashMap<BuildingId, f32>,
+    elapsed_ms: u64,
 ) {
     let (min_x, max_x, min_y, max_y) = bounds;
     let w = c.width() as f32;
@@ -196,13 +330,14 @@ pub(crate) fn draw_ground_pass(
                 // Skip interior ground under fully closed intact buildings.
                 if info.indoor
                     && info.building_id > 0
-                    && (info.building_id as usize) < cutaway.len()
-                    && cutaway_to_stipple(cutaway[info.building_id as usize]) == 4
+                    && building_stipple(cutaway, info.building_id) == 4
                     && info.visibility == TileVisibility::Hidden
                 {
                     continue;
                 }
-                draw_surface_diamond(c, game, proj, grid, x, y, 0.0, sx, sy, info, light);
+                draw_surface_diamond(
+                    c, game, proj, grid, x, y, 0.0, sx, sy, info, light, elapsed_ms,
+                );
             } else if let Some(tile) = game.world().tile_at(Position::new(x, y)) {
                 draw_county_fallback_tile(c, sx, sy, x, y, tile.ground, light);
             }
@@ -210,22 +345,26 @@ pub(crate) fn draw_ground_pass(
     }
 }
 
-/// Draw elevated Floor 1 deck (`z = 1.0`) with `4 px` joist fascia border and dark stairwell cutout.
-pub(crate) fn draw_f1_deck_pass(
+/// Draw elevated upper floor deck (`z = floor as f32`) with `4 px` joist fascia border and dark stairwell cutout.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_upper_deck_pass(
     c: &mut Canvas<'_>,
     game: &ActionGame,
     proj: &Projector,
-    grid_f1: &LightGrid,
-    active_building: u8,
+    grid_upper: &LightGrid,
+    floor: Floor,
+    active_building: BuildingId,
     bounds: (i32, i32, i32, i32),
+    elapsed_ms: u64,
 ) {
     let (min_x, max_x, min_y, max_y) = bounds;
     let w = c.width() as f32;
     let h = c.height() as f32;
+    let z = floor as f32;
 
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let Some(info) = grid_f1.tile_info(x, y) else {
+            let Some(info) = grid_upper.tile_info(x, y) else {
                 continue;
             };
             if info.surface == Surface::Air {
@@ -234,45 +373,39 @@ pub(crate) fn draw_f1_deck_pass(
             if active_building != 0 && info.building_id != active_building {
                 continue;
             }
-            let (sx, sy) = proj.project_z(x as f32, y as f32, 1.0);
+            let (sx, sy) = proj.project_z(x as f32, y as f32, z);
             if sx < -TILE_W || sx > w + TILE_W || sy < -TILE_H || sy > h + TILE_H {
                 continue;
             }
-            let light = grid_f1.cell_light(x, y);
+            let light = grid_upper.cell_light(x, y);
 
-            // Clipped building footprint bounds so the F1 floor slab & 4 px joist fascia
-            // sit 100% flush on top of the F0 exterior support walls!
-            let (rx0, rx1, ry0, ry1) = if let Some(b) = find_building(game, info.building_id) {
-                (
-                    (x as f32 - 0.5).max(b.x as f32),
-                    (x as f32 + 0.5).min((b.x + b.width - 1) as f32),
-                    (y as f32 - 0.5).max(b.y as f32),
-                    (y as f32 + 0.5).min((b.y + b.height - 1) as f32),
-                )
-            } else {
-                (
-                    x as f32 - 0.5,
-                    x as f32 + 0.5,
-                    y as f32 - 0.5,
-                    y as f32 + 0.5,
-                )
+            // Clipped building footprint bounds via neighbors so non-rectangular slabs & 4 px joist
+            // fascia sit 100% flush on top of lower exterior support walls!
+            let same = |nx: i32, ny: i32| {
+                grid_upper
+                    .tile_info(nx, ny)
+                    .is_some_and(|n| n.building_id == info.building_id)
             };
+            let rx0 = x as f32 - if same(x - 1, y) { 0.5 } else { 0.0 };
+            let rx1 = x as f32 + if same(x + 1, y) { 0.5 } else { 0.0 };
+            let ry0 = y as f32 - if same(x, y - 1) { 0.5 } else { 0.0 };
+            let ry1 = y as f32 + if same(x, y + 1) { 0.5 } else { 0.0 };
 
             // 4 px joist fascia border on exposed SE / SW slab edges!
-            let se_air = grid_f1
+            let se_air = grid_upper
                 .tile_info(x + 1, y)
-                .is_none_or(|n| n.surface == Surface::Air);
-            let sw_air = grid_f1
+                .is_none_or(|n| n.surface == Surface::Air || n.building_id != info.building_id);
+            let sw_air = grid_upper
                 .tile_info(x, y + 1)
-                .is_none_or(|n| n.surface == Surface::Air);
+                .is_none_or(|n| n.surface == Surface::Air || n.building_id != info.building_id);
             let pal = building_palette(style_for_building(game, info.building_id));
             let fascia_l = tint(pal.trim, light);
             let fascia_d = tint([136, 126, 108, 255], light);
             let joist_tick = tint([68, 56, 44, 210], light);
 
             if se_air && ry1 > ry0 {
-                let p0 = proj.project_z(rx1, ry0, 1.0);
-                let p1 = proj.project_z(rx1, ry1, 1.0);
+                let p0 = proj.project_z(rx1, ry0, z);
+                let p1 = proj.project_z(rx1, ry1, z);
                 c.polygon(
                     &[p0, p1, (p1.0, p1.1 + FASCIA_H), (p0.0, p0.1 + FASCIA_H)],
                     fascia_d,
@@ -283,8 +416,8 @@ pub(crate) fn draw_f1_deck_pass(
                 c.line(mx, my, mx, my + FASCIA_H, joist_tick);
             }
             if sw_air && rx1 > rx0 {
-                let p0 = proj.project_z(rx0, ry1, 1.0);
-                let p1 = proj.project_z(rx1, ry1, 1.0);
+                let p0 = proj.project_z(rx0, ry1, z);
+                let p1 = proj.project_z(rx1, ry1, z);
                 c.polygon(
                     &[p0, p1, (p1.0, p1.1 + FASCIA_H), (p0.0, p0.1 + FASCIA_H)],
                     fascia_l,
@@ -297,23 +430,32 @@ pub(crate) fn draw_f1_deck_pass(
 
             if !info.indoor && info.building_id > 0 {
                 if rx1 > rx0 && ry1 > ry0 {
-                    let q0 = proj.project_z(rx0, ry0, 1.0);
-                    let q1 = proj.project_z(rx1, ry0, 1.0);
-                    let q2 = proj.project_z(rx1, ry1, 1.0);
-                    let q3 = proj.project_z(rx0, ry1, 1.0);
+                    let q0 = proj.project_z(rx0, ry0, z);
+                    let q1 = proj.project_z(rx1, ry0, z);
+                    let q2 = proj.project_z(rx1, ry1, z);
+                    let q3 = proj.project_z(rx0, ry1, z);
                     let col = if info.visibility == TileVisibility::Hidden {
                         SHROUD_COLOR
                     } else {
-                        tint([134, 104, 74, 255], light)
+                        let surf_base = match info.surface {
+                            Surface::Carpet => pal.carpet,
+                            Surface::KitchenTile => [164, 168, 158, 255],
+                            _ => [134, 104, 74, 255],
+                        };
+                        tint(surf_base, light)
                     };
                     c.polygon(&[q0, q1, q2, q3], col);
                 }
             } else {
-                draw_surface_diamond(c, game, proj, grid_f1, x, y, 1.0, sx, sy, info, light);
+                draw_surface_diamond(
+                    c, game, proj, grid_upper, x, y, z, sx, sy, info, light, elapsed_ms,
+                );
             }
 
-            // Recessed dark stairwell cutout right in the F1 floor deck.
-            if info.kind == TileKind::StairsDown && info.visibility != TileVisibility::Hidden {
+            // Recessed dark stairwell cutout right in the upper floor deck.
+            if matches!(info.kind, TileKind::StairsDown | TileKind::StairsBoth)
+                && info.visibility != TileVisibility::Hidden
+            {
                 draw_stairs_down_cutout(c, sx, sy, info.stair_dir, light);
             }
         }
@@ -333,19 +475,16 @@ fn draw_surface_diamond(
     sy: f32,
     info: TileRenderInfo,
     light: CellLight,
+    elapsed_ms: u64,
 ) {
     if info.indoor && info.visibility == TileVisibility::Hidden {
         c.diamond(sx, sy, TILE_W * 0.5, TILE_H * 0.5, SHROUD_COLOR);
         return;
     }
 
-    // Perimeter wall tiles: keep outdoor ground outside the wall centerline and indoor wood inside!
-    if z == 0.0
-        && !info.indoor
-        && info.building_id > 0
-        && let Some(b) = find_building(game, info.building_id)
-    {
-        // Fill full tile with nearest outdoor yard/porch/driveway ground so wood never bleeds outside!
+    // Perimeter wall tiles: keep outdoor ground outside the wall centerline and indoor floor inside!
+    if z == 0.0 && !info.indoor && info.building_id > 0 {
+        // Fill full tile with nearest outdoor yard/porch/driveway ground so interior never bleeds outside!
         let ext_surf = [
             grid.tile_info(x, y + 1),
             grid.tile_info(x + 1, y),
@@ -361,21 +500,35 @@ fn draw_surface_diamond(
             Surface::Sidewalk => [124, 128, 122, 255],
             Surface::Driveway => [102, 106, 104, 255],
             Surface::Gravel => [92, 98, 86, 255],
+            Surface::Trail => [112, 94, 68, 255],
+            Surface::Field => [88, 86, 56, 255],
+            Surface::Forest => [40, 66, 50, 255],
             _ => [64, 88, 66, 255],
         };
         c.diamond(sx, sy, TILE_W * 0.5, TILE_H * 0.5, tint(ext_base, light));
 
-        // Draw clipped indoor hardwood quadrant strictly inside [b.x..=x1, b.y..=y1].
-        let rx0 = (x as f32 - 0.5).max(b.x as f32);
-        let rx1 = (x as f32 + 0.5).min((b.x + b.width - 1) as f32);
-        let ry0 = (y as f32 - 0.5).max(b.y as f32);
-        let ry1 = (y as f32 + 0.5).min((b.y + b.height - 1) as f32);
+        // Draw clipped indoor floor quadrant strictly inside the building's wall centerlines!
+        let same = |nx: i32, ny: i32| {
+            grid.tile_info(nx, ny)
+                .is_some_and(|n| n.building_id == info.building_id)
+        };
+        let rx0 = x as f32 - if same(x - 1, y) { 0.5 } else { 0.0 };
+        let rx1 = x as f32 + if same(x + 1, y) { 0.5 } else { 0.0 };
+        let ry0 = y as f32 - if same(x, y - 1) { 0.5 } else { 0.0 };
+        let ry1 = y as f32 + if same(x, y + 1) { 0.5 } else { 0.0 };
         if rx1 > rx0 && ry1 > ry0 {
             let q0 = proj.project_z(rx0, ry0, 0.0);
             let q1 = proj.project_z(rx1, ry0, 0.0);
             let q2 = proj.project_z(rx1, ry1, 0.0);
             let q3 = proj.project_z(rx0, ry1, 0.0);
-            c.polygon(&[q0, q1, q2, q3], tint([134, 104, 74, 255], light));
+            let inner_base = match info.surface {
+                Surface::Carpet => {
+                    building_palette(style_for_building(game, info.building_id)).carpet
+                }
+                Surface::KitchenTile => [164, 168, 158, 255],
+                _ => [134, 104, 74, 255],
+            };
+            c.polygon(&[q0, q1, q2, q3], tint(inner_base, light));
         }
         return;
     }
@@ -403,6 +556,30 @@ fn draw_surface_diamond(
             let v = (hash2(x.div_euclid(3), y.div_euclid(3)) % 9) as u8;
             [62 + v, 86 + v, 66 + v / 2, 255]
         }
+        Surface::Forest => {
+            let v = (hash2(x.div_euclid(2), y.div_euclid(2)) % 8) as u8;
+            [40 + v, 66 + v, 50 + v / 2, 255]
+        }
+        Surface::Field => {
+            let v = (hash2(x.div_euclid(3), y.div_euclid(3)) % 7) as u8;
+            [88 + v, 86 + v, 56 + v / 2, 255]
+        }
+        Surface::Trail => {
+            let v = (h % 7) as u8;
+            [112 + v, 94 + v, 68 + v / 2, 255]
+        }
+        Surface::Bridge => {
+            let v = (h % 6) as u8;
+            [132 + v, 106 + v, 74 + v, 255]
+        }
+        Surface::Water => {
+            let v = (h % 6) as u8;
+            [38 + v, 76 + v, 98 + v, 255]
+        }
+        Surface::Mountain => {
+            let v = (h % 7) as u8;
+            [84 + v, 86 + v, 94 + v, 255]
+        }
         Surface::Porch => {
             let v = (h % 6) as u8;
             [144 + v, 114 + v, 84 + v, 255]
@@ -419,6 +596,216 @@ fn draw_surface_diamond(
 
     match info.surface {
         Surface::Air => {}
+        Surface::Forest => {
+            let needle_d = tint([26, 46, 36, 185], light);
+            let fern_l = tint([68, 102, 66, 175], light);
+            c.line(sx - 6.0, sy + 1.0, sx - 2.0, sy - 1.0, needle_d);
+            c.line(sx + 2.0, sy + 2.0, sx + 6.0, sy, needle_d);
+            c.line(sx - 3.0, sy - 3.0, sx - 1.0, sy - 1.0, fern_l);
+            if h.is_multiple_of(3) {
+                c.line(sx + 4.0, sy - 3.0, sx + 7.0, sy - 4.0, fern_l);
+                c.rect(sx - 1.0, sy + 4.0, 2.0, 1.0, needle_d);
+            }
+        }
+        Surface::Field => {
+            let furrow_d = tint([62, 58, 40, 165], light);
+            let furrow_l = tint([114, 108, 70, 145], light);
+            let stubble = tint([156, 144, 84, 175], light);
+            for off in [-0.24_f32, 0.24] {
+                let a = proj.project_z(x as f32 - 0.44, y as f32 + off, z);
+                let b = proj.project_z(x as f32 + 0.44, y as f32 + off, z);
+                c.line(a.0, a.1, b.0, b.1, furrow_d);
+                c.line(a.0, a.1 - 1.0, b.0, b.1 - 1.0, furrow_l);
+            }
+            if !h.is_multiple_of(4) {
+                c.line(sx - 4.0, sy + 1.0, sx - 3.0, sy - 1.0, stubble);
+                c.line(sx + 4.0, sy - 1.0, sx + 5.0, sy - 3.0, stubble);
+            }
+        }
+        Surface::Trail => {
+            let rut = tint([82, 68, 50, 140], light);
+            let pebble_l = tint([144, 128, 102, 170], light);
+            let pebble_d = tint([76, 66, 54, 170], light);
+            let n_trail = grid.tile_info(x, y - 1).is_some_and(|t| {
+                matches!(t.surface, Surface::Trail | Surface::Road | Surface::Bridge)
+            });
+            let s_trail = grid.tile_info(x, y + 1).is_some_and(|t| {
+                matches!(t.surface, Surface::Trail | Surface::Road | Surface::Bridge)
+            });
+            let along_y = n_trail || s_trail;
+            for off in [-0.18_f32, 0.18] {
+                let (a, b) = if along_y {
+                    (
+                        proj.project_z(x as f32 + off, y as f32 - 0.42, z),
+                        proj.project_z(x as f32 + off, y as f32 + 0.42, z),
+                    )
+                } else {
+                    (
+                        proj.project_z(x as f32 - 0.42, y as f32 + off, z),
+                        proj.project_z(x as f32 + 0.42, y as f32 + off, z),
+                    )
+                };
+                c.line(a.0, a.1, b.0, b.1, rut);
+            }
+            c.rect(sx - 6.0, sy + 2.0, 2.0, 1.0, pebble_l);
+            if h.is_multiple_of(2) {
+                c.rect(sx + 5.0, sy - 2.0, 2.0, 1.0, pebble_d);
+            }
+        }
+        Surface::Bridge => {
+            let seam = tint([78, 60, 42, 180], light);
+            let nail_hi = tint([164, 138, 98, 140], light);
+            let n_span = grid
+                .tile_info(x, y - 1)
+                .is_some_and(|t| t.surface != Surface::Water);
+            let s_span = grid
+                .tile_info(x, y + 1)
+                .is_some_and(|t| t.surface != Surface::Water);
+            let along_y = n_span || s_span;
+            for off in [-0.30_f32, 0.0, 0.30] {
+                let (a, b) = if along_y {
+                    (
+                        proj.project_z(x as f32 - 0.48, y as f32 + off, z),
+                        proj.project_z(x as f32 + 0.48, y as f32 + off, z),
+                    )
+                } else {
+                    (
+                        proj.project_z(x as f32 + off, y as f32 - 0.48, z),
+                        proj.project_z(x as f32 + off, y as f32 + 0.48, z),
+                    )
+                };
+                c.line(a.0, a.1, b.0, b.1, seam);
+                c.line(a.0, a.1 + 1.0, b.0, b.1 + 1.0, nail_hi);
+            }
+
+            // 6 px raised guardrails along edges bordering Water.
+            let post_col = tint([94, 74, 54, 255], light);
+            let rail_hi = tint([172, 144, 108, 255], light);
+            let rail_mid = tint([124, 98, 68, 255], light);
+            let draw_rail = |c: &mut Canvas<'_>, p0: (f32, f32), p1: (f32, f32)| {
+                for t in [0.1_f32, 0.5, 0.9] {
+                    let px = p0.0 + (p1.0 - p0.0) * t;
+                    let py = p0.1 + (p1.1 - p0.1) * t;
+                    c.line(px, py, px, py - 6.0, post_col);
+                }
+                c.line(p0.0, p0.1 - 3.0, p1.0, p1.1 - 3.0, rail_mid);
+                c.line(p0.0, p0.1 - 6.0, p1.0, p1.1 - 6.0, rail_hi);
+            };
+            let fx = x as f32;
+            let fy = y as f32;
+            if grid
+                .tile_info(x, y - 1)
+                .is_some_and(|t| t.surface == Surface::Water)
+            {
+                draw_rail(
+                    c,
+                    proj.project_z(fx - 0.5, fy - 0.5, z),
+                    proj.project_z(fx + 0.5, fy - 0.5, z),
+                );
+            }
+            if grid
+                .tile_info(x - 1, y)
+                .is_some_and(|t| t.surface == Surface::Water)
+            {
+                draw_rail(
+                    c,
+                    proj.project_z(fx - 0.5, fy - 0.5, z),
+                    proj.project_z(fx - 0.5, fy + 0.5, z),
+                );
+            }
+            if grid
+                .tile_info(x + 1, y)
+                .is_some_and(|t| t.surface == Surface::Water)
+            {
+                draw_rail(
+                    c,
+                    proj.project_z(fx + 0.5, fy - 0.5, z),
+                    proj.project_z(fx + 0.5, fy + 0.5, z),
+                );
+            }
+            if grid
+                .tile_info(x, y + 1)
+                .is_some_and(|t| t.surface == Surface::Water)
+            {
+                draw_rail(
+                    c,
+                    proj.project_z(fx - 0.5, fy + 0.5, z),
+                    proj.project_z(fx + 0.5, fy + 0.5, z),
+                );
+            }
+        }
+        Surface::Water => {
+            // Subtle animated shimmer ripples.
+            let phase = ((elapsed_ms / 240).wrapping_add(h as u64) % 4) as f32;
+            let ripple_l = tint([94, 152, 182, 185], light);
+            let ripple_hi = tint([156, 208, 224, 145], light);
+            let ox = (phase - 1.5) * 2.2;
+            c.line(sx - 6.0 + ox, sy - 2.0, sx - 1.0 + ox, sy - 2.0, ripple_l);
+            c.line(sx + 1.0 - ox, sy + 2.0, sx + 7.0 - ox, sy + 2.0, ripple_hi);
+            if h.is_multiple_of(3) {
+                c.line(sx - 3.0, sy + 4.0, sx + 2.0, sy + 4.0, ripple_l);
+            }
+
+            // 2 px earthen bank + pale shoreline foam along edges bordering dry land.
+            let bank = tint([78, 72, 56, 235], light);
+            let foam = tint([168, 212, 224, 185], light);
+            let is_land = |nx: i32, ny: i32| {
+                grid.tile_info(nx, ny).is_some_and(|n| {
+                    !matches!(n.surface, Surface::Water | Surface::Bridge | Surface::Air)
+                })
+            };
+            let fx = x as f32;
+            let fy = y as f32;
+            let draw_shore = |c: &mut Canvas<'_>,
+                              o0: (f32, f32),
+                              o1: (f32, f32),
+                              i0: (f32, f32),
+                              i1: (f32, f32)| {
+                c.polygon(&[o0, o1, i1, i0], bank);
+                c.line(i0.0, i0.1, i1.0, i1.1, foam);
+            };
+            if is_land(x, y - 1) {
+                draw_shore(
+                    c,
+                    proj.project_z(fx - 0.5, fy - 0.5, z),
+                    proj.project_z(fx + 0.5, fy - 0.5, z),
+                    proj.project_z(fx - 0.45, fy - 0.39, z),
+                    proj.project_z(fx + 0.45, fy - 0.39, z),
+                );
+            }
+            if is_land(x - 1, y) {
+                draw_shore(
+                    c,
+                    proj.project_z(fx - 0.5, fy - 0.5, z),
+                    proj.project_z(fx - 0.5, fy + 0.5, z),
+                    proj.project_z(fx - 0.39, fy - 0.45, z),
+                    proj.project_z(fx - 0.39, fy + 0.45, z),
+                );
+            }
+            if is_land(x + 1, y) {
+                draw_shore(
+                    c,
+                    proj.project_z(fx + 0.5, fy - 0.5, z),
+                    proj.project_z(fx + 0.5, fy + 0.5, z),
+                    proj.project_z(fx + 0.39, fy - 0.45, z),
+                    proj.project_z(fx + 0.39, fy + 0.45, z),
+                );
+            }
+            if is_land(x, y + 1) {
+                draw_shore(
+                    c,
+                    proj.project_z(fx - 0.5, fy + 0.5, z),
+                    proj.project_z(fx + 0.5, fy + 0.5, z),
+                    proj.project_z(fx - 0.45, fy + 0.39, z),
+                    proj.project_z(fx + 0.45, fy + 0.39, z),
+                );
+            }
+        }
+        Surface::Mountain => {
+            let crack = tint([46, 48, 56, 180], light);
+            c.line(sx - 8.0, sy + 1.0, sx + 2.0, sy - 3.0, crack);
+            c.line(sx + 1.0, sy + 3.0, sx + 7.0, sy + 1.0, crack);
+        }
         Surface::Road => {
             let n_road = grid
                 .tile_info(x, y - 1)
@@ -611,12 +998,22 @@ fn draw_county_fallback_tile(
         Ground::Grass => [56 + (h % 6) as u8, 78 + (h % 6) as u8, 60, 255],
         Ground::Gravel => [78, 86, 76, 255],
         Ground::Pavement => [102, 106, 100, 255],
-        Ground::Field => [78, 84, 60, 255],
-        Ground::Bridge => [146, 123, 86, 255],
-        Ground::Forest => [36, 65, 50, 255],
-        Ground::Mountain => [119, 116, 121, 255],
-        Ground::River | Ground::Lake => [51, 95, 113, 255],
-        Ground::Trail => [119, 103, 75, 255],
+        Ground::Field => [88, 86, 56, 255],
+        Ground::Bridge => [
+            132 + (h % 6) as u8,
+            106 + (h % 6) as u8,
+            74 + (h % 6) as u8,
+            255,
+        ],
+        Ground::Forest => [40, 66, 50, 255],
+        Ground::Mountain => [84, 86, 94, 255],
+        Ground::River | Ground::Lake => [
+            38 + (h % 6) as u8,
+            76 + (h % 6) as u8,
+            98 + (h % 6) as u8,
+            255,
+        ],
+        Ground::Trail => [112, 94, 68, 255],
     };
     c.diamond(sx, sy, TILE_W * 0.5, TILE_H * 0.5, tint(base, light));
 }
@@ -627,20 +1024,22 @@ pub(crate) fn draw_tile_feature(
     c: &mut Canvas<'_>,
     game: &ActionGame,
     proj: &Projector,
-    grid: &LightGrid,
-    grid_f1_opt: Option<&LightGrid>,
+    light_floors: &[LightGrid; 3],
+    grid_idx: usize,
+    max_populated_floor: Floor,
     x: i32,
     y: i32,
     floor: Floor,
-    closed_building: Option<u8>,
+    closed_building: Option<BuildingId>,
     stipple: u8,
-    f0_support_only: bool,
+    support_floors: u8,
     player_pos: Vec2,
     near_interact: Option<Tile3D>,
     interact_prompt: InteractPrompt,
-    f1_shooters: &[(Vec2, u8)],
+    upper_shooters: &[(Vec2, Floor, u8)],
     elapsed_ms: u64,
 ) {
+    let grid = &light_floors[grid_idx];
     let Some(info) = grid.tile_info(x, y) else {
         return;
     };
@@ -652,7 +1051,7 @@ pub(crate) fn draw_tile_feature(
     let light = grid.cell_light(x, y);
     let (sx, sy) = proj.project_z(x as f32, y as f32, z);
 
-    // Closed (or Bayer-dissolving) 2-story exterior perimeter facade!
+    // Closed (or Bayer-dissolving) multi-story exterior perimeter facade!
     if let Some(bid) = closed_building {
         if stipple == 0 {
             return;
@@ -662,47 +1061,92 @@ pub(crate) fn draw_tile_feature(
             c,
             game,
             proj,
-            grid,
-            grid_f1_opt,
+            light_floors,
+            max_populated_floor,
             x,
             y,
             bid,
             info,
             light,
-            f1_shooters,
+            upper_shooters,
             elapsed_ms,
         );
         c.set_stipple(4);
         return;
     }
 
-    // F0 structural support walls beneath active F1 floor when player is upstairs!
-    if f0_support_only {
+    // Lower structural support walls beneath active upper floor when player is upstairs!
+    if support_floors > 0 {
         let pal = building_palette(style_for_building(game, info.building_id));
-        match info.kind {
-            TileKind::ExteriorWall
-            | TileKind::Pillar
-            | TileKind::Window
-            | TileKind::BrokenWindow
-            | TileKind::Door { .. } => {
-                draw_wall_or_opening(
-                    c,
-                    proj,
-                    grid,
-                    x,
-                    y,
-                    0.0,
-                    FLOOR_HEIGHT_PX,
-                    info,
-                    pal,
-                    light,
-                    false,
-                    false,
-                    elapsed_ms,
+        let draw_support_at = |c: &mut Canvas<'_>,
+                               sup_grid: &LightGrid,
+                               sup_z: f32,
+                               sup_h: f32,
+                               sup_info: TileRenderInfo,
+                               sup_light: CellLight| {
+            match sup_info.kind {
+                TileKind::ExteriorWall
+                | TileKind::Pillar
+                | TileKind::Window
+                | TileKind::BrokenWindow
+                | TileKind::Door { .. } => {
+                    draw_wall_or_opening(
+                        c, proj, sup_grid, x, y, sup_z, sup_h, sup_info, pal, sup_light, false,
+                        false, elapsed_ms,
+                    );
+                }
+                TileKind::Rubble => {
+                    let (rx, ry) = proj.project_z(x as f32, y as f32, sup_z);
+                    draw_rubble(c, rx, ry, x, y, sup_info.material, sup_light);
+                }
+                _ => {}
+            }
+        };
+
+        if support_floors >= 2 {
+            // F0 support wall (0..30 px) + 4 px fascia (30..34 px)
+            draw_support_at(c, grid, 0.0, WALL_FULL_H, info, light);
+            let segs = wall_segments(proj, grid, x, y, 0.0, info);
+            let fascia_col = tint(pal.trim, light);
+            let fascia_shadow = tint([56, 62, 68, 195], light);
+            for &(a, b, _) in &segs.items[..segs.len] {
+                c.polygon(
+                    &[
+                        (a.0, a.1 - WALL_FULL_H),
+                        (b.0, b.1 - WALL_FULL_H),
+                        (b.0, b.1 - FLOOR_HEIGHT_PX),
+                        (a.0, a.1 - FLOOR_HEIGHT_PX),
+                    ],
+                    fascia_col,
+                );
+                c.line(
+                    a.0,
+                    a.1 - WALL_FULL_H,
+                    b.0,
+                    b.1 - WALL_FULL_H,
+                    fascia_shadow,
                 );
             }
-            TileKind::Rubble => draw_rubble(c, sx, sy, x, y, info.material, light),
-            _ => {}
+            // F1 support wall (34..68 px)
+            let f1_grid = if max_populated_floor >= 1 {
+                &light_floors[1]
+            } else {
+                grid
+            };
+            if let Some(f1_info) = f1_grid
+                .tile_info(x, y)
+                .or_else(|| game.tile_render_info(Position::new(x, y), 1))
+                && f1_info.surface != Surface::Air
+            {
+                let f1_light = if max_populated_floor >= 1 {
+                    f1_grid.cell_light(x, y)
+                } else {
+                    light
+                };
+                draw_support_at(c, f1_grid, 1.0, FLOOR_HEIGHT_PX, f1_info, f1_light);
+            }
+        } else {
+            draw_support_at(c, grid, 0.0, FLOOR_HEIGHT_PX, info, light);
         }
         return;
     }
@@ -716,7 +1160,7 @@ pub(crate) fn draw_tile_feature(
                 | TileKind::ExteriorWall
                 | TileKind::Pillar
         ) {
-            let h = if is_wall_stub(game, x, y, info, player_pos) {
+            let h = if is_wall_stub(grid, x, y, info, player_pos) {
                 WALL_STUB_H
             } else {
                 WALL_FULL_H
@@ -737,9 +1181,9 @@ pub(crate) fn draw_tile_feature(
         | TileKind::Window
         | TileKind::BrokenWindow
         | TileKind::Door { .. } => {
-            let cut_low = is_wall_stub(game, x, y, info, player_pos);
+            let cut_low = is_wall_stub(grid, x, y, info, player_pos);
             let height = if cut_low { WALL_STUB_H } else { WALL_FULL_H };
-            let show_drop_cue = floor == 1
+            let show_drop_cue = floor >= 1
                 && info.kind == TileKind::BrokenWindow
                 && (is_interact_target || interact_prompt == InteractPrompt::DropWindow);
             draw_wall_or_opening(
@@ -763,6 +1207,10 @@ pub(crate) fn draw_tile_feature(
         TileKind::StairsDown => {
             draw_stairs_down_railing(c, sx, sy, info.stair_dir, light, elapsed_ms)
         }
+        TileKind::StairsBoth => {
+            draw_stairs_down_railing(c, sx, sy, info.stair_dir, light, elapsed_ms);
+            draw_stairs_up(c, sx, sy, info.stair_dir, light, elapsed_ms);
+        }
         TileKind::Streetlight => draw_streetlight(c, sx, sy, info, light, elapsed_ms),
         TileKind::BrokenStreetlight => draw_broken_streetlight(c, sx, sy, x, y, light),
         TileKind::Prop(prop) => {
@@ -776,6 +1224,7 @@ pub(crate) fn draw_tile_feature(
                 sx,
                 sy,
                 prop,
+                info.surface,
                 info.orientation,
                 damaged,
                 light,
@@ -784,27 +1233,24 @@ pub(crate) fn draw_tile_feature(
     }
 }
 
-fn is_wall_stub(game: &ActionGame, x: i32, y: i32, info: TileRenderInfo, player_pos: Vec2) -> bool {
-    if let Some(b) = find_building(game, info.building_id) {
-        let on_near_perim = x == b.x + b.width - 1 || y == b.y + b.height - 1;
-        let on_far_perim = x == b.x || y == b.y;
-        if on_near_perim && !on_far_perim {
-            return true;
-        }
-        if on_near_perim && on_far_perim {
-            // Cut SW, NE, and SE perimeter corners low when cutaway so near walls meet smoothly.
-            return true;
-        }
-        if !on_far_perim {
-            // Interior partitions: uniform clean 9 px stubs when in front of the player!
-            return match info.orientation {
-                WallOrientation::AlongX => y as f32 > player_pos.y + 0.15,
-                WallOrientation::AlongY => x as f32 > player_pos.x + 0.15,
-                WallOrientation::Corner => {
-                    (x as f32 > player_pos.x + 0.15) || (y as f32 > player_pos.y + 0.15)
-                }
+fn is_wall_stub(grid: &LightGrid, x: i32, y: i32, info: TileRenderInfo, player_pos: Vec2) -> bool {
+    if info.building_id > 0 {
+        if !info.indoor {
+            let same = |nx: i32, ny: i32| {
+                grid.tile_info(nx, ny)
+                    .is_some_and(|n| n.building_id == info.building_id)
             };
+            // Near SE/SW perimeter walls and recessed courtyard faces cut to 9 px stubs.
+            return !same(x + 1, y) || !same(x, y + 1);
         }
+        // Interior partitions: uniform clean 9 px stubs when in front of the player!
+        return match info.orientation {
+            WallOrientation::AlongX => y as f32 > player_pos.y + 0.15,
+            WallOrientation::AlongY => x as f32 > player_pos.x + 0.15,
+            WallOrientation::Corner => {
+                (x as f32 > player_pos.x + 0.15) || (y as f32 > player_pos.y + 0.15)
+            }
+        };
     }
     false
 }
@@ -814,17 +1260,20 @@ fn draw_closed_building_column(
     c: &mut Canvas<'_>,
     game: &ActionGame,
     proj: &Projector,
-    grid_f0: &LightGrid,
-    grid_f1_opt: Option<&LightGrid>,
+    light_floors: &[LightGrid; 3],
+    max_populated_floor: Floor,
     x: i32,
     y: i32,
-    bid: u8,
+    bid: BuildingId,
     info_f0: TileRenderInfo,
     light_f0: CellLight,
-    f1_shooters: &[(Vec2, u8)],
+    upper_shooters: &[(Vec2, Floor, u8)],
     elapsed_ms: u64,
 ) {
-    let pal = building_palette(style_for_building(game, bid));
+    let grid_f0 = &light_floors[0];
+    let b_info = find_building(game, bid);
+    let pal = building_palette(b_info.map_or(BuildingStyle::BirchSage, |b| b.style));
+    let b_floors = b_info.map_or(2, |b| b.floors.clamp(1, 3));
 
     // Floor 0 exterior perimeter wall (full 30 px) or breached rubble!
     if info_f0.kind == TileKind::Rubble {
@@ -848,77 +1297,91 @@ fn draw_closed_building_column(
         );
     }
 
-    // Floor 1 upper facade (34..64 px) + 4 px fascia band (30..34 px) if F1 didn't collapse!
-    let f1_info = grid_f1_opt
-        .and_then(|g| g.tile_info(x, y))
-        .or_else(|| game.tile_render_info(Position::new(x, y), 1));
-    let Some(f1) = f1_info else {
-        return;
-    };
-    if f1.surface == Surface::Air {
-        return;
-    }
-
-    let f1_light = grid_f1_opt.map_or(light_f0, |g| {
-        let l = g.cell_light(x, y);
-        // Use brighter of F0 exterior light and F1 light so upper facades match dusk sky.
-        CellLight {
-            r: l.r.max(light_f0.r),
-            g: l.g.max(light_f0.g),
-            b: l.b.max(light_f0.b),
-            vis: TileVisibility::Visible,
-        }
-    });
-
-    // Draw 4 px fascia band between F0 and F1 along wall segments.
     let segs = wall_segments(proj, grid_f0, x, y, 0.0, info_f0);
-    let fascia_col = tint(pal.trim, f1_light);
-    let fascia_shadow = tint([56, 62, 68, 195], f1_light);
-    for &(a, b, _) in &segs.items[..segs.len] {
-        c.polygon(
-            &[
-                (a.0, a.1 - WALL_FULL_H),
-                (b.0, b.1 - WALL_FULL_H),
-                (b.0, b.1 - FLOOR_HEIGHT_PX),
-                (a.0, a.1 - FLOOR_HEIGHT_PX),
-            ],
-            fascia_col,
-        );
-        c.line(
-            a.0,
-            a.1 - WALL_FULL_H,
-            b.0,
-            b.1 - WALL_FULL_H,
-            fascia_shadow,
-        );
-    }
 
-    // Draw F1 upper wall / window at z = 1.0 (`-34 px`).
-    draw_wall_or_opening(
-        c,
-        proj,
-        grid_f0,
-        x,
-        y,
-        1.0,
-        WALL_FULL_H,
-        f1,
-        pal,
-        f1_light,
-        false,
-        false,
-        elapsed_ms,
-    );
+    // Upper story facades (`1..b.floors`): fascia + wall/window at `z = upper_fl as f32`!
+    for upper_fl in 1..b_floors {
+        let fl_grid_opt = if upper_fl <= max_populated_floor {
+            Some(&light_floors[upper_fl as usize])
+        } else {
+            None
+        };
+        let up_info = fl_grid_opt
+            .and_then(|g| g.tile_info(x, y))
+            .or_else(|| game.tile_render_info(Position::new(x, y), upper_fl));
+        let Some(up) = up_info else {
+            break;
+        };
+        if up.surface == Surface::Air {
+            break;
+        }
 
-    // If an F1 Shooter is lurking near this F1 window, draw their glowing crimson visor peeking out!
-    if matches!(f1.kind, TileKind::Window | TileKind::BrokenWindow) && !f1_shooters.is_empty() {
-        let win_center = Vec2::new(x as f32, y as f32);
-        let has_peeker = f1_shooters
-            .iter()
-            .any(|&(spos, _)| spos.distance(win_center) <= 1.9);
-        if has_peeker {
-            let (wx, wy) = proj.project_z(x as f32, y as f32, 1.0);
-            draw_peeking_shooter(c, wx, wy - 16.0, elapsed_ms);
+        let up_light = fl_grid_opt.map_or(light_f0, |g| {
+            let l = g.cell_light(x, y);
+            // Use brighter of F0 exterior light and upper light so upper facades match dusk sky.
+            CellLight {
+                r: l.r.max(light_f0.r),
+                g: l.g.max(light_f0.g),
+                b: l.b.max(light_f0.b),
+                vis: TileVisibility::Visible,
+            }
+        });
+
+        let z_prev = (upper_fl - 1) as f32;
+        let z_curr = upper_fl as f32;
+        let y_off_bot = z_prev * FLOOR_HEIGHT_PX + WALL_FULL_H;
+        let y_off_top = z_curr * FLOOR_HEIGHT_PX;
+
+        // Draw 4 px fascia band below `upper_fl` along wall segments.
+        let fascia_col = tint(pal.trim, up_light);
+        let fascia_shadow = tint([56, 62, 68, 195], up_light);
+        for &(a, b, _) in &segs.items[..segs.len] {
+            c.polygon(
+                &[
+                    (a.0, a.1 - y_off_bot),
+                    (b.0, b.1 - y_off_bot),
+                    (b.0, b.1 - y_off_top),
+                    (a.0, a.1 - y_off_top),
+                ],
+                fascia_col,
+            );
+            c.line(a.0, a.1 - y_off_bot, b.0, b.1 - y_off_bot, fascia_shadow);
+        }
+
+        // Draw upper story wall / window / rubble at `z = z_curr`.
+        if up.kind == TileKind::Rubble {
+            let (ux, uy) = proj.project_z(x as f32, y as f32, z_curr);
+            draw_rubble(c, ux, uy, x, y, up.material, up_light);
+        } else {
+            draw_wall_or_opening(
+                c,
+                proj,
+                fl_grid_opt.unwrap_or(grid_f0),
+                x,
+                y,
+                z_curr,
+                WALL_FULL_H,
+                up,
+                pal,
+                up_light,
+                false,
+                false,
+                elapsed_ms,
+            );
+        }
+
+        // If an upper-story Shooter is lurking near this window, draw their glowing crimson visor!
+        if matches!(up.kind, TileKind::Window | TileKind::BrokenWindow)
+            && !upper_shooters.is_empty()
+        {
+            let win_center = Vec2::new(x as f32, y as f32);
+            let has_peeker = upper_shooters
+                .iter()
+                .any(|&(spos, sfl, _)| sfl == upper_fl && spos.distance(win_center) <= 1.9);
+            if has_peeker {
+                let (wx, wy) = proj.project_z(x as f32, y as f32, z_curr);
+                draw_peeking_shooter(c, wx, wy - 16.0, elapsed_ms);
+            }
         }
     }
 }
@@ -930,7 +1393,7 @@ struct WallSegments {
     len: usize,
 }
 
-fn is_wall_neighbor(grid: &LightGrid, nx: i32, ny: i32, bid: u8) -> bool {
+fn is_wall_neighbor(grid: &LightGrid, nx: i32, ny: i32, bid: BuildingId) -> bool {
     grid.tile_info(nx, ny).is_some_and(|n| {
         n.building_id == bid
             && matches!(
@@ -1090,6 +1553,33 @@ fn draw_wall_or_opening(
             return;
         }
         _ => {}
+    }
+
+    // Iron jail-cell bars (`InteriorWall` with `Material::MetalPole`).
+    if info.kind == TileKind::InteriorWall && info.material == Material::MetalPole {
+        let iron_d = tint([52, 58, 68, 255], light);
+        let iron_l = tint([126, 136, 150, 255], light);
+        let curb = tint([88, 92, 98, 255], light);
+        for &(a, b, _) in &segs.items[..segs.len] {
+            let curb_h = 3.5_f32.min(height);
+            c.polygon(&[a, b, (b.0, b.1 - curb_h), (a.0, a.1 - curb_h)], curb);
+            let bar_count = if hp_pct < 40 { 3 } else { 5 };
+            for i in 0..bar_count {
+                let t = (i as f32 + 0.5) / bar_count as f32;
+                let bx = a.0 + (b.0 - a.0) * t;
+                let by = a.1 + (b.1 - a.1) * t;
+                c.line(bx, by - curb_h, bx, by - height, iron_d);
+                c.line(bx - 1.0, by - curb_h, bx - 1.0, by - height, iron_l);
+            }
+            if !cut_low && height >= 20.0 {
+                let mid_h = height * 0.52;
+                c.line(a.0, a.1 - mid_h, b.0, b.1 - mid_h, iron_d);
+                c.line(a.0, a.1 - mid_h - 1.0, b.0, b.1 - mid_h - 1.0, iron_l);
+            }
+            c.line(a.0, a.1 - height, b.0, b.1 - height, iron_d);
+            c.line(a.0, a.1 - height - 1.0, b.0, b.1 - height - 1.0, iron_l);
+        }
+        return;
     }
 
     // Solid wall (`ExteriorWall`, `InteriorWall`, `Pillar`).
@@ -1659,7 +2149,7 @@ pub(crate) fn draw_building_roof(
     let y0 = b.y as f32 - 0.08;
     let x1 = (b.x + b.width - 1) as f32 + 0.08;
     let y1 = (b.y + b.height - 1) as f32 + 0.08;
-    let eave_y = FLOOR_HEIGHT_PX + WALL_FULL_H; // 64 px
+    let eave_y = (b.floors.saturating_sub(1)) as f32 * FLOOR_HEIGHT_PX + WALL_FULL_H;
     let ridge_y = eave_y + 26.0; // 90 px peak
 
     let lift = |(px, py): (f32, f32), h: f32| (px, py - h);
@@ -1745,12 +2235,14 @@ pub(crate) fn draw_building_roof(
         tint([182, 174, 158, 255], roof_light),
     );
 
-    // If any F1 cells of this building collapsed, show a dark jagged collapse gap in the roof!
+    // Collapsed upper-floor cells retain their building ID; unbuilt air does not.
     for by in b.y..b.y + b.height {
         for bx in b.x..b.x + b.width {
             if game
-                .tile_render_info(Position::new(bx, by), 1)
-                .is_some_and(|t| t.surface == Surface::Air)
+                .tile_render_info(Position::new(bx, by), b.floors.saturating_sub(1))
+                .is_some_and(|t| {
+                    b.floors >= 2 && t.building_id == b.id && t.surface == Surface::Air
+                })
             {
                 let (hx, hy) = proj.project_z(bx as f32, by as f32, 0.0);
                 c.diamond(hx, hy - eave_y - 6.0, 14.0, 7.0, [24, 24, 30, 225]);
@@ -1758,6 +2250,184 @@ pub(crate) fn draw_building_roof(
         }
     }
     c.set_stipple(4);
+}
+
+/// Flat gravel/tar roof tile with `4 px` raised parapet coping along edges bordering `!same_bid`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_flat_roof_tile(
+    c: &mut Canvas<'_>,
+    game: &ActionGame,
+    proj: &Projector,
+    grid_f0: &LightGrid,
+    x: i32,
+    y: i32,
+    bid: BuildingId,
+    floors: u8,
+    stipple: u8,
+) {
+    if stipple == 0 {
+        return;
+    }
+    let pal = building_palette(style_for_building(game, bid));
+    let z_px = (floors.saturating_sub(1)) as f32 * FLOOR_HEIGHT_PX + WALL_FULL_H;
+
+    let same = |nx: i32, ny: i32| {
+        grid_f0
+            .tile_info(nx, ny)
+            .is_some_and(|n| n.building_id == bid)
+    };
+    let same_w = same(x - 1, y);
+    let same_e = same(x + 1, y);
+    let same_n = same(x, y - 1);
+    let same_s = same(x, y + 1);
+
+    let rx0 = x as f32 - if same_w { 0.5 } else { 0.06 };
+    let rx1 = x as f32 + if same_e { 0.5 } else { 0.06 };
+    let ry0 = y as f32 - if same_n { 0.5 } else { 0.06 };
+    let ry1 = y as f32 + if same_s { 0.5 } else { 0.06 };
+    if rx1 <= rx0 || ry1 <= ry0 {
+        return;
+    }
+
+    let lift = |(px, py): (f32, f32), h: f32| (px, py - h);
+    let q0 = lift(proj.project_z(rx0, ry0, 0.0), z_px); // NW
+    let q1 = lift(proj.project_z(rx1, ry0, 0.0), z_px); // NE
+    let q2 = lift(proj.project_z(rx1, ry1, 0.0), z_px); // SE
+    let q3 = lift(proj.project_z(rx0, ry1, 0.0), z_px); // SW
+
+    let l = grid_f0.cell_light(x, y);
+    let roof_light = CellLight {
+        r: l.r.max(76),
+        g: l.g.max(86),
+        b: l.b.max(106),
+        vis: TileVisibility::Visible,
+    };
+
+    let h = hash2(x, y);
+    let mut roof_col = tint(pal.roof_front, roof_light);
+    let v = (h % 6) as u8;
+    roof_col[0] = roof_col[0].saturating_add(v);
+    roof_col[1] = roof_col[1].saturating_add(v);
+    roof_col[2] = roof_col[2].saturating_add(v);
+
+    c.set_stipple(stipple);
+    c.polygon(&[q0, q1, q2, q3], roof_col);
+
+    // Subtle tar/gravel texture or rooftop HVAC vent on interior tiles.
+    let (cx, cy) = lift(proj.project_z(x as f32, y as f32, 0.0), z_px);
+    if same_w && same_e && same_n && same_s && h.is_multiple_of(13) {
+        let vent_top = tint([142, 146, 152, 255], roof_light);
+        let vent_side = tint([84, 88, 96, 255], roof_light);
+        c.rect(cx, cy - 3.0, 9.0, 5.0, vent_side);
+        c.rect(cx, cy - 5.0, 9.0, 2.5, vent_top);
+    } else if h.is_multiple_of(3) {
+        c.rect(
+            cx - 3.0,
+            cy + 1.0,
+            2.0,
+            1.0,
+            tint(pal.roof_side, roof_light),
+        );
+        c.rect(
+            cx + 3.0,
+            cy - 1.0,
+            2.0,
+            1.0,
+            tint(pal.roof_ridge, roof_light),
+        );
+    }
+
+    // Collapse gap if the top floor collapsed on this cell!
+    if floors >= 2
+        && game
+            .tile_render_info(Position::new(x, y), floors - 1)
+            .is_some_and(|t| t.building_id == bid && t.surface == Surface::Air)
+    {
+        c.diamond(cx, cy, 14.0, 7.0, [24, 24, 30, 225]);
+    }
+
+    // 4 px raised parapet coping along edges bordering `!same_bid` (far edges before near edges).
+    const PARAPET_H: f32 = 4.0;
+    let parapet_back = tint(pal.roof_back, roof_light);
+    let parapet_side = tint(pal.roof_side, roof_light);
+    let parapet_front = tint(pal.wall_lit, roof_light);
+    let coping_hi = tint(pal.trim, roof_light);
+
+    let draw_parapet = |c: &mut Canvas<'_>, a: (f32, f32), b: (f32, f32), face_col: [u8; 4]| {
+        c.polygon(
+            &[a, b, (b.0, b.1 - PARAPET_H), (a.0, a.1 - PARAPET_H)],
+            face_col,
+        );
+        c.line(a.0, a.1 - PARAPET_H, b.0, b.1 - PARAPET_H, coping_hi);
+    };
+    if !same_n {
+        draw_parapet(c, q0, q1, parapet_back);
+    }
+    if !same_w {
+        draw_parapet(c, q0, q3, parapet_side);
+    }
+    if !same_e {
+        draw_parapet(c, q1, q2, parapet_side);
+    }
+    if !same_s {
+        draw_parapet(c, q3, q2, parapet_front);
+    }
+    c.set_stipple(4);
+}
+
+/// Faceted `18..28 px` 3D mountain crag peak for depth-sorted sorting against actors.
+pub(crate) fn draw_mountain_crag(
+    c: &mut Canvas<'_>,
+    proj: &Projector,
+    grid: &LightGrid,
+    x: i32,
+    y: i32,
+) {
+    let light = grid.cell_light(x, y);
+    let (sx, sy) = proj.project_z(x as f32, y as f32, 0.0);
+    if sx < -TILE_W
+        || sx > c.width() as f32 + TILE_W
+        || sy < -TILE_H
+        || sy > c.height() as f32 + 40.0
+    {
+        return;
+    }
+
+    let h = hash2(x, y);
+    let peak_h = 18.0 + (h % 11) as f32;
+    let peak_ox = ((h >> 4) % 7) as f32 - 3.0;
+    let pk = (sx + peak_ox, sy - peak_h);
+
+    let w_pt = (sx - 18.0, sy);
+    let n_pt = (sx, sy - 9.0);
+    let e_pt = (sx + 18.0, sy);
+    let s_pt = (sx, sy + 9.0);
+
+    let nw_lit = tint([134, 136, 148, 255], light);
+    let sw_mid = tint([110, 114, 126, 255], light);
+    let ne_shade = tint([76, 78, 92, 255], light);
+    let se_deep = tint([58, 60, 74, 255], light);
+    let ridge_hi = tint([174, 178, 190, 225], light);
+    let fissure = tint([36, 38, 48, 215], light);
+
+    c.polygon(&[w_pt, n_pt, pk], nw_lit);
+    c.polygon(&[w_pt, pk, s_pt], sw_mid);
+    c.polygon(&[n_pt, e_pt, pk], ne_shade);
+    c.polygon(&[pk, e_pt, s_pt], se_deep);
+
+    c.line(w_pt.0, w_pt.1, pk.0, pk.1, ridge_hi);
+    c.line(pk.0, pk.1, s_pt.0, s_pt.1, ridge_hi);
+    c.line(n_pt.0, n_pt.1, pk.0, pk.1, fissure);
+    c.line(pk.0, pk.1, e_pt.0, e_pt.1, fissure);
+
+    if peak_h >= 24.0 {
+        let cap_l = (pk.0 - 4.0, pk.1 + 5.0);
+        let cap_r = (pk.0 + 4.0, pk.1 + 5.0);
+        c.polygon(
+            &[pk, cap_l, (pk.0, pk.1 + 6.5), cap_r],
+            tint([192, 196, 206, 225], light),
+        );
+    }
 }
 
 fn draw_rubble(
@@ -1978,6 +2648,7 @@ fn draw_prop(
     sx: f32,
     sy: f32,
     prop: PropKind,
+    surface: Surface,
     orient: WallOrientation,
     damaged: bool,
     light: CellLight,
@@ -1986,7 +2657,11 @@ fn draw_prop(
     match prop {
         PropKind::BirchTree => {
             let crown_h = 31.0 + (h % 9) as f32;
-            draw_birch_tree(c, sx, sy, crown_h, damaged, light);
+            if surface == Surface::Forest {
+                draw_pine_tree(c, sx, sy, crown_h + 3.0, damaged, light);
+            } else {
+                draw_birch_tree(c, sx, sy, crown_h, damaged, light);
+            }
         }
         PropKind::Fence => {
             draw_fence(c, proj, x, y, z, orient, damaged, light);
@@ -2452,6 +3127,42 @@ fn draw_birch_tree(
         (-5.0, 1.0, 7.0),
     ] {
         c.rect(x + dx * s, top + dy * s, width * s, 2.0, leaf_hi);
+    }
+}
+
+fn draw_pine_tree(
+    c: &mut Canvas<'_>,
+    x: f32,
+    y: f32,
+    height: f32,
+    damaged: bool,
+    light: CellLight,
+) {
+    c.ellipse(x + 6.0, y + 3.0, 17.0, 6.0, [16, 26, 24, 135]);
+    let trunk_d = tint([68, 48, 36, 255], light);
+    let trunk_l = tint([98, 70, 50, 255], light);
+    c.rect(x, y - 5.0, 4.0, 11.0, trunk_d);
+    c.line(x - 1.0, y, x - 1.0, y - 10.0, trunk_l);
+
+    let s = if damaged { 0.80 } else { 1.0 };
+    let pine_dark = tint([28, 54, 44, 255], light);
+    let pine_mid = tint([44, 78, 56, 255], light);
+    let pine_lit = tint([72, 108, 68, 225], light);
+
+    let top = y - height;
+    for (tier, half_w, base_off, peak_off) in [
+        (0, 16.0 * s, 10.0, 23.0),
+        (1, 13.0 * s, 18.0, 31.0),
+        (2, 9.5 * s, 26.0, height),
+    ] {
+        let by = y - base_off;
+        let py = if tier == 2 { top - 4.0 } else { y - peak_off };
+        c.polygon(&[(x - half_w, by), (x + half_w, by), (x, py)], pine_dark);
+        c.polygon(
+            &[(x - half_w + 1.0, by - 1.0), (x + 2.0, by - 1.0), (x, py)],
+            pine_mid,
+        );
+        c.line(x - half_w + 2.0, by - 2.0, x, py, pine_lit);
     }
 }
 

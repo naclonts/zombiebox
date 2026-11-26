@@ -528,7 +528,7 @@ impl VfxState {
                     self.spawn_particle(Particle {
                         active: true,
                         pos: at.center() + Vec2::new(ox, oy),
-                        floor_z: 0.0,
+                        floor_z: at.floor as f32,
                         z_px,
                         vel: Vec2::new(c_ang * spd, s * spd),
                         vz_px,
@@ -1105,8 +1105,8 @@ impl VfxState {
         c: &mut Canvas<'_>,
         proj: &Projector,
         monsters: &[MonsterView],
-        grid_f0: &LightGrid,
-        grid_f1: Option<&LightGrid>,
+        light_floors: &[LightGrid; 3],
+        active_floor: Floor,
         now_ms: u64,
     ) {
         for m in monsters {
@@ -1119,10 +1119,10 @@ impl VfxState {
             let Some((end_pos, end_floor)) = m.telegraph_target else {
                 continue;
             };
-            let vis = if m.floor == 1 {
-                grid_f1.map_or(TileVisibility::Hidden, |g| g.sample_light(m.pos).vis)
+            let vis = if m.floor <= active_floor {
+                light_floors[m.floor as usize].sample_light(m.pos).vis
             } else {
-                grid_f0.sample_light(m.pos).vis
+                TileVisibility::Hidden
             };
             if vis != TileVisibility::Visible {
                 continue;

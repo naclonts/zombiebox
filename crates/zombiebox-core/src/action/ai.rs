@@ -770,7 +770,8 @@ fn can_see_cross_floor(
         for dy in -2..=2 {
             for dx in -2..=2 {
                 let candidate = Tile3D::new(m_tile.x + dx, m_tile.y + dy, monster.floor);
-                if let Some((paired, _)) = world.stair_link(candidate) {
+                let (links, count) = world.stair_links(candidate);
+                for (paired, _) in links.into_iter().take(count).flatten() {
                     if paired.floor == player.floor
                         && (monster.pos.distance(candidate.center()) <= 2.2
                             || player.position.distance(paired.center()) <= 2.2)
@@ -796,7 +797,8 @@ fn can_see_cross_floor(
         for dy in -2..=2 {
             for dx in -2..=2 {
                 let candidate = Tile3D::new(p_tile.x + dx, p_tile.y + dy, player.floor);
-                if let Some((paired, _)) = world.stair_link(candidate) {
+                let (links, count) = world.stair_links(candidate);
+                for (paired, _) in links.into_iter().take(count).flatten() {
                     if paired.floor == monster.floor
                         && (player.position.distance(candidate.center()) <= 2.2
                             || monster.pos.distance(paired.center()) <= 2.2)
@@ -820,30 +822,35 @@ fn can_see_cross_floor(
         }
     }
 
-    // 2. Cross-floor sight through an F1 window or open edge overlooking an outdoor F0 actor.
-    let (upper_pos, lower_pos) = if monster.floor == 1 && player.floor == 0 {
-        (monster.pos, player.position)
-    } else if player.floor == 1 && monster.floor == 0 {
-        (player.position, monster.pos)
+    // 2. Cross-floor sight through an upper-story window or open edge overlooking an outdoor F0 actor.
+    let (upper_pos, upper_floor, lower_pos) = if monster.floor > 0 && player.floor == 0 {
+        (monster.pos, monster.floor, player.position)
+    } else if player.floor > 0 && monster.floor == 0 {
+        (player.position, player.floor, monster.pos)
     } else {
         return false;
     };
 
-    if world.has_floor(Tile3D::from_vec2(lower_pos, 1)) {
+    if world.has_floor(Tile3D::from_vec2(lower_pos, upper_floor)) {
         return false;
     }
 
-    has_window_cross_floor_los(world, upper_pos, lower_pos)
+    has_window_cross_floor_los(world, upper_pos, upper_floor, lower_pos)
 }
 
-fn has_window_cross_floor_los(world: &dyn CombatWorld, upper_pos: Vec2, lower_pos: Vec2) -> bool {
+fn has_window_cross_floor_los(
+    world: &dyn CombatWorld,
+    upper_pos: Vec2,
+    upper_floor: Floor,
+    lower_pos: Vec2,
+) -> bool {
     let delta = lower_pos - upper_pos;
     let total_dist = delta.length();
     if total_dist < 0.05 {
         return false;
     }
     let dir = delta * (1.0 / total_dist);
-    let start_tile = Tile3D::from_vec2(upper_pos, 1);
+    let start_tile = Tile3D::from_vec2(upper_pos, upper_floor);
     let end_tile = Tile3D::from_vec2(lower_pos, 0);
 
     let steps = (total_dist / 0.12).ceil() as usize;
@@ -862,8 +869,8 @@ fn has_window_cross_floor_los(world: &dyn CombatWorld, upper_pos: Vec2, lower_po
         prev_xy = (tx, ty);
 
         if in_upper {
-            let f1 = Tile3D::new(tx, ty, 1);
-            if !world.has_floor(f1) {
+            let f_upper = Tile3D::new(tx, ty, upper_floor);
+            if !world.has_floor(f_upper) {
                 in_upper = false;
                 crossed_outside = true;
                 let f0 = Tile3D::new(tx, ty, 0);
@@ -876,7 +883,7 @@ fn has_window_cross_floor_los(world: &dyn CombatWorld, upper_pos: Vec2, lower_po
                     return false;
                 }
             } else if matches!(
-                world.obstruction(f1),
+                world.obstruction(f_upper),
                 TileObstruction::Wall(_) | TileObstruction::DoorClosed
             ) {
                 return false;
@@ -939,8 +946,7 @@ impl Pathfinder {
         let height = (max.y - min.y + 1).max(0) as usize;
         let floors = floors as usize;
         let total = width * height * floors;
-        if self.min != min
-            || self.width != width
+        if self.width != width
             || self.height != height
             || self.floors != floors
             || self.visited_gen.len() != total
@@ -958,6 +964,14 @@ impl Pathfinder {
             self.g_score.resize(total, u16::MAX);
             self.parent.clear();
             self.parent.resize(total, 0);
+        } else if self.min != min {
+            self.min = min;
+            self.generation = self.generation.wrapping_add(1);
+            if self.generation == 0 {
+                self.visited_gen.fill(0);
+                self.closed_gen.fill(0);
+                self.generation = 1;
+            }
         }
     }
 
@@ -1142,8 +1156,9 @@ impl Pathfinder {
                 }
             }
 
-            // Cross-floor stair edge.
-            if let Some((paired, _)) = world.stair_link(cur_tile) {
+            // Cross-floor stair edges (supports 2-floor and 3-floor StairsBoth shafts).
+            let (links, count) = world.stair_links(cur_tile);
+            for (paired, _) in links.into_iter().take(count).flatten() {
                 if let Some(next_idx) = self.encode(paired) {
                     if self.closed_gen[next_idx as usize] != cur_gen
                         && world.is_walkable(paired, false)
@@ -1253,11 +1268,16 @@ impl AiSystem {
                 continue;
             }
 
-            // Drop monsters standing over collapsed upper-story floors cleanly onto Floor 0.
+            // Drop monsters standing over collapsed upper-story floors cleanly onto the highest solid floor below.
             if monsters[i].floor > 0
                 && !world.has_floor(Tile3D::from_vec2(monsters[i].pos, monsters[i].floor))
             {
-                monsters[i].floor = 0;
+                let mut target_floor = monsters[i].floor - 1;
+                let m_pos = Tile3D::from_vec2(monsters[i].pos, target_floor).pos();
+                while target_floor > 0 && !world.has_floor(Tile3D::from_pos(m_pos, target_floor)) {
+                    target_floor -= 1;
+                }
+                monsters[i].floor = target_floor;
                 monsters[i].invalidate_path();
             }
 
@@ -1612,48 +1632,51 @@ impl AiSystem {
         // AND stair_cooldown == 0 (guarantees zero oscillation!).
         if next_wp.floor != monster.floor {
             let cur_tile = Tile3D::from_vec2(monster.pos, monster.floor);
-            if let Some((paired, landing_dir)) = world.stair_link(cur_tile) {
-                if paired == next_wp {
-                    if monster.stair_cooldown == 0 {
-                        monster.floor = paired.floor;
-                        let nudged = paired.center()
-                            + Vec2::new(landing_dir.0 as f32 * 0.22, landing_dir.1 as f32 * 0.22);
-                        let can_vault = spec.can_vault_f0 && monster.floor == 0;
-                        monster.pos = if circle_walkable(
-                            world,
-                            nudged,
-                            monster.floor,
-                            spec.radius,
-                            can_vault,
-                        ) {
+            let (links, count) = world.stair_links(cur_tile);
+            if let Some((paired, landing_dir)) = links
+                .into_iter()
+                .take(count)
+                .flatten()
+                .find(|(paired, _)| *paired == next_wp)
+            {
+                if monster.stair_cooldown == 0 {
+                    monster.floor = paired.floor;
+                    let nudged = paired.center()
+                        + Vec2::new(landing_dir.0 as f32 * 0.22, landing_dir.1 as f32 * 0.22);
+                    let can_vault = spec.can_vault_f0 && monster.floor == 0;
+                    monster.pos =
+                        if circle_walkable(world, nudged, monster.floor, spec.radius, can_vault) {
                             nudged
                         } else {
                             paired.center()
                         };
-                        monster.stair_cooldown = STAIR_COOLDOWN_TICKS;
-                        monster.path.pop();
-                    }
-                    return;
+                    monster.stair_cooldown = STAIR_COOLDOWN_TICKS;
+                    monster.path.pop();
                 }
+                return;
             }
             // Monster got nudged slightly off the stair tile; steer onto the stair tile linked to next_wp.
-            if let Some((paired_origin, _)) = world.stair_link(next_wp) {
-                if paired_origin.floor == monster.floor {
-                    let to_stair = (paired_origin.center() - monster.pos).normalized();
-                    if to_stair.length_squared() > 0.01 {
-                        monster.facing = to_stair;
-                        let can_vault = spec.can_vault_f0 && monster.floor == 0;
-                        move_circle(
-                            world,
-                            &mut monster.pos,
-                            monster.floor,
-                            to_stair * (speed * DT),
-                            spec.radius,
-                            can_vault,
-                        );
-                    }
-                    return;
+            let (rev_links, rev_count) = world.stair_links(next_wp);
+            if let Some((paired_origin, _)) = rev_links
+                .into_iter()
+                .take(rev_count)
+                .flatten()
+                .find(|(origin, _)| origin.floor == monster.floor)
+            {
+                let to_stair = (paired_origin.center() - monster.pos).normalized();
+                if to_stair.length_squared() > 0.01 {
+                    monster.facing = to_stair;
+                    let can_vault = spec.can_vault_f0 && monster.floor == 0;
+                    move_circle(
+                        world,
+                        &mut monster.pos,
+                        monster.floor,
+                        to_stair * (speed * DT),
+                        spec.radius,
+                        can_vault,
+                    );
                 }
+                return;
             }
             monster.path_dirty = true;
             return;
@@ -2289,7 +2312,7 @@ fn clip_shooter_telegraph(
         if !in_world_bounds(world, tile) {
             return (p, cur_floor);
         }
-        if cur_floor == 1 && target_floor == 0 && !world.has_floor(tile) {
+        if cur_floor > 0 && target_floor == 0 && !world.has_floor(tile) {
             cur_floor = 0;
             tile = Tile3D::from_vec2(p, 0);
         }
@@ -2312,7 +2335,7 @@ fn in_world_bounds(world: &dyn CombatWorld, tile: Tile3D) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::action::types::{Material, TileDamageResult, TileKind};
+    use crate::action::types::{BuildingId, Material, TileDamageResult, TileKind};
     use std::collections::HashMap;
 
     struct TestWorld {
@@ -2393,7 +2416,7 @@ mod tests {
             }
         }
 
-        fn building_id(&self, _tile: Tile3D) -> u8 {
+        fn building_id(&self, _tile: Tile3D) -> BuildingId {
             0
         }
 

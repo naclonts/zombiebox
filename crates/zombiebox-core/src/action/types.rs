@@ -1,15 +1,26 @@
 //! Shared 2.5D types, world trait, input/HUD contracts, and gameplay events for `ActionGame`.
 
-use crate::Position;
+use crate::{District, Position};
 
 pub const ACTION_TICKS_PER_SECOND: u32 = 60;
 pub const DT: f32 = 1.0 / ACTION_TICKS_PER_SECOND as f32;
 pub const BLOCK_WIDTH: usize = 36;
 pub const BLOCK_HEIGHT: usize = 32;
-pub const NUM_FLOORS: usize = 2;
+pub const NUM_FLOORS: usize = 2; // Birch Street
+pub const COUNTY_FLOORS: usize = 3; // Procedural County (0=1F, 1=2F, 2=3F)
 pub const PLAYER_MAX_HEALTH: u8 = 6;
 
-pub type Floor = u8; // 0 = ground (1F), 1 = upper story (2F)
+pub type Floor = u8; // 0 = ground (1F), 1 = 2F, 2 = 3F
+pub type BuildingId = u16;
+pub type CacheId = u16;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum ActionMode {
+    BirchStreet = 0,
+    #[default]
+    County = 1,
+}
 
 /// Deterministic SplitMix64 hash for seeded variation and AI patrol rolls.
 #[inline]
@@ -156,10 +167,16 @@ pub struct Pose {
 pub enum Surface {
     Air,
     Grass,
+    Forest,
+    Field,
+    Trail,
     Road,
     Sidewalk,
     Driveway,
     Gravel,
+    Bridge,
+    Water,
+    Mountain,
     Porch,
     WoodFloor,
     KitchenTile,
@@ -231,6 +248,7 @@ pub enum TileKind {
     Door { open: bool, exterior: bool },
     StairsUp,
     StairsDown,
+    StairsBoth,
     Streetlight,
     BrokenStreetlight,
     Prop(PropKind),
@@ -243,11 +261,33 @@ pub enum BuildingStyle {
     BlueClapboard,
     ColonialBrick,
     WarmPutty,
+    DowntownStorefront,
+    DowntownOffice,
+    DowntownApartments,
+    HospitalClinical,
+    PolicePrecinct,
+    ArmyBarracks,
+    WoodlandCabin,
+    RuralBarn,
+}
+
+impl BuildingStyle {
+    pub const fn has_pitched_roof(self) -> bool {
+        matches!(
+            self,
+            Self::BirchSage
+                | Self::BlueClapboard
+                | Self::ColonialBrick
+                | Self::WarmPutty
+                | Self::WoodlandCabin
+                | Self::RuralBarn
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuildingInfo {
-    pub id: u8,
+    pub id: BuildingId,
     pub name: &'static str,
     pub x: i32,
     pub y: i32,
@@ -279,7 +319,7 @@ pub struct TileRenderInfo {
     pub material: Material,
     pub hp: u16,
     pub max_hp: u16,
-    pub building_id: u8,
+    pub building_id: BuildingId,
     pub indoor: bool,
     pub light: u8,
     pub visibility: TileVisibility,
@@ -348,10 +388,18 @@ pub trait CombatWorld {
     fn has_floor(&self, tile: Tile3D) -> bool;
     /// True if an actor can walk onto `tile`.
     fn is_walkable(&self, tile: Tile3D, can_vault_window: bool) -> bool;
-    /// Building ID (`0` = outdoors, `1..=3` = houses).
-    fn building_id(&self, tile: Tile3D) -> u8;
+    /// Building ID (`0` = outdoors, `1..` = buildings).
+    fn building_id(&self, tile: Tile3D) -> BuildingId;
     /// If `tile` is a stair tile, returns `(paired_tile_on_other_floor, landing_dir)`.
     fn stair_link(&self, tile: Tile3D) -> Option<(Tile3D, (i8, i8))>;
+    /// If `tile` is a stair tile (including 3-floor `StairsBoth`), returns up to 2 links.
+    #[allow(clippy::type_complexity)]
+    fn stair_links(&self, tile: Tile3D) -> ([Option<(Tile3D, (i8, i8))>; 2], usize) {
+        match self.stair_link(tile) {
+            Some(link) => ([Some(link), None], 1),
+            None => ([None, None], 0),
+        }
+    }
     /// If `tile` is a broken F1 window or collapsed F1 exterior edge, returns F0 landing tile.
     fn window_drop_target(&self, tile: Tile3D) -> Option<Tile3D>;
     /// If `window` is a broken F0 window, returns the clear tile on the opposite side from `from`.
@@ -425,7 +473,7 @@ pub struct CacheLoot {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CacheView {
-    pub id: u8,
+    pub id: CacheId,
     pub pos: Tile3D,
     pub kind: CacheKind,
     pub loot: CacheLoot,
@@ -455,6 +503,7 @@ pub enum ObjectiveKind {
     ClearBlock = 1,
     Won = 2,
     Dead = 3,
+    Explore = 4,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -757,6 +806,8 @@ pub struct ActionHud {
     pub rocket_danger_close: bool,
     pub indoors: bool,
     pub outcome: ActionOutcome,
+    pub player_pos: Position,
+    pub district: District,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

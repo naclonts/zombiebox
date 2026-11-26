@@ -20,7 +20,7 @@
           ><span class="brand-mark">Z<span>✳</span></span
           ><span><b>ZOMBIEBOX</b></span></a
         >
-        <a class="back-link" href="/">← BACK TO THE BLOCK</a>
+        <a class="back-link" id="back-top" href="/?resume=1">← BACK TO GAME</a>
       </header>
       <section class="atlas-heading">
         <div><h1>County field atlas</h1></div>
@@ -33,7 +33,8 @@
               autocomplete="off"
               aria-label="Decimal world seed"
               placeholder="Enter decimal seed"
-            /><button type="submit">SURVEY ↗</button>
+            /><button type="submit">SURVEY ↗</button
+            ><button id="seed-random" type="button">RANDOM</button>
           </div>
           <small id="seed-note">Replay a county with its seed.</small>
         </form>
@@ -48,6 +49,8 @@
                 ><button id="overview" type="button">OVERVIEW</button
                 ><button id="walk-toggle" aria-pressed="false">
                   START WALK</button
+                ><button id="walk-teleport" type="button" class="teleport-chip">
+                  TELEPORT ↗</button
                 ><small>WASD / ARROWS · TOUCH PAD · E STAIRS</small>
               </div>
             </div>
@@ -105,6 +108,14 @@
             Choose a location on the sheet. District and site information will
             appear here.
           </p>
+          <div class="teleport-card" id="teleport-card">
+            <button type="button" class="teleport-btn" id="teleport-btn">
+              TELEPORT HERE ↗
+            </button>
+            <small class="teleport-note" id="teleport-note">
+              Select a location on the sheet.
+            </small>
+          </div>
           <div class="stats-row">
             <div><span>STRUCTURES</span><b id="building-count">—</b></div>
             <div><span>LANDMARKS</span><b id="landmark-count">—</b></div>
@@ -158,7 +169,7 @@
         </aside>
       </section>
       <footer class="page-footer">
-        <a href="/">← RETURN TO THE OPENING SCREEN</a>
+        <a id="back-bottom" href="/?resume=1">← RETURN TO GAME</a>
       </footer>
     </main>
     <script src="county-map.js"></script>

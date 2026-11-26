@@ -122,6 +122,66 @@ static void check_action_v2_frame(void) {
     zb_action_v2_destroy(NULL);
 }
 
+static void check_action_v2_county_and_teleport(void) {
+    enum { WIDTH = 160, HEIGHT = 90, STRIDE = WIDTH * 4 + 8 };
+    uint8_t pixels[STRIDE * HEIGHT];
+    memset(pixels, 55, sizeof pixels);
+
+    ZbAction *county = zb_action_v2_create_county(42);
+    assert(county);
+
+    ZbActionLocation loc;
+    memset(&loc, 0xA5, sizeof loc);
+    assert(zb_action_v2_location(county, &loc));
+    assert(loc.mode == ZB_MODE_COUNTY);
+    assert(loc.district == ZB_DISTRICT_RESIDENTIAL);
+    assert(loc.floor == 0);
+    assert(loc.reserved == 0);
+    assert(loc.x >= 0 && loc.x < 512);
+    assert(loc.y >= 0 && loc.y < 512);
+
+    ZbActionFrameInput input;
+    memset(&input, 0, sizeof input);
+    input.select_weapon = ZB_WEAPON_UNCHANGED;
+
+    ZbActionFrameOutput out;
+    memset(&out, 0, sizeof out);
+
+    assert(zb_action_v2_frame(county, pixels, WIDTH, HEIGHT, STRIDE, 1000000000ULL,
+                              &input, &out));
+    assert(out.health == 6);
+    assert(out.objective_kind == ZB_OBJECTIVE_SCAVENGE);
+
+    ZbActionLocation resolved;
+    memset(&resolved, 0xA5, sizeof resolved);
+    assert(zb_action_v2_teleport(county, loc.x + 6, loc.y, 0, &resolved));
+    assert(resolved.mode == ZB_MODE_COUNTY);
+    assert(resolved.reserved == 0);
+    assert(resolved.x >= 0 && resolved.x < 512);
+    assert(resolved.y >= 0 && resolved.y < 512);
+
+    assert(zb_action_v2_frame(county, pixels, WIDTH, HEIGHT, STRIDE, 1020000000ULL,
+                              &input, &out));
+    assert(out.health == 6);
+
+    /* Teleporting with NULL out_resolved is valid; invalid handles return false. */
+    assert(zb_action_v2_teleport(county, loc.x, loc.y, 0, NULL));
+    assert(!zb_action_v2_location(NULL, &loc));
+    assert(!zb_action_v2_location(county, NULL));
+    assert(!zb_action_v2_teleport(NULL, 0, 0, 0, &resolved));
+
+    /* Birch Street runs report Birch Street mode/district and reject teleportation. */
+    ZbAction *birch = zb_action_v2_create(42);
+    assert(birch);
+    assert(zb_action_v2_location(birch, &loc));
+    assert(loc.mode == ZB_MODE_BIRCH_STREET);
+    assert(loc.district == ZB_DISTRICT_BIRCH_STREET);
+    assert(!zb_action_v2_teleport(birch, loc.x + 1, loc.y, 0, &resolved));
+
+    zb_action_v2_destroy(birch);
+    zb_action_v2_destroy(county);
+}
+
 int main(void) {
     char *atlas = zb_survey_v1_generate(UINT64_MAX);
     assert(atlas && strstr(atlas, "\"seed\":\"18446744073709551615\""));
@@ -150,6 +210,7 @@ int main(void) {
     zb_v1_destroy(NULL);
     check_action_frame();
     check_action_v2_frame();
+    check_action_v2_county_and_teleport();
     puts("C host created a Rust run, scavenged, moved east, read its HUD and exercised action v1 & v2.");
     return 0;
 }

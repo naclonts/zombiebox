@@ -47,6 +47,20 @@ pub enum District {
     Woods,
 }
 
+impl District {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Residential => "Residential",
+            Self::City => "Downtown",
+            Self::Hospital => "Hospital",
+            Self::Police => "Police",
+            Self::Farm => "Countryside",
+            Self::MilitaryBase => "Army Base",
+            Self::Woods => "Woods",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Default)]
 pub enum Ground {
     Road,

@@ -1,6 +1,8 @@
 //! The platform adapters' C interface. Keep the declarations in include/zombiebox.h in sync.
 mod action;
 
+pub use action::{ZbAction, ZbActionFrameInput, ZbActionFrameOutput, ZbActionLocation};
+
 use zombiebox_core::{Command, Direction, Game, TICKS_PER_SECOND};
 
 pub struct ZbGame(Game);
