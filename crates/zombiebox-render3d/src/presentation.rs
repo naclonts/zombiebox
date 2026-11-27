@@ -33,8 +33,6 @@ pub struct Presentation {
     motorcycle_prototypes: [PrototypeMeshId; 4],
     motorcycle_wheel_phase: BTreeMap<zombiebox_core::VehicleId, f32>,
     mounted_camera_preference_isometric: bool,
-    was_mounted: bool,
-    on_foot_camera_mode: CameraMode,
     effects: Effects,
     telemetry: FrameTelemetry,
     adaptive_resolution: bool,
@@ -91,8 +89,6 @@ impl Presentation {
             motorcycle_prototypes,
             motorcycle_wheel_phase: BTreeMap::new(),
             mounted_camera_preference_isometric: false,
-            was_mounted: false,
-            on_foot_camera_mode: CameraMode::default(),
             effects: Effects::new(),
             telemetry: FrameTelemetry::default(),
             adaptive_resolution: false,
@@ -117,10 +113,6 @@ impl Presentation {
     }
 
     pub fn reset(&mut self) {
-        if self.was_mounted {
-            self.camera.set_mode(self.on_foot_camera_mode);
-        }
-        self.was_mounted = false;
         self.motorcycle_wheel_phase.clear();
         self.scene.reset();
         self.renderer.chunks_mut().clear();
@@ -178,22 +170,6 @@ impl Presentation {
             game.vehicle_views()
                 .find_map(|(candidate, view)| (candidate == id).then_some(view))
         });
-        if mounted_id.is_some() && !self.was_mounted {
-            self.on_foot_camera_mode = self.camera.mode();
-        }
-        if mounted_id.is_some() {
-            let desired = if self.mounted_camera_preference_isometric {
-                CameraMode::Isometric
-            } else {
-                CameraMode::Chase
-            };
-            if self.camera.mode() != desired {
-                self.camera.set_mode(desired);
-            }
-        } else if self.was_mounted && self.camera.mode() != self.on_foot_camera_mode {
-            self.camera.set_mode(self.on_foot_camera_mode);
-        }
-        self.was_mounted = mounted_id.is_some();
         let target = CameraTarget {
             position: mounted_view.map_or(body.position, |v| match v {
                 VehicleView::Motorcycle(m) => m.body.position,
@@ -416,5 +392,73 @@ impl Presentation {
             );
         }
         rendered
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zombiebox_core::{ActionGame, ActionInput, Tile3D};
+
+    fn make_test_game() -> ActionGame {
+        let mut game = ActionGame::county(42);
+        let (_, bike_pos) = game
+            .vehicle_views()
+            .find_map(|(id, view)| {
+                (id.0 & 0xff == 0).then(|| match view {
+                    VehicleView::Motorcycle(bike) => (id, bike.body.position.xy()),
+                })
+            })
+            .expect("seed 42 starter motorcycle");
+        assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+        game
+    }
+
+    #[test]
+    fn motorcycle_riding_preserves_selected_camera_modes() {
+        let Ok(ctx) = GpuContext::new_headless() else {
+            return;
+        };
+
+        let mut presentation = Presentation::new(&ctx, 320, 180);
+
+        for mode in CameraMode::ALL {
+            let mut game = make_test_game();
+            presentation.camera_mut().set_mode(mode);
+            assert_eq!(presentation.camera().mode(), mode);
+
+            // Prepare on foot: camera mode unchanged
+            let (frame, ..) = presentation.prepare(&ctx, &game, 0.016);
+            assert_eq!(frame.mode, mode);
+            assert_eq!(presentation.camera().mode(), mode);
+
+            // Mount motorcycle
+            game.step(ActionInput {
+                interact: true,
+                ..ActionInput::default()
+            });
+            assert!(game.mounted_vehicle().is_some());
+
+            // Prepare while mounted: camera mode must stay the selected mode!
+            let (frame, ..) = presentation.prepare(&ctx, &game, 0.016);
+            assert_eq!(
+                frame.mode, mode,
+                "camera mode must be preserved while riding: expected {:?}, got {:?}",
+                mode, frame.mode
+            );
+            assert_eq!(presentation.camera().mode(), mode);
+
+            // Dismount motorcycle
+            game.step(ActionInput {
+                interact: true,
+                ..ActionInput::default()
+            });
+            assert!(game.mounted_vehicle().is_none());
+
+            // Prepare after dismount: camera mode still unchanged
+            let (frame, ..) = presentation.prepare(&ctx, &game, 0.016);
+            assert_eq!(frame.mode, mode);
+            assert_eq!(presentation.camera().mode(), mode);
+        }
     }
 }

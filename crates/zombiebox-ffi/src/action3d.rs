@@ -203,7 +203,15 @@ pub unsafe extern "C" fn zb_action_v2_camera_mode(run: *mut ZbAction, mode: u8) 
         4 => CameraMode::FirstPerson,
         _ => return false,
     };
-    let heading = run.game.player_body().heading;
+    let mounted_id = run.game.mounted_vehicle();
+    let mounted_view = mounted_id.and_then(|id| {
+        run.game
+            .vehicle_views()
+            .find_map(|(candidate, view)| (candidate == id).then_some(view))
+    });
+    let heading = mounted_view.map_or(run.game.player_body().heading, |v| match v {
+        zombiebox_core::VehicleView::Motorcycle(m) => m.body.heading,
+    });
     let camera = gpu.presentation.camera_mut();
     camera.set_mode(mode);
     if matches!(mode, CameraMode::Chase | CameraMode::FirstPerson) {

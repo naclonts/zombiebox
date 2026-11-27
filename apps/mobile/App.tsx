@@ -195,7 +195,6 @@ function Game() {
   const [hapticsEnabled, setHapticsEnabled] = useState<boolean>(true);
   const [aimLookAhead, setAimLookAhead] = useState<boolean>(true);
   const [cameraMode, setCameraMode] = useState<CameraMode>('isometric');
-  const [mountedIsometric, setMountedIsometric] = useState(false);
 
   const activeMenu: Menu | null =
     menu ?? (hud?.won ? 'won' : hud?.dead ? 'dead' : null);
@@ -441,7 +440,7 @@ function Game() {
         hapticsEnabled={hapticsEnabled}
         aimLookAhead={aimLookAhead}
         cameraMode={cameraMode}
-        mountedIsometric={mountedIsometric}
+        mountedIsometric={cameraMode === 'isometric'}
         onHudChanged={event => setHud(event.nativeEvent)}
         onAtlasTeleport={event => {
           const e = event.nativeEvent;
@@ -935,7 +934,7 @@ function Game() {
 
             <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsContent}>
             <View style={styles.settingGroup}>
-              <Text style={styles.settingLabel}>ON-FOOT CAMERA</Text>
+              <Text style={styles.settingLabel}>CAMERA VIEW</Text>
               <View style={styles.segmentRow}>
                 {CAMERA_OPTIONS.map(opt => (
                   <Pressable key={opt.id} accessibilityRole="button"
@@ -947,26 +946,6 @@ function Game() {
                     <Text style={[styles.segmentText, cameraMode === opt.id && styles.segmentTextSelected]}>{opt.label}</Text>
                   </Pressable>
                 ))}
-              </View>
-            </View>
-            <View style={styles.settingGroup}>
-              <Text style={styles.settingLabel}>MOTORCYCLE CAMERA</Text>
-              <View style={styles.segmentRow}>
-                {[false, true].map(fixed => {
-                  const selected = mountedIsometric === fixed;
-                  const label = fixed ? 'ISOMETRIC' : 'CHASE';
-                  return (
-                    <Pressable key={label} accessibilityRole="button"
-                      accessibilityLabel={`Motorcycle camera ${label}`}
-                      accessibilityState={{selected}}
-                      onPress={() => { playClick(); setMountedIsometric(fixed); }}
-                      style={({pressed}) => [styles.segmentButton,
-                        selected && styles.segmentButtonSelected,
-                        pressed && styles.controlPressed]}>
-                      <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>{label}</Text>
-                    </Pressable>
-                  );
-                })}
               </View>
             </View>
             {/* Control Scheme */}

@@ -581,14 +581,9 @@
 
     const riding = hud.controlKind === 1;
     rideReadout.hidden = !riding;
-    if (riding) {
-      btnCamera.textContent = `${state.mountedIsometric ? "ISO" : "CHASE"} [C]`;
-      btnCamera.setAttribute("aria-label", `Mounted camera: ${state.mountedIsometric ? "Isometric" : "Chase"}`);
-    } else {
-      const labels = ["ISO", "TOP", "ORBIT", "CHASE", "1ST"];
-      btnCamera.textContent = `${labels[state.cameraMode]} [C]`;
-      btnCamera.setAttribute("aria-label", `Camera view: ${["Isometric", "Overhead", "Orbit", "Chase", "First person"][state.cameraMode]}`);
-    }
+    const labels = ["ISO", "TOP", "ORBIT", "CHASE", "1ST"];
+    btnCamera.textContent = `${labels[state.cameraMode]} [C]`;
+    btnCamera.setAttribute("aria-label", `Camera view: ${["Isometric", "Overhead", "Orbit", "Chase", "First person"][state.cameraMode]}`);
     if (riding) {
       rideSpeed.textContent = `${(hud.speedMphX10 / 10).toFixed(1)} MPH`;
       rideCondition.textContent = `${hud.conditionPct}%`;
@@ -1470,14 +1465,6 @@
   });
 
   function cycleCamera() {
-    if (state.controlMode === 1) {
-      state.mountedIsometric = !state.mountedIsometric;
-      btnCamera.textContent = `${state.mountedIsometric ? "ISO" : "CHASE"} [C]`;
-      btnCamera.setAttribute("aria-label", `Mounted camera: ${state.mountedIsometric ? "Isometric" : "Chase"}`);
-      btnCamera.blur();
-      if (!state.playing && state.runId) requestFrame(false);
-      return;
-    }
     state.cameraMode = (state.cameraMode + 1) % 5;
     state.mountedIsometric = state.cameraMode === 0;
     input.mouseLookYaw = 0;
