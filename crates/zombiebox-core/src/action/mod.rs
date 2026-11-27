@@ -1102,7 +1102,10 @@ impl ActionGame {
     }
 
     fn mount_candidate(&self) -> Option<VehicleId> {
-        if self.control_mode() != ControlMode::OnFoot || self.player.floor != 0 {
+        if self.control_mode() != ControlMode::OnFoot
+            || self.player.floor != 0
+            || self.is_recovering_from_vehicle_crash()
+        {
             return None;
         }
         let eye = self.player_eye_position();
@@ -1112,11 +1115,10 @@ impl ActionGame {
                 continue;
             };
             if !bike.is_operable()
-                || !bike.is_stopped()
                 || !bike.body.motion.is_grounded()
                 || !matches!(
                     bike.phase,
-                    MotorcyclePhase::Parked | MotorcyclePhase::Rolling
+                    MotorcyclePhase::Parked | MotorcyclePhase::Rolling | MotorcyclePhase::Skidding
                 )
             {
                 continue;
@@ -1148,7 +1150,7 @@ impl ActionGame {
         }
         let id = self.vehicles.mounted()?;
         let bike = self.vehicles.motorcycle(id)?;
-        if !bike.is_stopped() || !bike.body.motion.is_grounded() {
+        if !bike.body.motion.is_grounded() {
             return None;
         }
         self.dismount_spot(id).map(|_| id)
@@ -1210,7 +1212,7 @@ impl ActionGame {
         }
         self.vehicles.set_mounted(Some(id));
         if let Some(bike) = self.vehicles.motorcycle_mut(id) {
-            bike.set_parked();
+            bike.begin_ride();
         }
         self.sync_mounted_pose(id);
         self.fall_peak_z = None;
@@ -1227,10 +1229,18 @@ impl ActionGame {
         let Some((spot, z, support)) = self.dismount_spot(id) else {
             return;
         };
+        let moving = self
+            .vehicles
+            .motorcycle(id)
+            .is_some_and(|bike| !bike.is_stopped());
         let facing = self.player.facing;
         self.vehicles.set_mounted(None);
         if let Some(bike) = self.vehicles.motorcycle_mut(id) {
-            bike.set_parked();
+            if moving {
+                bike.release_rider();
+            } else {
+                bike.set_parked();
+            }
         }
         self.player.position = spot;
         self.player.floor = 0;
@@ -2399,6 +2409,40 @@ mod tests {
             .1;
         assert!(
             matches!(restored, VehicleView::Motorcycle(bike) if bike.condition == 0 && bike.phase == MotorcyclePhase::Skidding)
+        );
+    }
+
+    #[test]
+    fn an_operative_skidding_motorcycle_can_be_remounted() {
+        let mut game = ActionGame::county(42);
+        let (id, spawn) = game
+            .vehicles
+            .iter()
+            .find_map(|(id, state)| {
+                state
+                    .motorcycle()
+                    .map(|bike| (id, Tile3D::from_vec2(bike.body.position.xy(), 0)))
+            })
+            .expect("seeded bike");
+        assert!(game.teleport(spawn).is_some());
+        let bike = game.vehicles.motorcycle_mut(id).unwrap();
+        bike.body.velocity = bike.body.facing_xy().extend(0.0) * 3.0;
+        bike.phase = MotorcyclePhase::Skidding;
+        bike.recovery_ticks = 0;
+
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+
+        assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+        assert_eq!(game.mounted_vehicle(), Some(id));
+        let bike = game.vehicles.motorcycle(id).unwrap();
+        assert_eq!(bike.phase, MotorcyclePhase::Rolling);
+        assert!(
+            bike.speed() > 2.5,
+            "remount should keep the skid's momentum: {}",
+            bike.speed()
         );
     }
 

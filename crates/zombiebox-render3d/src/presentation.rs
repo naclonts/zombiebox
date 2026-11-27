@@ -274,7 +274,10 @@ impl Presentation {
         let vehicle_base = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT;
         for (id, view) in &frame.dynamic.vehicles {
             let VehicleView::Motorcycle(moto) = *view;
-            let speed = moto.speed.abs();
+            let forward = moto.body.facing_xy();
+            let signed_speed = moto.body.velocity.xy().dot(forward);
+            let wheel_direction = if signed_speed < -0.05 { -1.0 } else { 1.0 };
+            let speed = moto.speed.abs() * wheel_direction;
             let phase = self.motorcycle_wheel_phase.entry(*id).or_default();
             if dt.is_finite() {
                 *phase += speed * dt.clamp(0.0, 0.1) / (0.21 * 2.0);

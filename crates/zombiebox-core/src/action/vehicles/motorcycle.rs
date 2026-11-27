@@ -73,6 +73,8 @@ pub(crate) struct MotorcycleTuning {
     pub max_speed: f32,
     pub throttle_accel: f32,
     pub brake_decel: f32,
+    pub reverse_accel: f32,
+    pub reverse_max_speed: f32,
     pub rolling_resistance: f32,
     pub aero_drag: f32,
     pub wheelbase: f32,
@@ -93,6 +95,9 @@ impl Default for MotorcycleTuning {
             max_speed: 17.9,
             throttle_accel: 7.2,
             brake_decel: 14.0,
+            // A walking-pace push backward; the rider's legs provide this instead of the engine.
+            reverse_accel: 2.0,
+            reverse_max_speed: 0.92,
             rolling_resistance: 0.55,
             aero_drag: 0.055,
             wheelbase: 1.50,
@@ -218,6 +223,36 @@ impl MotorcycleState {
         self.overload_ticks = 0;
         self.tip_ticks = 0;
     }
+
+    /// Takes over a bike that may already be rolling or skidding.
+    ///
+    /// Momentum is deliberately preserved so a survivor can catch a moving
+    /// motorcycle; only the unused rider inputs and crash timers are cleared.
+    pub(crate) fn begin_ride(&mut self) {
+        self.steer_angle = 0.0;
+        self.rider_lean = 0.0;
+        self.traction_use = 0.0;
+        self.last_throttle = 0.0;
+        self.last_raw_steer = 0.0;
+        self.overload_ticks = 0;
+        self.tip_ticks = 0;
+        self.recovery_ticks = 0;
+        self.pending_crash_damage = 0;
+        self.contact_cooldown = 0;
+        self.contact_latched = false;
+        self.body.pitch = 0.0;
+        self.body.roll = 0.0;
+        self.phase = if self.is_stopped() {
+            MotorcyclePhase::Parked
+        } else {
+            MotorcyclePhase::Rolling
+        };
+    }
+
+    /// Releases the rider while leaving the bike's momentum intact.
+    pub(crate) fn release_rider(&mut self) {
+        self.begin_ride();
+    }
 }
 
 /// Advances one motorcycle by one fixed `DT` step.
@@ -264,16 +299,30 @@ pub(crate) fn step_motorcycle(
     };
 
     let mut velocity = bike.body.velocity.xy();
+    let heading = bike.body.facing_xy();
     if bike.is_operable() && bike.recovery_ticks == 0 {
-        let heading = bike.body.facing_xy();
         if input.throttle > 0.0 {
             velocity += heading * (tuning.throttle_accel * input.throttle * dt);
         }
         if input.brake > 0.0 {
-            velocity = decelerate(velocity, tuning.brake_decel * input.brake * dt);
+            let forward_speed = velocity.dot(heading);
+            let at_rest = velocity.length() <= MOTORCYCLE_STOP_SPEED;
+            if input.throttle <= 0.001 && (forward_speed < 0.0 || at_rest) {
+                // Once stopped, holding brake becomes a walking-pace leg push.
+                velocity -= heading * (tuning.reverse_accel * input.brake * dt);
+            } else {
+                velocity = decelerate(velocity, tuning.brake_decel * input.brake * dt);
+            }
         }
     }
 
+    // Forward drive and leg-powered reverse have independent speed caps.
+    let forward_speed = velocity.dot(heading);
+    if forward_speed > tuning.max_speed {
+        velocity -= heading * (forward_speed - tuning.max_speed);
+    } else if forward_speed < -tuning.reverse_max_speed {
+        velocity -= heading * (forward_speed + tuning.reverse_max_speed);
+    }
     let mut current_speed = velocity.length();
     if current_speed > tuning.max_speed {
         velocity *= tuning.max_speed / current_speed;
@@ -295,14 +344,21 @@ pub(crate) fn step_motorcycle(
     const HIGH_SPEED_MPH: f32 = 15.0;
 
     let speed_mph = current_speed * MPH_PER_UNIT_PER_SECOND;
+    let forward_speed = velocity.dot(heading);
     let yaw_rate = if current_speed > 0.02 {
-        let yaw_rate_steer = current_speed * bike.steer_angle.tan() / tuning.wheelbase;
+        let yaw_rate_steer = forward_speed * bike.steer_angle.tan() / tuning.wheelbase;
         let v_safe = current_speed.max(0.1);
         let yaw_rate_lean = (GRAVITY * bike.rider_lean.tan() / v_safe).clamp(-1.8, 1.8);
 
         let t = ((speed_mph - LOW_SPEED_MPH) / (HIGH_SPEED_MPH - LOW_SPEED_MPH)).clamp(0.0, 1.0);
         let blend = t * t * (3.0 - 2.0 * t);
-        (1.0 - blend) * yaw_rate_steer + blend * yaw_rate_lean
+        if forward_speed < 0.0 {
+            // Reversing steers from the handlebars; leaning cannot balance a
+            // backward bicycle-style maneuver at walking pace.
+            yaw_rate_steer
+        } else {
+            (1.0 - blend) * yaw_rate_steer + blend * yaw_rate_lean
+        }
     } else {
         0.0
     };
@@ -371,7 +427,8 @@ pub(crate) fn step_motorcycle(
         0.15 + (tuning.max_lean - 0.15) * t_lean
     };
 
-    let unsafe_lean = (bike.rider_lean.abs() > max_safe_lean || (speed_mph < 2.5 && input.lean.abs() > 0.6))
+    let unsafe_lean = (bike.rider_lean.abs() > max_safe_lean
+        || (speed_mph < 2.5 && input.lean.abs() > 0.6))
         && bike.is_operable();
 
     if unsafe_lean {
@@ -641,6 +698,51 @@ mod tests {
             "sweep stops the bike before the wall: {:?}",
             bike.body.position
         );
+    }
+
+    #[test]
+    fn holding_brake_at_a_stop_pushes_backward_at_walking_pace() {
+        let world = TestWorld {
+            z: 0.0,
+            water_z: None,
+            supports: vec![support(SupportId::Terrain, 0.0, true, Surface::Road, None)],
+            colliders: Vec::new(),
+        };
+        let mut bike = MotorcycleState::parked(BodyState::from_pose_2d(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 0.0),
+            0.0,
+            SupportId::Terrain,
+        ));
+        let tuning = MotorcycleTuning::default();
+        let mut top_speed = 0.0_f32;
+
+        for _ in 0..120 {
+            let step = step_motorcycle(
+                &mut bike,
+                Some(MotorcycleInput {
+                    brake: 1.0,
+                    ..MotorcycleInput::default()
+                }),
+                &world,
+                &[],
+                &tuning,
+            );
+            assert!(step.wipeout.is_none());
+            top_speed = top_speed.max(bike.speed());
+        }
+
+        assert!(
+            bike.body.position.x < -0.8,
+            "holding brake should push the bike backward: {:?}",
+            bike.body.position
+        );
+        assert!(
+            top_speed <= tuning.reverse_max_speed + 0.02,
+            "reverse should stay at pushing pace: {top_speed}"
+        );
+        assert!((top_speed * MPH_PER_UNIT_PER_SECOND) < 2.5);
+        assert_eq!(bike.condition, 100);
     }
 
     #[test]

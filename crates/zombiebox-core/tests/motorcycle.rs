@@ -282,6 +282,94 @@ fn low_speed_hard_lean_tips_the_bike_and_recovery_expires() {
 }
 
 #[test]
+fn holding_brake_from_a_stop_reverses_at_pushing_pace() {
+    let mut game = ActionGame::county(42);
+    let (id, bike_pos) = starter_bike(&game);
+    assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+
+    let VehicleView::Motorcycle(start_bike) = game
+        .vehicle_views()
+        .find(|(got, _)| *got == id)
+        .expect("mounted starter bike")
+        .1;
+    let start = game.player_pose().position;
+    let forward = Vec2::new(start_bike.body.heading.cos(), start_bike.body.heading.sin());
+
+    for _ in 0..90 {
+        game.step(ride(0.0, 1.0, 0.0, 0.0));
+    }
+
+    let travel = game.player_pose().position - start;
+    assert!(
+        travel.dot(forward) < -0.25,
+        "holding brake at rest should push backward: {travel:?}"
+    );
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+    let mounted = game.hud().mounted.expect("still mounted");
+    assert!(mounted.speed_mph_x10 > 0);
+    assert!(
+        mounted.speed_mph_x10 <= 25,
+        "reverse should stay at a walking pace: {} mph_x10",
+        mounted.speed_mph_x10
+    );
+    assert_eq!(mounted.condition_pct, 100);
+}
+
+#[test]
+fn dismounting_at_speed_leaves_the_bike_rolling_and_it_can_be_remounted() {
+    let mut game = ActionGame::county(42);
+    let (id, bike_pos) = starter_bike(&game);
+    assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+
+    for _ in 0..35 {
+        game.step(ride(0.55, 0.0, 0.0, 0.0));
+    }
+    let speed_before = game.hud().mounted.expect("mounted").speed_mph_x10;
+    assert!(speed_before > 15, "bike should be moving: {speed_before}");
+
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    assert_eq!(game.control_mode(), ControlMode::OnFoot);
+    let rider_pos = game.player_pose().position;
+    let VehicleView::Motorcycle(rolling) = game
+        .vehicle_views()
+        .find(|(got, _)| *got == id)
+        .expect("bike stays live after dismount")
+        .1;
+    assert!(rider_pos.distance(rolling.body.position.xy()) > 0.45);
+    assert!(
+        rolling.speed > 0.5,
+        "dismounting while moving must leave the bike rolling"
+    );
+    assert_eq!(rolling.phase, zombiebox_core::MotorcyclePhase::Rolling);
+
+    assert_eq!(game.hud().interact_prompt, InteractPrompt::Mount);
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+    assert_eq!(game.mounted_vehicle(), Some(id));
+    let remounted_speed = game.hud().mounted.expect("mounted again").speed_mph_x10;
+    assert!(
+        remounted_speed > 10,
+        "remounting a rolling bike should keep its momentum: {remounted_speed}"
+    );
+}
+
+#[test]
 fn sharp_steer_at_road_speed_ejects_rider_and_keeps_skidding_bike() {
     let mut game = ActionGame::county(42);
     let (id, pos) = starter_bike(&game);
