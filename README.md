@@ -100,6 +100,7 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | [docs/goals.md](docs/goals.md) | Directional guidance for upcoming gameplay, procedural world, vehicle, AI, and audio goals |
 | [docs/architecture.md](docs/architecture.md) | Stack decision, runtime ownership, procedural streaming, rendering plan, and device criteria |
 | [docs/world-design.md](docs/world-design.md) | Seed-driven procedural county design, plausible district rules, loot/infected ecology, and vehicles |
+| [docs/motorcycle-plan.md](docs/motorcycle-plan.md) | Motorcycle gameplay, shared vehicle types, and implementation handoff |
 
 ## Run the checks
 

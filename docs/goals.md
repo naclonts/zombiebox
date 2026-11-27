@@ -48,15 +48,16 @@ Directional guidance for upcoming milestones. Keep implementation choices flexib
 ## Vehicles and motorcycle riding
 
 - **Long-term vehicle lineup:** **motorcycles**, **jeeps**, **motorboats**, and **planes**—giving land, off-road, water (rivers/lakes), and air (mountains/long-range) traversal across the procedural county.
-- **Start with motorcycles.** Prototype motorcycles first as the flagship testbed for vehicle feel, physics, camera behavior, and fast chunk streaming.
+- **Start with motorcycles.** Prototype motorcycles first to test vehicle feel, physics, camera behavior, and fast chunk streaming. Generate one usable bike near the normal county start and a few more throughout the county from the seed.
 - **Semi-realistic dual-stick motorcycle controls (to prototype and tune):**
-  - **Left virtual stick:** controls turning the **handlebars** (steering input; explore pairing vertical axis or a clean throttle/brake input with it so accelerating, braking, and steering all work comfortably with two thumbs).
+  - **Left virtual stick:** horizontal input turns the **handlebars**, up applies throttle, and down brakes. Tune the axes together so steering and speed control feel comfortable with one thumb.
   - **Right virtual stick:** controls rider **leaning** (shifting body weight left/right, and potentially forward/back pitch/tuck).
   - Keep exact throttle/brake curves, assist levels, and deadzones flexible—expect to iterate and play-test extensively until the controls feel physical, learnable, and fun on a touchscreen.
 - **Physical consequences & mastery:**
   - **Speed-dependent stability:** handlebars and leaning must work in concert with speed.
   - **High-speed handlebar yank (e.g., ~40 mph):** yanking the handlebars hard right without appropriate speed/lean breaks traction or violently upsets the bike—ejecting the survivor off the bike to tumble and take **injury**, while the **unmanned motorcycle skids onward** on its momentum (scraping sparks, knocking props, or plowing into zombies).
   - **Low-speed excessive lean (e.g., ~2 mph):** leaning sharply with too little forward speed lacks centrifugal force to hold the bike upright—causing the bike to **tip/fall over** on the spot.
+  - **Bike damage:** Crashes and impacts wear down the bike's condition. A bike with zero condition stays where it comes to rest and can no longer be ridden.
   - **Rewarding riding feel:** smooth low-speed handlebar maneuvering, coordinated lean-into-turns at road speed, surface traction differences (asphalt vs gravel/grass), braking/drifting, and mounting/dismounting cleanly.
 - **Vehicle camera exploration:**
   - In a fixed isometric camera, mapping "lean left/right" and "turn handlebars left/right" to a stick can feel backwards or confusing whenever the bike heads down-screen or diagonally.
