@@ -952,31 +952,43 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
         .get_mut(&id)
         .expect("run checked above");
     session.ensure_renderer(&gpu_context, u32::from(w), u32::from(h));
+    let player_heading = session.game.player_body().heading;
     if let Some(renderer) = &mut session.renderer {
         renderer
             .camera_mut()
             .set_look_ahead((flags & ZB_INPUT_LOOK_AHEAD) != 0);
         if let Some(mode) = camera.and_then(|mode| CameraMode::from_index(mode as usize)) {
-            renderer.camera_mut().set_mode(mode);
+            let camera = renderer.camera_mut();
+            camera.set_mode(mode);
+            if matches!(mode, CameraMode::Chase | CameraMode::FirstPerson) {
+                camera.initialize_view_from_heading(player_heading);
+            }
         }
     }
 
     let audio_events = if advance == 1 {
-        let camera_frame = session
+        let look_dt = session.last_dt;
+        let camera = session
             .renderer
-            .as_ref()
+            .as_mut()
             .expect("renderer initialized")
-            .camera()
-            .current_frame();
-        let movement = stick(mx, my, &camera_frame);
-        let aim = stick(ax, ay, &camera_frame);
-        session.step_frame(
-            t_ns,
-            movement,
-            (aim != Vec2::ZERO).then_some(aim),
-            flags,
-            select_weapon,
-        )
+            .camera_mut();
+        let (movement, aim) = match camera.mode() {
+            CameraMode::Chase | CameraMode::FirstPerson => {
+                camera.apply_look_input(Vec2::new(ax, ay), look_dt);
+                let frame = camera.current_frame();
+                let movement = stick(mx, my, &frame);
+                let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
+                (movement, Some(aim))
+            }
+            _ => {
+                let frame = camera.current_frame();
+                let movement = stick(mx, my, &frame);
+                let aim = stick(ax, ay, &frame);
+                (movement, (aim != Vec2::ZERO).then_some(aim))
+            }
+        };
+        session.step_frame(t_ns, movement, aim, flags, select_weapon)
     } else {
         session.reset_clock_and_latches();
         0

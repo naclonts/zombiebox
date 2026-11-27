@@ -109,7 +109,9 @@ impl Effects {
         }
         let mut mesh = MeshBuilder::new();
         for s in &self.sparks {
-            if visible(frame, s.at, s.floor) {
+            // Impact sparks are local surface effects: keep them tied to tile discovery
+            // so a hidden room does not leak its damage state through the shroud.
+            if tile_visible(frame, s.at, s.floor) {
                 let fraction = (s.life / s.duration).clamp(0.0, 1.0);
                 cube(
                     &mut mesh,
@@ -121,7 +123,10 @@ impl Effects {
             }
         }
         for trace in &self.traces {
-            // Clip each short segment individually against current visibility.
+            // Tracers always originate from an actor the player can see (shooters need
+            // line of sight before firing; player shots start at the player), so the
+            // depth buffer is the correct visibility policy. Floor-tile gating here
+            // made tracers pop between visible/explored tiles mid-flight.
             let d = trace.to - trace.from;
             let len = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
             let steps = ((len / 0.2).ceil() as usize).clamp(1, 512);
@@ -129,13 +134,14 @@ impl Effects {
                 let a = i as f32 / steps as f32;
                 let b = (i + 1) as f32 / steps as f32;
                 let p = trace.from + d * ((a + b) * 0.5);
-                if visible(frame, p, trace.floor) {
-                    cube(&mut mesh, p, 0.035, [1.0, 0.82, 0.45, 1.0], trace.floor);
-                }
+                cube(&mut mesh, p, 0.035, [1.0, 0.82, 0.45, 1.0], trace.floor);
             }
         }
         for p in &frame.dynamic.projectiles {
-            if visible(frame, p.position, p.floor) {
+            // Projectiles are 3D actors: rely on the shared depth pass for world
+            // occlusion and on the authoritative gameplay LOS flag for secrecy. The
+            // floor tile under the projectile is deliberately irrelevant.
+            if p.visible_to_player {
                 let col = match p.kind {
                     ProjectileKind::Rocket => [1.0, 0.45, 0.12, 1.0],
                     ProjectileKind::ShooterBolt => [0.35, 0.90, 0.28, 1.0],
@@ -144,7 +150,7 @@ impl Effects {
             }
         }
         for blast in &frame.dynamic.blasts {
-            if visible(frame, blast.position, blast.floor) {
+            if tile_visible(frame, blast.position, blast.floor) {
                 let col = match blast.kind {
                     crate::scene::BlastSnapshotKind::Rocket => [1.0, 0.43, 0.12, 1.0],
                     crate::scene::BlastSnapshotKind::BloaterCaustic => [0.56, 0.75, 0.20, 1.0],
@@ -171,7 +177,12 @@ impl Effects {
         });
     }
 }
-fn visible(frame: &FrameSnapshot, p: SimVec3, floor: Floor) -> bool {
+/// Local fog-of-war gate for surface-bound effects (impact sparks, blasts).
+///
+/// Projectiles and tracers intentionally do not use this: they carry authoritative
+/// 3D positions and are resolved by depth testing (and, for projectiles, a 3D LOS
+/// flag computed by the gameplay layer).
+fn tile_visible(frame: &FrameSnapshot, p: SimVec3, floor: Floor) -> bool {
     frame
         .dynamic
         .local_visibility
@@ -198,7 +209,7 @@ fn cube(mesh: &mut MeshBuilder, p: SimVec3, r: f32, color: [f32; 4], floor: Floo
 mod tests {
     use super::*;
     use crate::SceneManager;
-    use zombiebox_core::{ActionGame, Vec2, Weapon};
+    use zombiebox_core::{ActionGame, ProjectileId, ProjectileView, Vec2, Weapon};
 
     #[test]
     fn effects_follow_visibility_and_expire() {
@@ -230,5 +241,45 @@ mod tests {
             cell.visibility = TileVisibility::Visible;
         }
         assert!(effects.prepare(&frame, 0.1).is_empty());
+    }
+
+    #[test]
+    fn projectile_visibility_is_decoupled_from_floor_tiles() {
+        let game = ActionGame::residential(42);
+        let mut scene = SceneManager::new();
+        let mut frame = scene.prepare_at_focus(&game, game.player_tile().pos(), 0.0);
+        frame.events.clear();
+        // Simulate the projectile crossing an explored/shrouded floor tile.
+        for cell in &mut frame.dynamic.local_visibility.cells {
+            cell.visibility = TileVisibility::Hidden;
+        }
+        let p = frame.dynamic.player.foot_pos;
+        let projectile_pos = SimVec3::new(p.x, p.y, p.z + 1.8);
+        frame.dynamic.projectiles.push(ProjectileView {
+            id: ProjectileId(7),
+            kind: ProjectileKind::ShooterBolt,
+            position: projectile_pos,
+            velocity: SimVec3::new(1.0, 0.0, 0.0),
+            radius: 0.12,
+            pos: projectile_pos.xy(),
+            dir: Vec2::new(1.0, 0.0),
+            floor: 0,
+            z: projectile_pos.z,
+            visible_to_player: true,
+        });
+
+        let mut effects = Effects::new();
+        let mesh = effects.prepare(&frame, 0.0);
+        assert!(
+            !mesh.is_empty(),
+            "projectile with 3D LOS must render above a hidden floor tile"
+        );
+        mesh.validate().unwrap();
+
+        frame.dynamic.projectiles[0].visible_to_player = false;
+        assert!(
+            effects.prepare(&frame, 0.0).is_empty(),
+            "projectile without 3D LOS is culled even when floor tiles are visible"
+        );
     }
 }

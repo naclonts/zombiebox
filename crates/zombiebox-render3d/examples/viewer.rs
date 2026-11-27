@@ -78,19 +78,34 @@ impl App {
         self.keys.contains(&k)
     }
     fn tick(&mut self) {
-        let Some(v) = &self.view else { return };
         let axis = |neg, pos| f32::from(self.down(pos)) - f32::from(self.down(neg));
-        let movement = Vec2::new(
+        let movement_stick = Vec2::new(
             axis(KeyCode::KeyA, KeyCode::KeyD),
             axis(KeyCode::KeyW, KeyCode::KeyS),
         );
-        let aim = Vec2::new(
+        let look_stick = Vec2::new(
             axis(KeyCode::ArrowLeft, KeyCode::ArrowRight),
             axis(KeyCode::ArrowUp, KeyCode::ArrowDown),
         );
-        let frame = v.presentation.camera().current_frame();
-        let movement = frame.map_stick_to_world(movement);
-        let aim = frame.map_stick_to_world(aim);
+        let (movement, aim) = {
+            let Some(v) = &mut self.view else { return };
+            let camera = v.presentation.camera_mut();
+            match camera.mode() {
+                CameraMode::Chase | CameraMode::FirstPerson => {
+                    camera.apply_look_input(look_stick, TICK.as_secs_f32());
+                    let frame = camera.current_frame();
+                    let movement = frame.map_stick_to_world(movement_stick);
+                    let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
+                    (movement, Some(aim))
+                }
+                _ => {
+                    let frame = camera.current_frame();
+                    let movement = frame.map_stick_to_world(movement_stick);
+                    let aim = frame.map_stick_to_world(look_stick);
+                    (movement, Some(aim))
+                }
+            }
+        };
         let selected = [
             (KeyCode::KeyZ, Weapon::Axe),
             (KeyCode::KeyX, Weapon::Pistol),
@@ -101,7 +116,7 @@ impl App {
         .find_map(|(k, w)| self.once.contains(&k).then_some(w));
         let input = ActionInput {
             movement,
-            aim: Some(aim),
+            aim,
             fire: self.down(KeyCode::Space),
             interact: self.once.contains(&KeyCode::KeyE),
             select_weapon: selected,
@@ -112,11 +127,9 @@ impl App {
         };
         self.game.step(input);
         self.once.clear();
-        self.view
-            .as_mut()
-            .unwrap()
-            .presentation
-            .observe_tick(&self.game);
+        if let Some(v) = &mut self.view {
+            v.presentation.observe_tick(&self.game);
+        }
     }
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
@@ -255,8 +268,13 @@ impl ApplicationHandler for App {
                                     KeyCode::Digit4 => CameraMode::Chase,
                                     _ => CameraMode::FirstPerson,
                                 };
+                                let heading = self.game.player_body().heading;
                                 if let Some(v) = &mut self.view {
-                                    v.presentation.camera_mut().set_mode(mode)
+                                    let camera = v.presentation.camera_mut();
+                                    camera.set_mode(mode);
+                                    if matches!(mode, CameraMode::Chase | CameraMode::FirstPerson) {
+                                        camera.initialize_view_from_heading(heading);
+                                    }
                                 }
                             }
                             _ => {}

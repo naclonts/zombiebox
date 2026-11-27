@@ -56,7 +56,23 @@ def buildZombieboxRust = tasks.register('buildZombieboxRust', Exec) {
     }
 }
 
-tasks.named('preBuild') { dependsOn(buildZombieboxRust, surveyAssets) }
+// Stamp the bundle with the checkout it was built from so the settings menu can
+// report it. Always rerun: the stamp must match the working tree, not a cached hash.
+def gitInfoScript = rootProject.layout.projectDirectory.file('../scripts/write-git-info.cjs')
+def gitInfoOutput = rootProject.layout.projectDirectory.file('../gitInfo.ts')
+def generateGitInfo = tasks.register('generateGitInfo', Exec) {
+    outputs.upToDateWhen { false }
+    commandLine 'node', gitInfoScript.asFile.absolutePath
+    workingDir rootProject.projectDir
+}
+
+tasks.named('preBuild') { dependsOn(buildZombieboxRust, surveyAssets, generateGitInfo) }
+
+// The release bundle inlines gitInfo.ts, so regenerate it before Metro runs.
+tasks.matching { it.name == 'createBundleReleaseJsAndAssets' }.configureEach {
+    dependsOn(generateGitInfo)
+    inputs.file(gitInfoOutput).withPropertyName('zombieboxGitInfo')
+}
 
 dependencies {
     implementation('com.facebook.react:react-android')

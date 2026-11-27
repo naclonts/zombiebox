@@ -19,6 +19,7 @@ use super::types::{
 use super::weapons::{
     PLAYER_HURT_IFRAMES, Projectile, SHOOTER_BOLT_RADIUS, SHOOTER_BOLT_RANGE, SHOOTER_BOLT_SPEED,
     SHOOTER_MUZZLE_HEIGHT, WEAPON_MUZZLE_HEIGHT, emit_tile_damage_effects, is_blast_occluded_3d,
+    semantic_floor_at_point,
 };
 
 pub const BLOATER_SLAM_RANGE: f32 = 1.18;
@@ -2199,6 +2200,9 @@ fn step_monster_attack(
                 MonsterKind::Shooter => {
                     let shooter_muzzle3 = monster.muzzle_pos();
                     let velocity = aim_dir3 * SHOOTER_BOLT_SPEED;
+                    // Bolts can leave the muzzle above/below the shooter's nominal floor;
+                    // use the authoritative 3D point for the projectile's semantic floor.
+                    let bolt_floor = semantic_floor_at_point(world, shooter_muzzle3);
                     let id = ProjectileId(*next_proj_id);
                     *next_proj_id = next_proj_id.wrapping_add(1);
                     projectiles.push(Projectile {
@@ -2207,7 +2211,7 @@ fn step_monster_attack(
                         owner_is_player: false,
                         position: shooter_muzzle3,
                         velocity,
-                        floor: monster.floor,
+                        floor: bolt_floor,
                         radius: SHOOTER_BOLT_RADIUS,
                         remaining_range: SHOOTER_BOLT_RANGE,
                     });
@@ -2215,7 +2219,7 @@ fn step_monster_attack(
                         id,
                         kind: ProjectileKind::ShooterBolt,
                         from: shooter_muzzle3,
-                        floor: monster.floor,
+                        floor: bolt_floor,
                         dir: aim_dir,
                         velocity,
                     });

@@ -493,7 +493,7 @@ pub struct Projectile {
 
 impl Projectile {
     #[allow(clippy::wrong_self_convention)]
-    pub fn to_view(&self) -> ProjectileView {
+    pub fn to_view(&self, visible_to_player: bool) -> ProjectileView {
         let dir = self.velocity.xy().normalized();
         ProjectileView {
             id: self.id,
@@ -505,6 +505,7 @@ impl Projectile {
             position: self.position,
             velocity: self.velocity,
             radius: self.radius,
+            visible_to_player,
         }
     }
 }
@@ -785,13 +786,17 @@ pub(crate) fn try_fire_or_swing_3d(
 
             let id = ProjectileId(*next_proj_id);
             *next_proj_id = next_proj_id.wrapping_add(1);
+            // The muzzle can sit above or below the shooter's nominal floor (upper-window
+            // shots, stairs, drops). Derive the spawn floor from the authoritative muzzle
+            // point instead of inheriting the shooter's floor.
+            let spawn_floor = semantic_floor_at_point(world, muzzle_pos);
             projectiles.push(Projectile {
                 id,
                 kind: ProjectileKind::Rocket,
                 owner_is_player: true,
                 position: muzzle_pos,
                 velocity: aim_dir3 * ROCKET_SPEED,
-                floor: player.floor,
+                floor: spawn_floor,
                 radius: ROCKET_RADIUS,
                 remaining_range: spec.range,
             });
@@ -799,7 +804,7 @@ pub(crate) fn try_fire_or_swing_3d(
                 id,
                 kind: ProjectileKind::Rocket,
                 from: muzzle_pos,
-                floor: player.floor,
+                floor: spawn_floor,
                 dir: aim_dir3.xy(),
                 velocity: aim_dir3 * ROCKET_SPEED,
             });
@@ -1418,7 +1423,7 @@ fn sweep_sphere_cylinder(
 }
 
 #[inline]
-fn semantic_floor_at_point(world: &dyn CombatWorld, pos: Vec3) -> Floor {
+pub(crate) fn semantic_floor_at_point(world: &dyn CombatWorld, pos: Vec3) -> Floor {
     let gz = world.terrain_at(pos.xy()).map_or(0.0, |t| t.z);
     let max_floor = world.bounds().2.saturating_sub(1);
     ((pos.z - gz) / FLOOR_H)
@@ -3073,7 +3078,7 @@ mod tests {
             radius: SHOOTER_BOLT_RADIUS,
             remaining_range: SHOOTER_BOLT_RANGE,
         };
-        assert_eq!(proj.to_view().id, ProjectileId(9));
+        assert_eq!(proj.to_view(true).id, ProjectileId(9));
 
         let mut projectiles = vec![proj];
         let player = Pose {

@@ -54,6 +54,8 @@ src/
 * **Input Mapping:**
   * For isometric view, stick inputs align with legacy screen axes: `(sx/20 + sy/10)/2, (sy/10 - sx/20)/2`.
   * For directional modes (Chase, FirstPerson, Overhead), stick inputs map relative to camera yaw.
+  * Chase and FirstPerson keep an independent persistent view orientation. The right stick integrates look yaw/pitch over time with a small deadzone and a non-linear response curve; it is not re-derived from player heading each frame. Movement stays camera-relative and shots follow the view direction.
+  * Iso, Overhead, and Orbit retain the twin-stick mapping where the right stick supplies a world-space aim direction.
   * Host platforms should convert analog stick inputs using the most recent camera frame before advancing simulation ticks.
 
 ---
@@ -120,6 +122,21 @@ Separating presentation state from device-level rendering keeps platform integra
   * Manages `wgpu` pipelines, static vertex/index buffers, dynamic instance buffers, and render targets.
   * Tracks chunk revisions or fingerprints to avoid rebuilding static geometry when only the camera moves.
   * Renders to an internal low-resolution target with depth testing, then upscales to the presentation surface using nearest-neighbor sampling for a crisp retro aesthetic.
+
+### Visibility Policies by Geometry Class
+
+Gameplay fog-of-war and rendering visibility are separate concerns. Do not inherit the old 2.5D rule that an effect is visible only when the floor tile beneath it is visible.
+
+| Geometry | Visibility policy |
+| --- | --- |
+| Terrain | Tile visibility + depth testing |
+| Buildings | Cutaway rules + depth testing |
+| Monsters | Gameplay visibility + depth testing |
+| Projectiles | 3D depth testing + gameplay 3D line of sight (never floor-tile visibility) |
+| Bullet tracers | Depth testing (they originate from an actor already visible to the player) |
+| Impact particles and blasts | Local tile visibility + depth testing |
+
+`ProjectileView` carries the authoritative 3D position and a `visible_to_player` flag computed from a 3D eye-to-point raycast in `zombiebox-core`. The renderer uses that flag for secrecy and the shared depth buffer for world occlusion, so a projectile in open air above an explored or shrouded floor tile stays visible while one behind a solid wall stays hidden.
 
 ---
 

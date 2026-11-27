@@ -7,9 +7,8 @@ use glam::{Mat4, UVec2, Vec2, Vec3, Vec4};
 use zombiebox_core::{Vec2 as SimVec2, Weapon};
 
 use crate::coords::{
-    FLOOR_H, RenderAabb, SimVec3, render_to_sim_point, render_to_sim_vec, shortest_angle_delta,
-    sim_heading_from_vec2, sim_to_render_point, sim_vec2_from_heading, sim_xyz_to_render,
-    wrap_angle_pi,
+    FLOOR_H, RenderAabb, SimVec3, render_to_sim_point, render_to_sim_vec, sim_heading_from_vec2,
+    sim_to_render_point, sim_vec2_from_heading, sim_xyz_to_render, wrap_angle_pi,
 };
 
 /// Exact 2:1 isometric baseline scale: `20 * sqrt(2) ≈ 28.28427125` internal pixels per view unit.
@@ -26,7 +25,13 @@ pub const DEFAULT_FOLLOW_HALFLIFE_S: f32 = 0.055;
 pub const DEFAULT_ELEVATION_HALFLIFE_S: f32 = 0.14;
 pub const DEFAULT_LOOK_HALFLIFE_S: f32 = 0.16;
 pub const DEFAULT_SHAKE_HALFLIFE_S: f32 = 0.065;
-pub const DEFAULT_CHASE_YAW_HALFLIFE_S: f32 = 0.14;
+
+/// Full-deflection look rates for conventional first/third-person camera control.
+pub const DEFAULT_LOOK_YAW_SPEED: f32 = 3.2;
+pub const DEFAULT_LOOK_PITCH_SPEED: f32 = 2.0;
+/// Non-linear stick response: precise near center, fast at full deflection.
+pub const DEFAULT_LOOK_RESPONSE_EXPONENT: f32 = 1.6;
+pub const DEFAULT_LOOK_DEADZONE: f32 = 0.04;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 #[repr(u8)]
@@ -123,6 +128,21 @@ pub fn damp_factor(dt: f32, halflife_s: f32) -> f32 {
     1.0 - 0.5_f32.powf(dt / halflife_s)
 }
 
+/// Applies a deadzone-compensated exponent response curve to one look-stick axis.
+#[must_use]
+fn shape_look_axis(value: f32, deadzone: f32, exponent: f32) -> f32 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    let deadzone = deadzone.clamp(0.0, 0.95);
+    let magnitude = value.abs();
+    if magnitude <= deadzone {
+        return 0.0;
+    }
+    let normalized = ((magnitude - deadzone) / (1.0 - deadzone)).min(1.0);
+    normalized.powf(exponent.clamp(0.1, 4.0)).copysign(value)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CameraConfig {
     // Damping & teleport snap thresholds
@@ -130,7 +150,6 @@ pub struct CameraConfig {
     pub elevation_halflife_s: f32,
     pub look_halflife_s: f32,
     pub shake_halflife_s: f32,
-    pub chase_yaw_halflife_s: f32,
     pub teleport_snap_xy: f32,
     pub teleport_snap_z: f32,
     pub look_ahead_enabled: bool,
@@ -168,6 +187,14 @@ pub struct CameraConfig {
     pub chase_focus_height: f32,
     pub chase_forward_look: f32,
     pub chase_fov_y: f32,
+    pub chase_min_pitch: f32,
+    pub chase_max_pitch: f32,
+
+    // Conventional first/third-person look input
+    pub look_yaw_speed: f32,
+    pub look_pitch_speed: f32,
+    pub look_response_exponent: f32,
+    pub look_deadzone: f32,
 
     // First-person preset (perspective, eye at 0.92 < FLOOR_H ceiling)
     pub first_person_eye_height: f32,
@@ -188,7 +215,6 @@ impl Default for CameraConfig {
             elevation_halflife_s: DEFAULT_ELEVATION_HALFLIFE_S,
             look_halflife_s: DEFAULT_LOOK_HALFLIFE_S,
             shake_halflife_s: DEFAULT_SHAKE_HALFLIFE_S,
-            chase_yaw_halflife_s: DEFAULT_CHASE_YAW_HALFLIFE_S,
             teleport_snap_xy: 6.0,
             teleport_snap_z: 1.5 * FLOOR_H,
             look_ahead_enabled: true,
@@ -222,6 +248,13 @@ impl Default for CameraConfig {
             chase_focus_height: 0.85,
             chase_forward_look: 1.2,
             chase_fov_y: 55.0_f32.to_radians(),
+            chase_min_pitch: 0.0,
+            chase_max_pitch: 1.30,
+
+            look_yaw_speed: DEFAULT_LOOK_YAW_SPEED,
+            look_pitch_speed: DEFAULT_LOOK_PITCH_SPEED,
+            look_response_exponent: DEFAULT_LOOK_RESPONSE_EXPONENT,
+            look_deadzone: DEFAULT_LOOK_DEADZONE,
 
             first_person_eye_height: 0.92,
             first_person_forward_offset: 0.12,
@@ -650,17 +683,18 @@ pub struct CameraRig {
     internal_size: UVec2,
 
     initialized: bool,
-    chase_yaw_initialized: bool,
     anchor_sim: SimVec3,
     look_offset_sim: SimVec2,
-    chase_yaw: f32,
+
+    /// Independent view orientation for Chase/FirstPerson (renderer yaw: `heading + π`).
+    view_yaw: f32,
+    view_pitch: f32,
+    view_yaw_initialized: bool,
+    last_target_heading: f32,
 
     orbit_yaw: f32,
     orbit_pitch: f32,
     orbit_distance: f32,
-
-    fp_yaw_offset: f32,
-    fp_pitch: f32,
 
     obstruction_distance: Option<f32>,
     shake_amplitude: f32,
@@ -682,15 +716,15 @@ impl CameraRig {
             viewport_size: size,
             internal_size: size,
             initialized: false,
-            chase_yaw_initialized: false,
             anchor_sim: SimVec3::ZERO,
             look_offset_sim: SimVec2::ZERO,
-            chase_yaw: 0.0,
+            view_yaw: 0.0,
+            view_pitch: config.first_person_default_pitch,
+            view_yaw_initialized: false,
+            last_target_heading: -FRAC_PI_2,
             orbit_yaw: config.orbit_default_yaw,
             orbit_pitch: config.orbit_default_pitch,
             orbit_distance: config.orbit_default_distance,
-            fp_yaw_offset: 0.0,
-            fp_pitch: config.first_person_default_pitch,
             obstruction_distance: None,
             shake_amplitude: 0.0,
             shake_clock_s: 0.0,
@@ -703,9 +737,20 @@ impl CameraRig {
     }
 
     pub fn set_mode(&mut self, mode: CameraMode) {
+        let changed = mode != self.mode;
         self.mode = mode;
-        if mode == CameraMode::Chase {
-            self.chase_yaw_initialized = false;
+        if changed {
+            match mode {
+                CameraMode::Chase => {
+                    self.view_pitch = self.config.chase_pitch;
+                    self.view_yaw_initialized = false;
+                }
+                CameraMode::FirstPerson => {
+                    self.view_pitch = self.config.first_person_default_pitch;
+                    self.view_yaw_initialized = false;
+                }
+                _ => {}
+            }
         }
         self.obstruction_distance = None;
     }
@@ -761,9 +806,64 @@ impl CameraRig {
     /// Resets damping & shake so the next `update` snaps immediately (call after teleport or new run).
     pub fn notify_teleport(&mut self) {
         self.initialized = false;
-        self.chase_yaw_initialized = false;
+        self.view_yaw_initialized = false;
         self.shake_amplitude = 0.0;
         self.obstruction_distance = None;
+    }
+
+    /// Snaps the Chase/FirstPerson view yaw to the actor heading (`renderer yaw = heading + π`).
+    /// Call when entering a view mode; subsequent look input is integrated independently.
+    pub fn initialize_view_from_heading(&mut self, heading: f32) {
+        if heading.is_finite() {
+            self.view_yaw = wrap_angle_pi(heading + PI);
+            self.view_yaw_initialized = true;
+        }
+    }
+
+    /// Integrates conventional look-stick input into the independent view orientation.
+    /// Stick `+x` turns right and stick `+y` (screen-down) looks down.
+    pub fn apply_look_input(&mut self, stick: SimVec2, dt: f32) {
+        if !matches!(self.mode, CameraMode::Chase | CameraMode::FirstPerson) {
+            return;
+        }
+        let dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        if dt <= 0.0 {
+            return;
+        }
+
+        let x = shape_look_axis(
+            stick.x,
+            self.config.look_deadzone,
+            self.config.look_response_exponent,
+        );
+        let y = shape_look_axis(
+            stick.y,
+            self.config.look_deadzone,
+            self.config.look_response_exponent,
+        );
+
+        self.view_yaw = wrap_angle_pi(self.view_yaw + x * self.config.look_yaw_speed * dt);
+        let (min_pitch, max_pitch) = self.pitch_limits();
+        self.view_pitch =
+            (self.view_pitch + y * self.config.look_pitch_speed * dt).clamp(min_pitch, max_pitch);
+    }
+
+    fn pitch_limits(&self) -> (f32, f32) {
+        match self.mode {
+            CameraMode::Chase => (self.config.chase_min_pitch, self.config.chase_max_pitch),
+            CameraMode::FirstPerson => (
+                -self.config.first_person_max_pitch,
+                self.config.first_person_max_pitch,
+            ),
+            _ => (
+                -self.config.first_person_max_pitch,
+                self.config.first_person_max_pitch,
+            ),
+        }
     }
 
     /// Orbit camera controls (`delta_yaw` wraps `(-π, π]`; `orbit_pitch` & `orbit_distance` clamp to config).
@@ -801,22 +901,22 @@ impl CameraRig {
         self.orbit_distance = self.config.orbit_default_distance;
     }
 
-    /// First-person free-look offsets (used by desktop viewer mouse-look in `T09`).
+    /// Manual free-look deltas (used by desktop viewer mouse-look in `T09`).
     pub fn adjust_first_person_look(&mut self, delta_yaw: f32, delta_pitch: f32) {
         if delta_yaw.is_finite() {
-            self.fp_yaw_offset = wrap_angle_pi(self.fp_yaw_offset + delta_yaw);
+            self.view_yaw = wrap_angle_pi(self.view_yaw + delta_yaw);
+            self.view_yaw_initialized = true;
         }
         if delta_pitch.is_finite() {
-            self.fp_pitch = (self.fp_pitch + delta_pitch).clamp(
-                -self.config.first_person_max_pitch,
-                self.config.first_person_max_pitch,
-            );
+            let (min_pitch, max_pitch) = self.pitch_limits();
+            self.view_pitch = (self.view_pitch + delta_pitch).clamp(min_pitch, max_pitch);
         }
     }
 
     pub fn reset_first_person_look(&mut self) {
-        self.fp_yaw_offset = 0.0;
-        self.fp_pitch = self.config.first_person_default_pitch;
+        self.view_yaw = wrap_angle_pi(self.last_target_heading + PI);
+        self.view_yaw_initialized = true;
+        self.view_pitch = self.config.first_person_default_pitch;
     }
 
     /// Optional camera collision distance override for `Orbit`/`Chase` (`T09` obstruction solver).
@@ -839,6 +939,9 @@ impl CameraRig {
         } else {
             0.0
         };
+        if target.heading.is_finite() {
+            self.last_target_heading = target.heading;
+        }
 
         let aim_dir = if target.aim.x.is_finite()
             && target.aim.y.is_finite()
@@ -848,15 +951,6 @@ impl CameraRig {
         } else {
             sim_vec2_from_heading(target.heading)
         };
-
-        let desired_look =
-            if !self.config.look_ahead_enabled || self.mode == CameraMode::FirstPerson {
-                SimVec2::ZERO
-            } else if self.mode == CameraMode::Chase {
-                sim_vec2_from_heading(target.heading) * self.config.chase_forward_look
-            } else {
-                aim_dir * target.look_ahead_distance
-            };
 
         let dx = target.position.x - self.anchor_sim.x;
         let dy = target.position.y - self.anchor_sim.y;
@@ -869,14 +963,26 @@ impl CameraRig {
             || xy_dist > self.config.teleport_snap_xy
             || dz > self.config.teleport_snap_z;
 
-        let desired_chase_yaw = wrap_angle_pi(target.heading + PI);
+        if matches!(self.mode, CameraMode::Chase | CameraMode::FirstPerson)
+            && (!self.view_yaw_initialized || should_snap)
+        {
+            self.initialize_view_from_heading(target.heading);
+        }
+
+        let desired_look =
+            if !self.config.look_ahead_enabled || self.mode == CameraMode::FirstPerson {
+                SimVec2::ZERO
+            } else if self.mode == CameraMode::Chase {
+                SimVec2::new(-self.view_yaw.cos(), -self.view_yaw.sin())
+                    * self.config.chase_forward_look
+            } else {
+                aim_dir * target.look_ahead_distance
+            };
 
         if should_snap {
             self.anchor_sim = target.position;
             self.look_offset_sim = desired_look;
-            self.chase_yaw = desired_chase_yaw;
             self.initialized = true;
-            self.chase_yaw_initialized = true;
         } else if dt > 0.0 {
             let k_xy = damp_factor(dt, self.config.follow_halflife_s);
             let k_z = damp_factor(dt, self.config.elevation_halflife_s);
@@ -890,18 +996,6 @@ impl CameraRig {
                 self.anchor_sim.z += (target.position.z - self.anchor_sim.z) * k_z;
             }
             self.look_offset_sim += (desired_look - self.look_offset_sim) * k_look;
-
-            if !self.chase_yaw_initialized {
-                self.chase_yaw = desired_chase_yaw;
-                self.chase_yaw_initialized = true;
-            } else {
-                let k_yaw = damp_factor(dt, self.config.chase_yaw_halflife_s);
-                let delta = shortest_angle_delta(self.chase_yaw, desired_chase_yaw);
-                self.chase_yaw = wrap_angle_pi(self.chase_yaw + delta * k_yaw);
-            }
-        } else if !self.chase_yaw_initialized {
-            self.chase_yaw = desired_chase_yaw;
-            self.chase_yaw_initialized = true;
         }
 
         if dt > 0.0 && self.shake_amplitude > 0.0 {
@@ -1055,8 +1149,10 @@ impl CameraRig {
                 )
             }
             CameraMode::Chase => {
-                let yaw = self.chase_yaw;
-                let pitch = self.config.chase_pitch;
+                let yaw = self.view_yaw;
+                let pitch = self
+                    .view_pitch
+                    .clamp(self.config.chase_min_pitch, self.config.chase_max_pitch);
                 let (right, up, forward) = basis_from_yaw_pitch(yaw, pitch);
                 let focus = sim_to_render_point(
                     self.anchor_sim + SimVec3::new(look.x, look.y, self.config.chase_focus_height),
@@ -1092,8 +1188,8 @@ impl CameraRig {
                 )
             }
             CameraMode::FirstPerson => {
-                let yaw = wrap_angle_pi(self.chase_yaw + self.fp_yaw_offset);
-                let pitch = self.fp_pitch.clamp(
+                let yaw = self.view_yaw;
+                let pitch = self.view_pitch.clamp(
                     -self.config.first_person_max_pitch,
                     self.config.first_person_max_pitch,
                 );
@@ -1643,5 +1739,77 @@ mod tests {
                 .frustum
                 .intersects_sphere(scaled_frame.focus, 1.0)
         );
+    }
+
+    #[test]
+    fn look_stick_turns_right_and_looks_down_with_nonlinear_response() {
+        let target = CameraTarget {
+            position: SimVec3::new(10.0, 10.0, 0.0),
+            heading: 0.0,
+            aim: sim_vec2_from_heading(0.0),
+            ..CameraTarget::default()
+        };
+
+        let mut rig = CameraRig::new(640, 360);
+        rig.set_mode(CameraMode::Chase);
+        let start = rig.update(target, 0.0);
+
+        rig.apply_look_input(SimVec2::new(1.0, 1.0), 0.1);
+        let turned = rig.current_frame();
+        let yaw_delta = crate::coords::shortest_angle_delta(start.yaw, turned.yaw);
+        let expected_yaw = rig.config().look_yaw_speed * 0.1;
+        let expected_pitch = rig.config().look_pitch_speed * 0.1;
+        assert!(
+            (yaw_delta - expected_yaw).abs() < 1e-5,
+            "yaw delta {yaw_delta}"
+        );
+        assert!(
+            (turned.pitch - (start.pitch + expected_pitch)).abs() < 1e-5,
+            "pitch {} -> {}",
+            start.pitch,
+            turned.pitch
+        );
+
+        // The response curve keeps small deflections precise at full-deflection speed.
+        assert_eq!(shape_look_axis(0.0, 0.04, 1.6), 0.0);
+        assert_eq!(shape_look_axis(0.03, 0.04, 1.6), 0.0);
+        assert!((shape_look_axis(1.0, 0.04, 1.6) - 1.0).abs() < 1e-6);
+        assert!(shape_look_axis(0.2, 0.04, 1.6) < 0.2);
+        assert!(shape_look_axis(-0.2, 0.04, 1.6) < 0.0);
+    }
+
+    #[test]
+    fn view_orientation_stays_independent_after_heading_changes() {
+        let target = CameraTarget {
+            position: SimVec3::new(10.0, 10.0, 0.0),
+            heading: 0.0,
+            aim: sim_vec2_from_heading(0.0),
+            ..CameraTarget::default()
+        };
+        let mut rig = CameraRig::new(640, 360);
+        rig.set_mode(CameraMode::FirstPerson);
+        let start = rig.update(target, 0.0);
+
+        rig.apply_look_input(SimVec2::new(0.4, 0.0), 0.25);
+        let looked = rig.current_frame();
+        assert!(crate::coords::shortest_angle_delta(start.yaw, looked.yaw) > 0.0);
+
+        // Heading changes from movement/aim feedback must not pull the view back.
+        let moved_target = CameraTarget {
+            heading: 0.9,
+            aim: sim_vec2_from_heading(0.9),
+            ..target
+        };
+        let after_move = rig.update(moved_target, 1.0 / 60.0);
+        assert!((after_move.yaw - looked.yaw).abs() < 1e-6);
+
+        // Entering a view mode explicitly re-syncs yaw to the actor heading.
+        rig.set_mode(CameraMode::Chase);
+        let chase = rig.update(moved_target, 0.0);
+        assert!(
+            (crate::coords::shortest_angle_delta(moved_target.heading + PI, chase.yaw)).abs()
+                < 1e-6
+        );
+        assert!((chase.pitch - rig.config().chase_pitch).abs() < 1e-6);
     }
 }

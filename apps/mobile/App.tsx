@@ -18,6 +18,7 @@ import GameSurface, {
   Commands,
   type NativeProps,
 } from './specs/ZombieboxSurfaceNativeComponent';
+import {BUILD_STAMP, GIT_COMMIT} from './gitInfo';
 
 const DEFAULT_MAX_HEALTH = 6;
 const DEFAULT_ZOMBIES_TOTAL = 12;
@@ -1054,6 +1055,12 @@ function Game() {
               </Pressable>
             </View>
             </ScrollView>
+            <Text
+              accessibilityLabel={`Build ${GIT_COMMIT}`}
+              selectable
+              style={styles.buildStamp}>
+              {BUILD_STAMP}
+            </Text>
           </View>
         </View>
       )}
@@ -1470,6 +1477,15 @@ const styles = StyleSheet.create({
     color: muted,
   },
   settingHint: {color: muted, fontSize: 11, lineHeight: 14},
+  buildStamp: {
+    fontFamily: 'monospace',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    color: muted,
+    opacity: 0.75,
+    textAlign: 'right',
+  },
   segmentRow: {flexDirection: 'row', gap: 5},
   segmentButton: {
     flex: 1,

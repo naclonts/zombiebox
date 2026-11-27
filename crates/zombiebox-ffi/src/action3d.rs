@@ -189,7 +189,10 @@ pub unsafe extern "C" fn zb_action_v2_resize_window(
 /// The run must be live and exclusively owned.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zb_action_v2_camera_mode(run: *mut ZbAction, mode: u8) -> bool {
-    let Some(gpu) = (unsafe { run.as_mut() }).and_then(|r| r.gpu.as_mut()) else {
+    let Some(run) = (unsafe { run.as_mut() }) else {
+        return false;
+    };
+    let Some(gpu) = run.gpu.as_mut() else {
         return false;
     };
     let mode = match mode {
@@ -200,7 +203,12 @@ pub unsafe extern "C" fn zb_action_v2_camera_mode(run: *mut ZbAction, mode: u8) 
         4 => CameraMode::FirstPerson,
         _ => return false,
     };
-    gpu.presentation.camera_mut().set_mode(mode);
+    let heading = run.game.player_body().heading;
+    let camera = gpu.presentation.camera_mut();
+    camera.set_mode(mode);
+    if matches!(mode, CameraMode::Chase | CameraMode::FirstPerson) {
+        camera.initialize_view_from_heading(heading);
+    }
     true
 }
 
@@ -227,21 +235,27 @@ pub unsafe extern "C" fn zb_action_v2_frame_surface(
     gpu.presentation
         .camera_mut()
         .set_look_ahead(input.action_flags & ZB_INPUT_LOOK_AHEAD != 0);
-    let frame = gpu.presentation.camera().current_frame();
-    let map = |x: f32, y: f32| frame.map_stick_to_world(Vec2::new(x, y));
-    let movement = map(input.move_x, input.move_y);
-    let aim = map(input.aim_x, input.aim_y);
     let previous = run.last_frame;
-    let audio = run.advance_v2(
-        frame_time_ns,
-        movement,
-        (aim != Vec2::ZERO).then_some(aim),
-        input.action_flags,
-        weapon,
-    );
     let dt = previous.map_or(0.0, |t| {
         frame_time_ns.saturating_sub(t).min(MAX_FRAME_NS) as f32 / 1_000_000_000.0
     });
+    let camera = gpu.presentation.camera_mut();
+    let (movement, aim) = match camera.mode() {
+        CameraMode::Chase | CameraMode::FirstPerson => {
+            camera.apply_look_input(Vec2::new(input.aim_x, input.aim_y), dt);
+            let frame = camera.current_frame();
+            let movement = frame.map_stick_to_world(Vec2::new(input.move_x, input.move_y));
+            let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
+            (movement, Some(aim))
+        }
+        _ => {
+            let frame = camera.current_frame();
+            let movement = frame.map_stick_to_world(Vec2::new(input.move_x, input.move_y));
+            let aim = frame.map_stick_to_world(Vec2::new(input.aim_x, input.aim_y));
+            (movement, (aim != Vec2::ZERO).then_some(aim))
+        }
+    };
+    let audio = run.advance_v2(frame_time_ns, movement, aim, input.action_flags, weapon);
     let gpu = run.gpu.as_mut().expect("checked above");
     let rendered =
         gpu.presentation

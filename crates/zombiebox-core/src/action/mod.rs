@@ -29,8 +29,11 @@ use weapons::{
 pub const PLAYER_MAX_SPEED: f32 = 5.2;
 pub const PLAYER_QUIET_STICK_THRESHOLD: f32 = 0.52;
 pub const PLAYER_DEADZONE: f32 = 0.08;
+pub const AIM_DEADZONE: f32 = 0.15;
 pub const PLAYER_RADIUS: f32 = 0.23;
 pub const PLAYER_HEIGHT: f32 = 1.05;
+/// Eye height above the player's feet for first-person/fog-of-war sight checks.
+pub const PLAYER_EYE_HEIGHT: f32 = 0.92;
 pub const PLAYER_SHAPE: BodyShape = BodyShape::new(PLAYER_RADIUS, PLAYER_HEIGHT);
 pub const PLAYER_HURT_IFRAMES: u8 = 24;
 const FOOTSTEP_INTERVAL_TICKS: u8 = 18;
@@ -654,16 +657,19 @@ impl ActionGame {
         }
 
         // 4. Aim / facing update (right-stick retains facing on release).
-        if let Some(aim) = input.aim {
+        let aim_raw = input.aim.filter(|aim| {
+            let len_sq = aim.length_squared();
+            len_sq.is_finite() && len_sq > AIM_DEADZONE * AIM_DEADZONE
+        });
+        if let Some(aim) = aim_raw {
             let aim = aim.normalized();
-            if aim.length_squared() > 0.01 {
-                self.player.facing = aim;
-                self.player_body.heading = aim.y.atan2(aim.x);
-                self.aim_explicit = true;
-            }
+            self.player.facing = aim;
+            self.player_body.heading = aim.y.atan2(aim.x);
+            self.aim_explicit = true;
         } else if !self.aim_explicit {
-            let mv = input.movement.normalized();
-            if mv.length_squared() > 0.01 {
+            let move_len_sq = input.movement.length_squared();
+            if move_len_sq.is_finite() && move_len_sq > PLAYER_DEADZONE * PLAYER_DEADZONE {
+                let mv = input.movement.normalized();
                 self.player.facing = mv;
                 self.player_body.heading = mv.y.atan2(mv.x);
             }
@@ -1681,7 +1687,41 @@ impl ActionGame {
     }
 
     pub fn projectiles(&self) -> Vec<ProjectileView> {
-        self.projectiles.iter().map(Projectile::to_view).collect()
+        let eye = self.player_eye_position();
+        self.projectiles
+            .iter()
+            .map(|p| p.to_view(self.has_line_of_sight_from(eye, p.position)))
+            .collect()
+    }
+
+    /// Authoritative player eye point (`+z` up), used by 3D visibility policies.
+    #[must_use]
+    pub fn player_eye_position(&self) -> Vec3 {
+        self.player_body
+            .position
+            .with_z(self.player_body.position.z + PLAYER_EYE_HEIGHT)
+    }
+
+    /// Geometric 3D line of sight from the player's eye to `point`.
+    ///
+    /// This is intentionally independent of floor-tile fog-of-war state. Used to keep
+    /// transient gameplay actors (projectiles) secret only when solid geometry blocks
+    /// them, rather than whenever the tile underneath them is not currently visible.
+    #[must_use]
+    pub fn has_line_of_sight_to_point(&self, point: Vec3) -> bool {
+        self.has_line_of_sight_from(self.player_eye_position(), point)
+    }
+
+    fn has_line_of_sight_from(&self, from: Vec3, to: Vec3) -> bool {
+        let Some((ray, dist)) = Ray3::from_points(from, to) else {
+            return true;
+        };
+        if dist <= 0.08 {
+            return true;
+        }
+        self.spatial()
+            .raycast_filtered(ray, dist - 0.04, QueryFilter::LINE_OF_SIGHT)
+            .is_none()
     }
 
     pub fn dusk_level(&self) -> f32 {
@@ -1828,6 +1868,61 @@ impl ActionGame {
 mod tests {
     use super::*;
     use crate::WORLD_SIZE;
+
+    #[test]
+    fn projectile_views_use_3d_los_not_floor_visibility() {
+        let mut game = ActionGame::residential(42);
+        let house = game.house().unwrap();
+        let south_y = house.y + house.height - 1;
+        let wall_x = (house.x..house.x + house.width)
+            .find(|x| game.stage.tile_kind(Tile3D::new(*x, south_y, 0)) == TileKind::ExteriorWall)
+            .expect("starter house should have a solid south wall");
+        let outside = Vec2::new(wall_x as f32, south_y as f32 + 1.0);
+        let (z, support, _) = resolve_actor_support(&game.stage, outside, 0);
+        game.player.position = outside;
+        game.player.floor = 0;
+        game.player_body = BodyState::from_pose_2d(outside, Vec2::new(0.0, -1.0), z, support);
+
+        let eye = game.player_eye_position();
+        let behind_wall = Vec3::new(wall_x as f32, south_y as f32 - 0.6, eye.z);
+        assert!(
+            !game.has_line_of_sight_to_point(behind_wall),
+            "a solid exterior wall must occlude the point behind it"
+        );
+        let open_air = eye.with_z(eye.z + 5.0);
+        assert!(
+            game.has_line_of_sight_to_point(open_air),
+            "open air above the player must be visible"
+        );
+
+        let base = Projectile {
+            id: ProjectileId(1),
+            kind: ProjectileKind::ShooterBolt,
+            owner_is_player: false,
+            position: behind_wall,
+            velocity: Vec3::new(1.0, 0.0, 0.0),
+            floor: 0,
+            radius: 0.1,
+            remaining_range: 10.0,
+        };
+        game.projectiles.clear();
+        game.projectiles.push(base);
+        game.projectiles.push(Projectile {
+            id: ProjectileId(2),
+            position: open_air,
+            ..base
+        });
+
+        let views = game.projectiles();
+        assert!(
+            !views[0].visible_to_player,
+            "projectile behind a solid wall stays secret"
+        );
+        assert!(
+            views[1].visible_to_player,
+            "projectile in open 3D space is visible regardless of its floor tile"
+        );
+    }
 
     #[test]
     fn brisk_analog_movement_respects_quiet_walk_and_walls() {
@@ -1996,6 +2091,36 @@ mod tests {
             ..ActionInput::default()
         });
         assert_eq!(game.player_pose().facing, Vec2::new(1.0, 0.0));
+    }
+
+    #[test]
+    fn aim_inside_deadzone_does_not_override_movement_heading() {
+        let mut game = ActionGame::residential(42);
+        game.step(ActionInput {
+            movement: Vec2::new(1.0, 0.0),
+            aim: Some(Vec2::new(0.0, AIM_DEADZONE * 0.5)),
+            ..ActionInput::default()
+        });
+        let facing = game.player_pose().facing;
+        assert!(
+            (facing.x - 1.0).abs() < 1e-5 && facing.y.abs() < 1e-5,
+            "tiny aim stick must not override movement heading, got {facing:?}"
+        );
+    }
+
+    #[test]
+    fn movement_inside_deadzone_does_not_change_heading() {
+        let mut game = ActionGame::residential(42);
+        let start = game.player_pose().facing;
+        game.step(ActionInput {
+            movement: Vec2::new(PLAYER_DEADZONE * 0.5, 0.0),
+            ..ActionInput::default()
+        });
+        let facing = game.player_pose().facing;
+        assert!(
+            (facing - start).length() < 1e-5,
+            "movement below the deadzone must not rotate the survivor, got {facing:?}"
+        );
     }
 
     #[test]

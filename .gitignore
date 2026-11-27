@@ -12,3 +12,6 @@ node_modules/
 *.jks
 *.keystore
 serve.sh
+
+# Generated build stamp (apps/mobile/scripts/write-git-info.cjs)
+/apps/mobile/gitInfo.ts

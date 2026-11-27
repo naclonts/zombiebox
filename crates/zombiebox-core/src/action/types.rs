@@ -486,6 +486,13 @@ pub struct ProjectileView {
     pub floor: Floor,
     /// World-space Z coordinate (`== position.z`).
     pub z: f32,
+    /// Gameplay fog-of-war gate: clear 3D line of sight from the player's eye.
+    ///
+    /// This deliberately ignores floor-tile visibility: a projectile in open air above
+    /// a shrouded/explored tile can still be visible. Callers that render projectiles
+    /// should rely on GPU depth testing for world occlusion and use this only to keep
+    /// genuinely unseen volumes (for example rooms hidden behind solid walls) secret.
+    pub visible_to_player: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]

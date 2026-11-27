@@ -38,7 +38,16 @@ mkdir -p ../build
 cp app/build/outputs/apk/release/app-release.apk ../build/zombiebox-android.apk
 ```
 
-The APK is written to `apps/mobile/build/zombiebox-android.apk`. To install it on a USB-connected Android phone with USB debugging enabled:
+or, from the repository root, use the Makefile shortcuts:
+
+```sh
+make build   # same as `make apk`: assembleRelease, copy to apps/mobile/build, print the SHA-256
+make install # adb install -r apps/mobile/build/zombiebox-android.apk
+make run     # browser playtest: cargo run --release --locked -p zombiebox-web
+```
+`make` sets `ANDROID_HOME` from the environment, falling back to a local SDK install.
+
+The APK is written to `apps/mobile/build/zombiebox-android.apk`. Its settings menu shows the build stamp (`BUILD <short-commit>`, plus `-dirty` for a modified working tree), generated at build time by `apps/mobile/scripts/write-git-info.cjs`. To install it on a USB-connected Android phone with USB debugging enabled:
 
 ```sh
 adb install -r apps/mobile/build/zombiebox-android.apk

@@ -1,5 +1,5 @@
 {
   "extends": "@react-native/typescript-config",
   "compilerOptions": {"types": ["react"]},
-  "include": ["App.tsx", "specs/**/*.ts"]
+  "include": ["App.tsx", "gitInfo.ts", "specs/**/*.ts"]
 }

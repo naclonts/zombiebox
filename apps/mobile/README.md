@@ -22,7 +22,9 @@ mkdir -p ../build
 cp app/build/outputs/apk/release/app-release.apk ../build/zombiebox-android.apk
 ```
 
-Gradle builds the Rust native library for the configured Android ABIs and packages the React Native bundle. The release variant uses the machine's local Android debug signing key so the APK can be sideloaded. The distributable workspace copy is `apps/mobile/build/zombiebox-android.apk`.
+Gradle builds the Rust native library for the configured Android ABIs and packages the React Native bundle. The release variant uses the machine's local Android debug signing key so the APK can be sideloaded. The distributable workspace copy is `apps/mobile/build/zombiebox-android.apk`. From the repository root, `make build` (or `make apk`) runs the same steps and prints the APK SHA-256, and `make install` pushes it with `adb install -r`.
+
+The settings menu reports the build stamp (`BUILD <short-commit>`, suffixed `-dirty` when the working tree has tracked changes). `scripts/write-git-info.cjs` writes the generated `gitInfo.ts` that App.tsx imports; Gradle's `generateGitInfo` task runs it before the release JavaScript bundle, and `npm ci` runs it through `postinstall` for development builds.
 
 With USB debugging enabled and the phone listed by `adb devices`, install or update the app with:
 
@@ -42,6 +44,8 @@ You can also transfer `apps/mobile/build/zombiebox-android.apk` to the phone, op
 - **3D release APK and emulator smoke.** Offline `assembleRelease` produced `apps/mobile/build/zombiebox-android.apk` (SHA-256 `c7e3c7362fb681e5f23b0f10ef20b0f6bdbee860479bf4256aac9370cbd511f9`) with `arm64-v8a` and `x86_64` JNI libraries. On an offline API 35 x86_64 emulator using SwiftShader at 2400×1080, seed 42 movement changed tile `(354, 163)` to `(352, 163)`. Aim input, the TOP camera, pause, Home, foreground and resume passed with the same HUD location. The offline atlas teleported the run to `(324, 175)` and returned to gameplay. A 118-sample run logged p50 100.98 ms, p95 153.52 ms and p99 172.24 ms at 67% resolution with concurrent host work; the next window reported p95 139.81 ms. This does not measure handset performance.
 - **Physical handset.** The user confirmed that the 3D build works on a physical Android handset. The device model, exact playthrough coverage, and frame timing were not supplied. A full Birch Street clear, detailed controls and touch/audio/haptic latency checks, thermal behavior, and sustained frame pacing remain pending. [Handset completion checks](../../docs/product-decisions.md#planned-milestones-and-completion-checks)
 
+- **Build stamp and Makefile (2026-11-26).** `make build` assembled the release APK offline-incrementally (`BUILD SUCCESSFUL`, 3m 6s on this host) and wrote `apps/mobile/build/zombiebox-android.apk` (SHA-256 `5084e503f2a333666697f53e2372bc301ea63db28986cae887a4c5940ce0d97e`). The Hermes bundle inside that APK contains the `BUILD e8b4db0-dirty` stamp, and `npm run typecheck` passes with the generated `gitInfo.ts`. `make run` served `http://127.0.0.1:8765/` (HTTP 200). The settings-menu placement of the stamp still needs a visual check on a device or emulator.
+
 For 3D verification, see the [progress ledger](../../docs/render3d-progress.md#3d-cutover-verification). In an Android development session, `adb logcat -s Zombiebox3D` can show frame interval percentiles, CPU preparation and submission times, culling, and the active resolution tier.
 
 ### County field atlas
@@ -57,6 +61,7 @@ Settings offers five camera views. Isometric is the default.
   - **Tap Stick (default):** drag to aim (aim stays locked on release), tap the right stick to fire/swing, or double-tap & hold for continuous fire/chopping.
   - **Outer Ring:** inner 78% aims; push past the amber ring to auto-fire.
   - **Release:** drag past deadzone to aim and release to fire; pull back to center to cancel safely.
+  - In **Chase** and **First** camera views the right stick looks around (light tilt aims precisely, full deflection turns quickly); the left stick moves relative to the view and fire follows the camera. **Iso**, **Top**, and **Orbit** keep the screen-relative twin-stick mapping.
 - Tap the **bottom hotbar** (`AXE`, `PST`, `SHT`, `RKT`) to switch tools (tap the active firearm or **RLD** to reload), tap **+ MED** to quick-heal without changing weapons, and tap the contextual **Interact** button (or tap the scene while an interact prompt is shown) to search caches, open/close doors, vault broken windows, drop from 2F windows, or take stairs.
 - In the county, follow roads between districts, enter buildings, and scavenge for supplies. The HUD shows the current district and tile, floor, and nearby infected count.
 - Explore Birch Street's three multi-level houses and yards: grab the **Axe** on the front stoop (shatters glass in 1 hit), **Pistol** inside Birch Bungalow, **Shotgun** in Elm Corner Duplex, **Rocket Launcher** upstairs in Oak Ridge Split-Level (breaches structural walls & collapses unsupported 2F overhangs), and **Medkits** / ammo caches. Clear all 12 sight- and sound-reactive threats (**Shamblers**, **Brisk** runners, **Bloaters**, and telegraphed **Shooters**).
