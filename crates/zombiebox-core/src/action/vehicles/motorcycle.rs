@@ -403,23 +403,19 @@ pub(crate) fn step_motorcycle(
             bike.overload_ticks = bike.overload_ticks.saturating_sub(2);
         }
     }
+    // Fast yank ejection: the only handlebar-steering wipeout. A sudden snap of
+    // the bars (most of the input range crossed in one fixed tick, e.g. digital
+    // input slamming to full lock) above `EJECT_YANK_MPH` throws the rider.
+    // Gradual steering and leaning stay recoverable at any road speed, however
+    // much of the speed-scaled lock is used.
+    const STEER_YANK_DELTA: f32 = 0.85;
+    const EJECT_YANK_MPH: f32 = 35.0;
     let raw_steer = input.steer;
-    let steer_yank = (raw_steer - bike.last_raw_steer).abs() > 0.85 && speed_mph >= 15.0;
+    let steer_yank = (raw_steer - bike.last_raw_steer).abs() > STEER_YANK_DELTA;
     bike.last_raw_steer = raw_steer;
 
-    // Speed-scaled maximum safe steer threshold:
-    // Below 8 mph, full steering lock is safe without crashing.
-    // Above 8 mph, safe handlebar deflection scales with speed toward high-speed road steering limit.
-    let max_safe_steer = if speed_mph <= LOW_SPEED_MPH {
-        tuning.low_speed_steer + 0.1
-    } else {
-        let t = ((speed_mph - LOW_SPEED_MPH) / (HIGH_SPEED_MPH - LOW_SPEED_MPH)).clamp(0.0, 1.0);
-        let road_steer = (8.5 / (current_speed * current_speed)).min(tuning.low_speed_steer);
-        (tuning.low_speed_steer + 0.1) * (1.0 - t) + road_steer * t
-    };
-
-    let high_speed_crash = (bike.steer_angle.abs() > max_safe_steer || steer_yank)
-        && speed_mph > LOW_SPEED_MPH
+    let high_speed_crash = steer_yank
+        && speed_mph > EJECT_YANK_MPH
         && bike.is_operable()
         && bike.recovery_ticks == 0;
 

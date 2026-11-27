@@ -12,12 +12,14 @@ use crate::gpu::{
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
 use crate::mesh::buildings::build_chunk_building_shell;
 use crate::mesh::doors::{AnimatedDoor, door_leaf_mesh, door_leaves};
-use crate::mesh::motorcycle::{MotorcyclePart, motorcycle_part_mesh_with_appearance};
+use crate::mesh::motorcycle::{
+    MotorcycleLocator, MotorcyclePart, motorcycle_locator, motorcycle_part_mesh_with_appearance,
+};
 use crate::mesh::motorcycle_appearance::{
     MOTORCYCLE_SLOT_COUNT, MotorcycleVisualKey, motorcycle_slot, visual_key,
 };
 use crate::mesh::props::{build_chunk_props_mesh, cache_instances, cache_mesh};
-use crate::mesh::vehicles::MotorcycleTransforms;
+use crate::mesh::vehicles::{MOTORCYCLE_SCALE, MotorcycleTransforms};
 use crate::telemetry::{FramePercentiles, FrameTelemetry, FrameTiming};
 use crate::{
     CameraFrame, CameraMode, CameraRig, CameraTarget, ChunkCoord, FrameSnapshot, RgbaImage,
@@ -197,6 +199,47 @@ impl Presentation {
         self.telemetry.interrupt();
     }
 
+    fn update_camera(camera: &mut CameraRig, game: &ActionGame, dt: f32) -> CameraFrame {
+        let mounted_id = game.mounted_vehicle();
+        let mounted_view = mounted_id.and_then(|id| {
+            game.vehicle_views()
+                .find_map(|(candidate, view)| (candidate == id).then_some(view))
+        });
+        let body = match mounted_view {
+            Some(VehicleView::Motorcycle(m)) => m.body,
+            None => game.player_body(),
+        };
+        let mut position = body.position;
+        if let (Some(VehicleView::Motorcycle(_)), CameraMode::FirstPerson) =
+            (mounted_view, camera.mode())
+        {
+            let (_, seat) = motorcycle_locator(MotorcycleLocator::Seat);
+            let (sin, cos) = body.heading.sin_cos();
+            let seat_offset = seat.z * MOTORCYCLE_SCALE;
+            position.x += cos * seat_offset;
+            position.y += sin * seat_offset;
+            // Give the seated view clearance over the handlebars and mirrors.
+            position.z += 0.10;
+        }
+        let target = CameraTarget {
+            position,
+            velocity: body.velocity,
+            aim: game.player_pose().facing,
+            heading: body.heading,
+            look_ahead_distance: if mounted_id.is_some() {
+                0.0
+            } else {
+                weapon_look_ahead_distance(game.inventory().equipped)
+            },
+        };
+        camera.set_obstruction_distance(None);
+        if mounted_view.is_some() {
+            camera.update_mounted(target, dt)
+        } else {
+            camera.update(target, dt)
+        }
+    }
+
     fn prepare(
         &mut self,
         ctx: &GpuContext,
@@ -208,32 +251,7 @@ impl Presentation {
         SceneLightingUniforms,
         [Vec<InstanceRaw>; BATCH_COUNT],
     ) {
-        let body = game.player_body();
-        let pose = game.player_pose();
-        let mounted_id = game.mounted_vehicle();
-        let mounted_view = mounted_id.and_then(|id| {
-            game.vehicle_views()
-                .find_map(|(candidate, view)| (candidate == id).then_some(view))
-        });
-        let target = CameraTarget {
-            position: mounted_view.map_or(body.position, |v| match v {
-                VehicleView::Motorcycle(m) => m.body.position,
-            }),
-            velocity: mounted_view.map_or(body.velocity, |v| match v {
-                VehicleView::Motorcycle(m) => m.body.velocity,
-            }),
-            aim: pose.facing,
-            heading: mounted_view.map_or(body.heading, |v| match v {
-                VehicleView::Motorcycle(m) => m.body.heading,
-            }),
-            look_ahead_distance: if mounted_id.is_some() {
-                0.0
-            } else {
-                weapon_look_ahead_distance(game.inventory().equipped)
-            },
-        };
-        self.camera.set_obstruction_distance(None);
-        let mut camera = self.camera.update(target, dt);
+        let mut camera = Self::update_camera(&mut self.camera, game, dt);
         if matches!(camera.mode, CameraMode::Orbit | CameraMode::Chase) {
             let start = render_to_sim_point(camera.focus);
             let end = render_to_sim_point(camera.eye);
@@ -522,6 +540,49 @@ mod tests {
             .expect("seed 42 starter motorcycle");
         assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
         game
+    }
+
+    #[test]
+    fn seed_42_mount_aligns_view_and_dismount_keeps_facing() {
+        let mut game = make_test_game();
+        let mut camera = CameraRig::new(320, 180);
+        camera.set_mode(CameraMode::Chase);
+        Presentation::update_camera(&mut camera, &game, 0.016);
+        camera.adjust_first_person_look(1.0, 0.0);
+        let before = Presentation::update_camera(&mut camera, &game, 0.016);
+
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        let mounted_id = game.mounted_vehicle().expect("mounted starter bike");
+        let heading = game
+            .vehicle_views()
+            .find_map(|(id, view)| {
+                (id == mounted_id).then_some(match view {
+                    VehicleView::Motorcycle(bike) => bike.body.heading,
+                })
+            })
+            .unwrap();
+        let mounted = Presentation::update_camera(&mut camera, &game, 0.016);
+        let expected = heading + std::f32::consts::PI;
+        assert!(crate::coords::shortest_angle_delta(expected, before.yaw).abs() > 0.5);
+        assert!(crate::coords::shortest_angle_delta(expected, mounted.yaw).abs() < 1e-4);
+        assert_eq!(mounted.mode, CameraMode::Chase);
+
+        camera.set_mode(CameraMode::FirstPerson);
+        let first_person = Presentation::update_camera(&mut camera, &game, 0.016);
+        assert!(crate::coords::shortest_angle_delta(expected, first_person.yaw).abs() < 1e-4);
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert!(game.mounted_vehicle().is_none());
+        let dismounted = Presentation::update_camera(&mut camera, &game, 0.016);
+        assert!(crate::coords::shortest_angle_delta(first_person.yaw, dismounted.yaw).abs() < 1e-4);
+        camera.adjust_first_person_look(0.3, 0.0);
+        let looked = Presentation::update_camera(&mut camera, &game, 0.016);
+        assert!(crate::coords::shortest_angle_delta(dismounted.yaw, looked.yaw) > 0.29);
     }
 
     #[test]

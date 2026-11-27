@@ -401,8 +401,8 @@ fn sharp_steer_at_road_speed_ejects_rider_and_keeps_skidding_bike() {
         game.step(ride(1.0, 0.0, 0.0, 0.0));
     }
     assert!(
-        game.hud().mounted.unwrap().speed_mph_x10 >= 300,
-        "must reach road speed before steering yank"
+        game.hud().mounted.unwrap().speed_mph_x10 > 350,
+        "must exceed 35 mph before a steering yank can eject"
     );
     let hp = game.hud().health;
     game.step(ride(0.0, 0.0, 1.0, -1.0));
@@ -425,6 +425,51 @@ fn sharp_steer_at_road_speed_ejects_rider_and_keeps_skidding_bike() {
     let after = game.vehicle_views().find(|(got, _)| *got == id).unwrap().1;
     let (VehicleView::Motorcycle(a), VehicleView::Motorcycle(b)) = (before, after);
     assert_ne!(a.body.position, b.body.position);
+}
+
+#[test]
+fn full_handlebar_steer_wound_on_gradually_never_ejects() {
+    let mut game = ActionGame::county(42);
+    let (id, bike_pos) = starter_bike(&game);
+    assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    for _ in 0..220 {
+        game.step(ride(1.0, 0.0, 0.0, 0.0));
+    }
+    assert!(
+        game.hud().mounted.unwrap().speed_mph_x10 > 350,
+        "must exceed the yank speed before steering"
+    );
+    // Wind the bars on in small increments: no single tick crosses the yank range.
+    for _ in 0..20 {
+        game.step(ride(0.9, 0.0, 0.05, 0.0));
+    }
+    for _ in 0..40 {
+        for steer in [0.25, 0.5, 0.75, 1.0] {
+            game.step(ride(0.9, 0.0, steer, 0.0));
+        }
+    }
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+    assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
+    assert!(!game.events().iter().any(|e| matches!(
+        e,
+        zombiebox_core::ActionEvent::VehicleCrash {
+            kind: zombiebox_core::MotorcycleCrashKind::HighSpeedEjection,
+            ..
+        }
+    )));
+    let bike = game
+        .vehicle_views()
+        .find(|(got, _)| *got == id)
+        .map(|(_, view)| view)
+        .unwrap();
+    assert!(matches!(
+        bike,
+        VehicleView::Motorcycle(b) if b.phase != zombiebox_core::MotorcyclePhase::Skidding
+    ));
 }
 
 #[test]

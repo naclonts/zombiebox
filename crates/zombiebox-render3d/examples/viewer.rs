@@ -90,15 +90,16 @@ impl App {
         let (movement, aim) = {
             let Some(v) = &mut self.view else { return };
             let camera = v.presentation.camera_mut();
-            match camera.mode() {
-                CameraMode::Chase | CameraMode::FirstPerson => {
+            match (self.game.mounted_vehicle(), camera.mode()) {
+                (Some(_), _) => (Vec2::ZERO, None),
+                (None, CameraMode::Chase | CameraMode::FirstPerson) => {
                     camera.apply_look_input(look_stick, TICK.as_secs_f32());
                     let frame = camera.current_frame();
                     let movement = frame.map_stick_to_world(movement_stick);
                     let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
                     (movement, Some(aim))
                 }
-                _ => {
+                (None, _) => {
                     let frame = camera.current_frame();
                     let movement = frame.map_stick_to_world(movement_stick);
                     let aim = frame.map_stick_to_world(look_stick);

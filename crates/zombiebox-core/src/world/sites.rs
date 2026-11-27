@@ -1251,6 +1251,78 @@ mod tests {
         }
     }
     #[test]
+    fn generated_doors_have_explicit_axis_and_clear_three_by_three_stencil() {
+        for seed in 0..64 {
+            let world = super::super::World::new(seed);
+            let sites = world.sites().unwrap();
+            for b in &sites.buildings {
+                for floor in 0..b.floors {
+                    for y in b.min.y..=b.max.y {
+                        for x in b.min.x..=b.max.x {
+                            let p = Position::new(x, y);
+                            if b.feature_at(p, floor) != Some(Feature::Door) {
+                                continue;
+                            }
+                            let axis = b.door_axis_at(p, floor).unwrap_or_else(|| {
+                                panic!("seed {seed} {:?} door {p:?} F{floor} has no axis", b.kind)
+                            });
+                            let (t, n) = match axis {
+                                crate::action::DoorAxis::AlongX => ((1, 0), (0, 1)),
+                                crate::action::DoorAxis::AlongY => ((0, 1), (1, 0)),
+                            };
+                            let tangent = [
+                                Position::new(p.x - t.0, p.y - t.1),
+                                Position::new(p.x + t.0, p.y + t.1),
+                            ];
+                            // Exterior doors have one anchor outside the AABB;
+                            // every in-footprint anchor must remain a wall.
+                            for q in tangent {
+                                if q.x >= b.min.x
+                                    && q.x <= b.max.x
+                                    && q.y >= b.min.y
+                                    && q.y <= b.max.y
+                                {
+                                    assert!(
+                                        matches!(
+                                            b.feature_at(q, floor),
+                                            Some(
+                                                Feature::Wall(_) | Feature::Window | Feature::Door
+                                            )
+                                        ),
+                                        "seed {seed} {:?} door {p:?} F{floor} missing tangent anchor {q:?}",
+                                        b.kind
+                                    );
+                                }
+                            }
+                            for q in [
+                                Position::new(p.x - n.0, p.y - n.1),
+                                Position::new(p.x + n.0, p.y + n.1),
+                            ] {
+                                if q.x > b.min.x && q.x < b.max.x && q.y > b.min.y && q.y < b.max.y
+                                {
+                                    assert!(
+                                        matches!(
+                                            b.feature_at(q, floor),
+                                            Some(
+                                                Feature::Floor
+                                                    | Feature::Door
+                                                    | Feature::Stairs
+                                                    | Feature::Gate
+                                                    | Feature::Path
+                                            )
+                                        ),
+                                        "seed {seed} {:?} door {p:?} F{floor} blocked passage {q:?}",
+                                        b.kind
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
     fn district_ecology_is_dense_and_sites_do_not_overlap() {
         for seed in 0..64 {
             let world = super::super::World::new(seed);

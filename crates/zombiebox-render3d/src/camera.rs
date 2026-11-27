@@ -7,8 +7,9 @@ use glam::{Mat4, UVec2, Vec2, Vec3, Vec4};
 use zombiebox_core::{Vec2 as SimVec2, Weapon};
 
 use crate::coords::{
-    FLOOR_H, RenderAabb, SimVec3, render_to_sim_point, render_to_sim_vec, sim_heading_from_vec2,
-    sim_to_render_point, sim_vec2_from_heading, sim_xyz_to_render, wrap_angle_pi,
+    FLOOR_H, RenderAabb, SimVec3, render_to_sim_point, render_to_sim_vec, shortest_angle_delta,
+    sim_heading_from_vec2, sim_to_render_point, sim_vec2_from_heading, sim_xyz_to_render,
+    wrap_angle_pi,
 };
 
 /// Exact 2:1 isometric baseline scale: `20 * sqrt(2) ≈ 28.28427125` internal pixels per view unit.
@@ -25,6 +26,7 @@ pub const DEFAULT_FOLLOW_HALFLIFE_S: f32 = 0.055;
 pub const DEFAULT_ELEVATION_HALFLIFE_S: f32 = 0.14;
 pub const DEFAULT_LOOK_HALFLIFE_S: f32 = 0.16;
 pub const DEFAULT_SHAKE_HALFLIFE_S: f32 = 0.065;
+const MOUNTED_CHASE_YAW_HALFLIFE_S: f32 = 0.11;
 
 /// Full-deflection look rates for conventional first/third-person camera control.
 pub const DEFAULT_LOOK_YAW_SPEED: f32 = 3.2;
@@ -711,6 +713,7 @@ pub struct CameraRig {
     view_pitch: f32,
     view_yaw_initialized: bool,
     last_target_heading: f32,
+    mounted_view_mode: Option<CameraMode>,
 
     orbit_yaw: f32,
     orbit_pitch: f32,
@@ -742,6 +745,7 @@ impl CameraRig {
             view_pitch: config.first_person_default_pitch,
             view_yaw_initialized: false,
             last_target_heading: -FRAC_PI_2,
+            mounted_view_mode: None,
             orbit_yaw: config.orbit_default_yaw,
             orbit_pitch: config.orbit_default_pitch,
             orbit_distance: config.orbit_default_distance,
@@ -954,11 +958,25 @@ impl CameraRig {
     /// Advances damped camera state by `dt` seconds (clamped internally to `0.0..=0.1`) and returns `CameraFrame`.
     #[must_use]
     pub fn update(&mut self, target: CameraTarget, dt: f32) -> CameraFrame {
+        self.update_inner(target, dt, false)
+    }
+
+    /// Advances the camera while mounted. Chase follows the vehicle heading; FirstPerson tracks
+    /// it directly. Call this for every mounted frame, including while another camera mode is selected.
+    #[must_use]
+    pub fn update_mounted(&mut self, target: CameraTarget, dt: f32) -> CameraFrame {
+        self.update_inner(target, dt, true)
+    }
+
+    fn update_inner(&mut self, target: CameraTarget, dt: f32, mounted: bool) -> CameraFrame {
         let dt = if dt.is_finite() {
             dt.clamp(0.0, 0.1)
         } else {
             0.0
         };
+        let mounted_view_mode = mounted.then_some(self.mode);
+        let entered_mounted_view = mounted && self.mounted_view_mode != mounted_view_mode;
+        self.mounted_view_mode = mounted_view_mode;
         if target.heading.is_finite() {
             self.last_target_heading = target.heading;
         }
@@ -983,10 +1001,26 @@ impl CameraRig {
             || xy_dist > self.config.teleport_snap_xy
             || dz > self.config.teleport_snap_z;
 
-        if matches!(self.mode, CameraMode::Chase | CameraMode::FirstPerson)
-            && (!self.view_yaw_initialized || should_snap)
-        {
-            self.initialize_view_from_heading(target.heading);
+        let mounted_chase = mounted_view_mode == Some(CameraMode::Chase);
+        let mounted_first_person = mounted_view_mode == Some(CameraMode::FirstPerson);
+        if matches!(self.mode, CameraMode::Chase | CameraMode::FirstPerson) {
+            if !self.view_yaw_initialized
+                || should_snap
+                || entered_mounted_view
+                || mounted_first_person
+            {
+                self.initialize_view_from_heading(target.heading);
+            } else if mounted_chase && target.heading.is_finite() {
+                let delta = shortest_angle_delta(self.view_yaw, target.heading + PI);
+                self.view_yaw = wrap_angle_pi(
+                    self.view_yaw + delta * damp_factor(dt, MOUNTED_CHASE_YAW_HALFLIFE_S),
+                );
+            }
+            if mounted_chase {
+                self.view_pitch = self.config.chase_pitch;
+            } else if mounted_first_person {
+                self.view_pitch = self.config.first_person_default_pitch;
+            }
         }
 
         let desired_look =
@@ -999,7 +1033,7 @@ impl CameraRig {
                 aim_dir * target.look_ahead_distance
             };
 
-        if should_snap {
+        if should_snap || mounted_first_person {
             self.anchor_sim = target.position;
             self.look_offset_sim = desired_look;
             self.initialized = true;
@@ -1016,6 +1050,9 @@ impl CameraRig {
                 self.anchor_sim.z += (target.position.z - self.anchor_sim.z) * k_z;
             }
             self.look_offset_sim += (desired_look - self.look_offset_sim) * k_look;
+        }
+        if mounted_chase && entered_mounted_view {
+            self.look_offset_sim = desired_look;
         }
 
         if dt > 0.0 && self.shake_amplitude > 0.0 {
@@ -1853,5 +1890,47 @@ mod tests {
                 < 1e-6
         );
         assert!((chase.pitch - rig.config().chase_pitch).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mounted_views_snap_follow_level_and_release_look_on_dismount() {
+        let mut target = CameraTarget {
+            position: SimVec3::new(10.0, 10.0, 0.0),
+            heading: 0.0,
+            aim: sim_vec2_from_heading(0.0),
+            ..CameraTarget::default()
+        };
+        let mut rig = CameraRig::new(640, 360);
+        rig.set_mode(CameraMode::Chase);
+        let _ = rig.update(target, 0.0);
+        rig.apply_look_input(SimVec2::new(1.0, 0.0), 0.1);
+        target.heading = -0.04;
+        let mounted = rig.update_mounted(target, 0.0);
+        assert!(shortest_angle_delta(mounted.yaw, target.heading + PI).abs() < 1e-5);
+
+        target.heading = 0.04;
+        let dt = MOUNTED_CHASE_YAW_HALFLIFE_S / 2.0;
+        let turning = rig.update_mounted(target, dt);
+        assert!(shortest_angle_delta(mounted.yaw, turning.yaw) > 0.0);
+        let followed = rig.update_mounted(target, dt);
+        assert!(shortest_angle_delta(followed.yaw, PI).abs() < 1e-5);
+
+        rig.set_mode(CameraMode::FirstPerson);
+        let fp = rig.update_mounted(target, 0.0);
+        assert!(shortest_angle_delta(fp.yaw, target.heading + PI).abs() < 1e-5);
+        assert!((fp.pitch - rig.config().first_person_default_pitch).abs() < 1e-6);
+        target.position.x += 2.0;
+        let fp_moved = rig.update_mounted(target, 0.016);
+        assert!((fp_moved.eye.x - fp.eye.x - 2.0).abs() < 1e-4);
+        target.heading = FRAC_PI_2;
+        target.velocity = SimVec3::new(0.0, -2.0, 0.0);
+        let reversing = rig.update_mounted(target, 0.016);
+        assert!(shortest_angle_delta(reversing.yaw, target.heading + PI).abs() < 1e-5);
+        assert!(reversing.right.y.abs() < 1e-6);
+
+        let foot = rig.update(target, 0.0);
+        assert!(shortest_angle_delta(foot.yaw, reversing.yaw).abs() < 1e-5);
+        rig.apply_look_input(SimVec2::new(1.0, 0.0), 0.1);
+        assert!(shortest_angle_delta(foot.yaw, rig.current_frame().yaw) > 0.0);
     }
 }
