@@ -514,6 +514,12 @@ impl GpuRenderer {
         }
     }
 
+    /// Number of retained prototype slots (test-only budget assertion).
+    #[cfg(test)]
+    pub(crate) fn prototype_count(&self) -> usize {
+        self.prototypes.len()
+    }
+
     fn get_or_create_upscale_pipeline(
         &mut self,
         device: &wgpu::Device,

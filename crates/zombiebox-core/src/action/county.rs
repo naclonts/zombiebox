@@ -23,10 +23,10 @@ use super::block::{
     is_los_opaque_kind, is_room_barrier, light_cell_factor_kind, move_body_world, trace_grid_dda,
 };
 use super::types::{
-    BuildingId, BuildingInfo, BuildingStyle, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot,
-    CacheView, CombatWorld, DamageKind, DynamicFlashView, Floor, LightKind, LightSourceView,
-    Material, PropKind, SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction,
-    TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, mix64,
+    BuildingId, BuildingInfo, BuildingStyle, BuildingUid, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot,
+    CacheView, CombatWorld, CustomCellSpec, DamageKind, DoorAxis, DynamicFlashView, Floor, LightKind, LightSourceView,
+    MAX_COUNTY_FLOORS, Material, PropKind, SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction,
+    TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, WingRect, mix64, pack_chunk_slot_id,
 };
 
 pub const ACTIVE_CHUNK_RADIUS: i32 = 3;
@@ -47,9 +47,33 @@ struct CountyLight {
     kind: LightKind,
 }
 
+type ChunkLayer = [[Cell; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
+const AIR_CELL: Cell = Cell::air();
+
 struct CountyChunk {
-    cells: [[[Cell; CHUNK_SIZE as usize]; CHUNK_SIZE as usize]; COUNTY_FLOORS],
+    floors: Vec<Box<ChunkLayer>>, // len in 1..=MAX_COUNTY_FLOORS
     lights: Vec<CountyLight>,
+}
+
+impl CountyChunk {
+    fn with_floors(num_floors: usize) -> Self {
+        let n = num_floors.clamp(1, MAX_COUNTY_FLOORS);
+        let mut floors = Vec::with_capacity(n);
+        for _ in 0..n {
+            floors.push(Box::new([[Cell::air(); CHUNK_SIZE as usize]; CHUNK_SIZE as usize]));
+        }
+        Self {
+            floors,
+            lights: Vec::new(),
+        }
+    }
+
+    fn ensure_floors(&mut self, num_floors: usize) {
+        let n = num_floors.clamp(1, MAX_COUNTY_FLOORS);
+        while self.floors.len() < n {
+            self.floors.push(Box::new([[Cell::air(); CHUNK_SIZE as usize]; CHUNK_SIZE as usize]));
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +106,11 @@ pub struct CountyStage {
     window_cy: i32,
     window_origin: Position,
     all_buildings: Vec<BuildingInfo>,
-    registered_buildings: HashMap<(i32, i32, i32, i32), BuildingReg>,
+    registered_buildings: HashMap<BuildingUid, BuildingReg>,
+    next_building_id: BuildingId,
+    free_building_ids: Vec<BuildingId>,
+    cache_index_by_id: HashMap<CacheId, usize>,
+    window_max_floors: u8,
     window_buildings: Vec<BuildingInfo>,
     caches: Vec<SupplyCache>,
     flashes: Vec<DynamicFlash>,
@@ -93,7 +121,7 @@ pub struct CountyStage {
     terrain_version: u64,
     pending_collapses: Vec<Tile3D>,
     starter_open_door: Option<Position>,
-    next_monster_id: u32,
+    next_monster_id: u64,
     total_monsters_spawned: usize,
 }
 
@@ -118,6 +146,10 @@ impl CountyStage {
             window_origin,
             all_buildings: Vec::new(),
             registered_buildings: HashMap::new(),
+            next_building_id: 1,
+            free_building_ids: Vec::new(),
+            cache_index_by_id: HashMap::new(),
+            window_max_floors: 1,
             window_buildings: Vec::new(),
             caches: Vec::new(),
             flashes: Vec::new(),
@@ -131,8 +163,7 @@ impl CountyStage {
             terrain_version: 1,
             pending_collapses: Vec::new(),
             starter_open_door: None,
-            // Generated infected use the low ID range; reserve the high range for runtime spawns.
-            next_monster_id: 1 << 31,
+            next_monster_id: 1u64 << 63,
             total_monsters_spawned: 0,
         };
 
@@ -229,30 +260,55 @@ impl CountyStage {
 
     #[inline]
     fn cell_at_world(&self, tile: Tile3D) -> Option<&Cell> {
-        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= COUNTY_FLOORS {
+        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= MAX_COUNTY_FLOORS {
             return None;
         }
         let cx = tile.x >> 4;
         let cy = tile.y >> 4;
         let lx = (tile.x & 15) as usize;
         let ly = (tile.y & 15) as usize;
-        self.chunks[Self::chunk_idx(cx, cy)]
-            .as_ref()
-            .map(|c| &c.cells[tile.floor as usize][ly][lx])
+        let chunk = self.chunks[Self::chunk_idx(cx, cy)].as_ref()?;
+        if (tile.floor as usize) < chunk.floors.len() {
+            Some(&chunk.floors[tile.floor as usize][ly][lx])
+        } else {
+            Some(&AIR_CELL)
+        }
     }
 
     #[inline]
     fn cell_mut_world(&mut self, tile: Tile3D) -> Option<&mut Cell> {
-        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= COUNTY_FLOORS {
+        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= MAX_COUNTY_FLOORS {
             return None;
         }
         let cx = tile.x >> 4;
         let cy = tile.y >> 4;
         let lx = (tile.x & 15) as usize;
         let ly = (tile.y & 15) as usize;
-        self.chunks[Self::chunk_idx(cx, cy)]
-            .as_mut()
-            .map(|c| &mut c.cells[tile.floor as usize][ly][lx])
+        let chunk = self.chunks[Self::chunk_idx(cx, cy)].as_mut()?;
+        chunk.floors.get_mut(tile.floor as usize).map(|layer| &mut layer[ly][lx])
+    }
+
+    #[inline]
+    pub const fn window_max_floors(&self) -> u8 {
+        self.window_max_floors
+    }
+
+    #[inline]
+    pub fn chunk_allocated_floors(&self, cx: i32, cy: i32) -> Option<usize> {
+        if !(0..CHUNKS_PER_SIDE).contains(&cx) || !(0..CHUNKS_PER_SIDE).contains(&cy) {
+            return None;
+        }
+        self.chunks[Self::chunk_idx(cx, cy)].as_ref().map(|c| c.floors.len())
+    }
+
+    fn alloc_building_id(&mut self) -> BuildingId {
+        if let Some(id) = self.free_building_ids.pop() {
+            id
+        } else {
+            let id = self.next_building_id;
+            self.next_building_id += 1;
+            id
+        }
     }
 
     pub fn sync_active_window(

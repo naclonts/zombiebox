@@ -12,16 +12,19 @@ use crate::gpu::{
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
 use crate::mesh::buildings::build_chunk_building_shell;
 use crate::mesh::doors::{AnimatedDoor, door_leaf_mesh, door_leaves};
-use crate::mesh::motorcycle::{MotorcyclePart, motorcycle_part_mesh};
+use crate::mesh::motorcycle::{MotorcyclePart, motorcycle_part_mesh_with_appearance};
+use crate::mesh::motorcycle_appearance::{
+    MOTORCYCLE_SLOT_COUNT, MotorcycleVisualKey, motorcycle_slot, visual_key,
+};
 use crate::mesh::props::{build_chunk_props_mesh, cache_instances, cache_mesh};
-use crate::mesh::vehicles::{MotorcycleTransforms, default_motorcycle_paint};
+use crate::mesh::vehicles::MotorcycleTransforms;
 use crate::telemetry::{FramePercentiles, FrameTelemetry, FrameTiming};
 use crate::{
     CameraFrame, CameraMode, CameraRig, CameraTarget, ChunkCoord, FrameSnapshot, RgbaImage,
     SceneConfig, SceneManager, build_chunk_terrain_mesh, weapon_look_ahead_distance,
 };
 use std::collections::BTreeMap;
-use zombiebox_core::{MotorcyclePhase, VehicleView};
+use zombiebox_core::VehicleView;
 
 /// Shared camera, scene, and rendering state for a single action run.
 pub struct Presentation {
@@ -31,7 +34,7 @@ pub struct Presentation {
     actors: ActorAnimator,
     actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
     cache_prototypes: [PrototypeMeshId; 2],
-    motorcycle_prototypes: [PrototypeMeshId; 4],
+    motorcycle_prototypes: [Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
     door_prototype: PrototypeMeshId,
     doors: BTreeMap<ChunkCoord, Vec<AnimatedDoor>>,
     motorcycle_wheel_phase: BTreeMap<zombiebox_core::VehicleId, f32>,
@@ -41,8 +44,22 @@ pub struct Presentation {
     adaptive_resolution: bool,
 }
 
+const MOTORCYCLE_PARTS: [MotorcyclePart; 4] = [
+    MotorcyclePart::Body,
+    MotorcyclePart::Steering,
+    MotorcyclePart::FrontWheel,
+    MotorcyclePart::RearWheel,
+];
+
+/// Four GPU prototype IDs reused for one live motorcycle slot.
+#[derive(Clone, Copy)]
+struct MotorcyclePrototypeSet {
+    key: MotorcycleVisualKey,
+    ids: [PrototypeMeshId; 4],
+}
+
 const CACHE_BATCH_COUNT: usize = 2;
-const MOTORCYCLE_BATCH_COUNT: usize = 4;
+const MOTORCYCLE_BATCH_COUNT: usize = MOTORCYCLE_SLOT_COUNT * MOTORCYCLE_PARTS.len();
 const DOOR_BATCH: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
 const BATCH_COUNT: usize = DOOR_BATCH + 1;
 
@@ -60,25 +77,7 @@ impl Presentation {
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
         ];
         let door_prototype = renderer.register_prototype(ctx, "door_leaf", &door_leaf_mesh());
-        let motorcycle_prototypes = [
-            MotorcyclePart::Body,
-            MotorcyclePart::Steering,
-            MotorcyclePart::FrontWheel,
-            MotorcyclePart::RearWheel,
-        ]
-        .map(|part| {
-            let mesh = motorcycle_part_mesh(part, default_motorcycle_paint());
-            renderer.register_prototype(
-                ctx,
-                match part {
-                    MotorcyclePart::Body => "motorcycle_body",
-                    MotorcyclePart::Steering => "motorcycle_steering",
-                    MotorcyclePart::FrontWheel => "motorcycle_front_wheel",
-                    MotorcyclePart::RearWheel => "motorcycle_rear_wheel",
-                },
-                &mesh,
-            )
-        });
+        let motorcycle_prototypes = [None; MOTORCYCLE_SLOT_COUNT];
         Self {
             camera: CameraRig::new(width, height),
             scene: SceneManager::with_config(SceneConfig {
@@ -128,6 +127,43 @@ impl Presentation {
         self.effects = Effects::new();
         self.telemetry = FrameTelemetry::default();
         self.camera.notify_teleport();
+        // Prototype slots are intentionally retained: the renderer's prototype
+        // Vec never shrinks, so re-registering would leak slots across runs.
+    }
+
+    /// Uploads (or refreshes in place) the four part meshes for one motorcycle slot.
+    fn ensure_motorcycle_prototypes(
+        &mut self,
+        ctx: &GpuContext,
+        slot: usize,
+        key: MotorcycleVisualKey,
+    ) {
+        let Some(existing) = self.motorcycle_prototypes.get(slot).copied() else {
+            return;
+        };
+        if let Some(set) = existing {
+            if set.key == key {
+                return;
+            }
+        }
+
+        let meshes = MOTORCYCLE_PARTS.map(|part| motorcycle_part_mesh_with_appearance(part, key));
+        let ids = match existing {
+            Some(set) => {
+                for (index, part) in MOTORCYCLE_PARTS.into_iter().enumerate() {
+                    let label = format!("motorcycle_{slot}_{part:?}");
+                    self.renderer
+                        .update_prototype(ctx, set.ids[index], &label, &meshes[index]);
+                }
+                set.ids
+            }
+            None => std::array::from_fn(|index| {
+                let label = format!("motorcycle_{slot}_{:?}", MOTORCYCLE_PARTS[index]);
+                self.renderer
+                    .register_prototype(ctx, &label, &meshes[index])
+            }),
+        };
+        self.motorcycle_prototypes[slot] = Some(MotorcyclePrototypeSet { key, ids });
     }
 
     pub fn notify_teleport(&mut self) {
@@ -307,6 +343,11 @@ impl Presentation {
         let vehicle_base = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT;
         for (id, view) in &frame.dynamic.vehicles {
             let VehicleView::Motorcycle(moto) = *view;
+            let Some(slot) = motorcycle_slot(*id) else {
+                debug_assert!(false, "unexpected motorcycle slot for vehicle {id:?}");
+                continue;
+            };
+            self.ensure_motorcycle_prototypes(ctx, slot, visual_key(*id, moto.condition));
             let forward = moto.body.facing_xy();
             let signed_speed = moto.body.velocity.xy().dot(forward);
             let wheel_direction = if signed_speed < -0.05 { -1.0 } else { 1.0 };
@@ -316,18 +357,11 @@ impl Presentation {
                 *phase += speed * dt.clamp(0.0, 0.1) / (0.21 * 2.0);
             }
             let transforms = MotorcycleTransforms::from_view(moto, *phase);
-            let parts = [
-                MotorcyclePart::Body,
-                MotorcyclePart::Steering,
-                MotorcyclePart::FrontWheel,
-                MotorcyclePart::RearWheel,
-            ];
-            for (index, part) in parts.into_iter().enumerate() {
-                let mut instance = InstanceRaw::from_transform(transforms.part_transform(part));
-                if moto.phase == MotorcyclePhase::Tipped || moto.condition == 0 {
-                    instance = instance.with_tint([0.62, 0.62, 0.62, 1.0]);
-                }
-                instances[vehicle_base + index].push(instance);
+            let slot_base = vehicle_base + slot * MOTORCYCLE_PARTS.len();
+            for (index, part) in MOTORCYCLE_PARTS.into_iter().enumerate() {
+                // Wear (and not pose) carries damage into the baked vertex colors.
+                instances[slot_base + index]
+                    .push(InstanceRaw::from_transform(transforms.part_transform(part)));
             }
         }
         (camera, frame, lighting, instances)
@@ -336,7 +370,7 @@ impl Presentation {
     fn batches<'a>(
         actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
         cache_prototypes: [PrototypeMeshId; 2],
-        motorcycle_prototypes: [PrototypeMeshId; 4],
+        motorcycle_prototypes: &[Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
         door_prototype: PrototypeMeshId,
         instances: &'a [Vec<InstanceRaw>; BATCH_COUNT],
     ) -> Vec<InstanceBatch<'a>> {
@@ -353,11 +387,23 @@ impl Presentation {
                 instances: &instances[ActorPart::MESH_COUNT + index],
             });
         }
-        for (index, mesh) in motorcycle_prototypes.into_iter().enumerate() {
-            batches.push(InstanceBatch {
-                mesh,
-                instances: &instances[ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + index],
-            });
+        for (slot, set) in motorcycle_prototypes.iter().enumerate() {
+            let Some(set) = set else {
+                continue;
+            };
+            for (index, mesh) in set.ids.into_iter().enumerate() {
+                let batch = ActorPart::MESH_COUNT
+                    + CACHE_BATCH_COUNT
+                    + slot * MOTORCYCLE_PARTS.len()
+                    + index;
+                if instances[batch].is_empty() {
+                    continue;
+                }
+                batches.push(InstanceBatch {
+                    mesh,
+                    instances: &instances[batch],
+                });
+            }
         }
         batches.push(InstanceBatch {
             mesh: door_prototype,
@@ -378,7 +424,7 @@ impl Presentation {
         let batches = Self::batches(
             self.actor_prototypes,
             self.cache_prototypes,
-            self.motorcycle_prototypes,
+            &self.motorcycle_prototypes,
             self.door_prototype,
             &instances,
         );
@@ -431,7 +477,7 @@ impl Presentation {
         let batches = Self::batches(
             self.actor_prototypes,
             self.cache_prototypes,
-            self.motorcycle_prototypes,
+            &self.motorcycle_prototypes,
             self.door_prototype,
             &instances,
         );
@@ -524,5 +570,96 @@ mod tests {
             assert_eq!(frame.mode, mode);
             assert_eq!(presentation.camera().mode(), mode);
         }
+    }
+
+    #[test]
+    fn batch_layout_keeps_motorcycle_slots_before_doors() {
+        assert_eq!(MOTORCYCLE_BATCH_COUNT, 16);
+        assert_eq!(
+            DOOR_BATCH,
+            ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT
+        );
+        for slot in 0..MOTORCYCLE_SLOT_COUNT {
+            for part in 0..MOTORCYCLE_PARTS.len() {
+                let index = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + slot * 4 + part;
+                assert!(
+                    index < DOOR_BATCH,
+                    "vehicle batch {index} overlaps door batch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn motorcycle_prototype_cache_is_bounded_reused_and_retained() {
+        let Ok(ctx) = GpuContext::new_headless() else {
+            return;
+        };
+        let mut presentation = Presentation::new(&ctx, 320, 180);
+        let base = presentation.renderer.prototype_count();
+        assert!(
+            presentation
+                .motorcycle_prototypes
+                .iter()
+                .all(Option::is_none)
+        );
+
+        let id0 = zombiebox_core::VehicleId(0xABCD_EF00);
+        let pristine = visual_key(id0, 100);
+        presentation.ensure_motorcycle_prototypes(&ctx, 0, pristine);
+        let set0 = presentation.motorcycle_prototypes[0].expect("slot 0 uploaded");
+        assert_eq!(set0.key, pristine);
+        assert_eq!(presentation.renderer.prototype_count(), base + 4);
+
+        // An unchanged key must reuse the same four IDs.
+        presentation.ensure_motorcycle_prototypes(&ctx, 0, pristine);
+        assert_eq!(presentation.renderer.prototype_count(), base + 4);
+        assert_eq!(presentation.motorcycle_prototypes[0].unwrap().ids, set0.ids);
+
+        // A new damage bucket updates the same IDs in place.
+        let damaged = visual_key(id0, 19);
+        assert_ne!(damaged, pristine);
+        presentation.ensure_motorcycle_prototypes(&ctx, 0, damaged);
+        assert_eq!(presentation.renderer.prototype_count(), base + 4);
+        assert_eq!(presentation.motorcycle_prototypes[0].unwrap().ids, set0.ids);
+        assert_eq!(presentation.motorcycle_prototypes[0].unwrap().key, damaged);
+
+        // Every other slot gets its own distinct set.
+        let mut ids = std::collections::HashSet::new();
+        ids.extend(set0.ids);
+        for slot in 1..MOTORCYCLE_SLOT_COUNT {
+            let key = visual_key(zombiebox_core::VehicleId(0xABCD_EF00 | slot as u64), 100);
+            presentation.ensure_motorcycle_prototypes(&ctx, slot, key);
+            let set = presentation.motorcycle_prototypes[slot].expect("slot uploaded");
+            assert_eq!(set.key, key);
+            for id in set.ids {
+                assert!(ids.insert(id), "prototype id reused across slots");
+            }
+        }
+        assert_eq!(presentation.renderer.prototype_count(), base + 16);
+
+        // Reset must not drop or reallocate prototype slots.
+        presentation.reset();
+        let retained: Vec<_> = presentation
+            .motorcycle_prototypes
+            .iter()
+            .map(|set| set.expect("reset retains populated slots").key)
+            .collect();
+        for (slot, key) in retained.into_iter().enumerate() {
+            presentation.ensure_motorcycle_prototypes(&ctx, slot, key);
+        }
+        assert_eq!(presentation.renderer.prototype_count(), base + 16);
+
+        // The real render path updates an existing slot rather than growing the cache.
+        let game = make_test_game();
+        presentation
+            .render_offscreen(&ctx, &game, 0.016)
+            .expect("offscreen frame");
+        let after_first = presentation.renderer.prototype_count();
+        assert!(after_first <= base + 16);
+        presentation
+            .render_offscreen(&ctx, &game, 0.016)
+            .expect("offscreen frame");
+        assert_eq!(presentation.renderer.prototype_count(), after_first);
     }
 }

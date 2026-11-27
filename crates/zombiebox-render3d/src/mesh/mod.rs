@@ -4,6 +4,7 @@ pub mod actors;
 pub mod buildings;
 pub(crate) mod doors;
 pub mod motorcycle;
+pub mod motorcycle_appearance;
 pub mod primitives;
 pub mod props;
 #[allow(clippy::excessive_precision)] // generated authored mesh tables
