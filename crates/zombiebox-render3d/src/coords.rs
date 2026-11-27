@@ -283,6 +283,35 @@ pub fn heading_to_render_quat(heading: f32) -> Quat {
     Quat::from_rotation_y(-heading)
 }
 
+/// Maximum ground-alignment tilt applied to props, actors, and vehicles.
+/// Keeps near-vertical mountain geometry from flipping a model onto its side.
+pub const MAX_GROUND_TILT: f32 = 40.0 * PI / 180.0;
+
+/// Rotation from renderer up `+Y` to a simulation-space ground normal.
+///
+/// Horizontal headings are mapped into the terrain plane, so a yawed model keeps its
+/// compass heading while its wheels/feet rest on the slope.
+#[must_use]
+pub fn ground_align_quat(normal: SimVec3) -> Quat {
+    let up = sim_to_render_normal(normal);
+    let up = if up.length_squared() < 0.5 {
+        Vec3::Y
+    } else if up.y < 0.0 {
+        -up
+    } else {
+        up
+    };
+    let max_tilt = MAX_GROUND_TILT;
+    let min_up = max_tilt.cos();
+    let normal = if up.y >= min_up {
+        up
+    } else {
+        let horizontal = up.with_y(0.0).normalize_or(Vec3::Z);
+        (horizontal * max_tilt.sin() + Vec3::Y * min_up).normalize()
+    };
+    Quat::from_rotation_arc(Vec3::Y, normal)
+}
+
 /// Convenience wrapper converting a horizontal `SimVec2` facing vector into a renderer `Quat`
 /// (returns `Quat::IDENTITY` if `facing` is near-zero).
 #[must_use]

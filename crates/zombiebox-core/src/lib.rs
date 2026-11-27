@@ -30,7 +30,7 @@ pub use spatial::{
     WINDOW_SILL_HEIGHT, WorldSpatialView, floor_elevation, move_kinematic_with_horizontal_vel,
     raycast_world, resolve_actor_support, resolve_tile_support, sample_quad_00_11,
     select_grounded_support, semantic_floor_for_body, sphere_cast_world, step_kinematic_body,
-    sweep_airborne_support, world_to_tile_coord,
+    support_normal_at, sweep_airborne_support, world_to_tile_coord,
 };
 
 use std::collections::{HashMap, HashSet, VecDeque};

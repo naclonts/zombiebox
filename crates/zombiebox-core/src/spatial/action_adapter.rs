@@ -347,6 +347,46 @@ pub fn resolve_actor_support(
     (terrain_z + (floor as f32) * FLOOR_H, id, Surface::Grass)
 }
 
+/// Returns the upward unit normal of the support surface at `xy`.
+///
+/// `support` selects the exact support the body is resting on. When `None`, the highest
+/// walkable surface on `floor` is used. Non-terrain/non-bridge supports (floors and stairs)
+/// return `Vec3::Z` so buildings remain axis-aligned.
+pub fn support_normal_at(
+    world: &dyn SpatialWorld,
+    xy: Vec2,
+    support: Option<SupportId>,
+    floor: Floor,
+) -> Vec3 {
+    match support {
+        Some(SupportId::Terrain) => {
+            return world.terrain_at(xy).map_or(Vec3::Z, |t| t.normal);
+        }
+        Some(SupportId::Floor(_)) | Some(SupportId::Stair(_)) => return Vec3::Z,
+        _ => {}
+    }
+    let mut supports = Vec::with_capacity(6);
+    world.supports_at(xy, &mut supports);
+    let chosen = match support {
+        Some(id) => supports.iter().find(|s| s.id == id),
+        None if floor == 0 => supports
+            .iter()
+            .filter(|s| s.floor == 0 && s.walkable)
+            .max_by(|a, b| a.z.total_cmp(&b.z))
+            .or_else(|| supports.iter().find(|s| s.floor == 0)),
+        None => supports
+            .iter()
+            .find(|s| s.floor == floor && s.walkable)
+            .or_else(|| supports.iter().find(|s| s.floor == floor)),
+    };
+    match chosen {
+        Some(s) if matches!(s.id, SupportId::Terrain | SupportId::Bridge(_)) => s.normal,
+        Some(_) => Vec3::Z,
+        None if floor == 0 => world.terrain_at(xy).map_or(Vec3::Z, |t| t.normal),
+        None => Vec3::Z,
+    }
+}
+
 /// Resolves the semantic floor index (`0`, `1`, `2`) for a 3D kinematic body.
 pub fn semantic_floor_for_body(
     world: &dyn CombatWorld,

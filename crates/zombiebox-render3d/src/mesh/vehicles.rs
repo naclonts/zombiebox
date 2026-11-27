@@ -3,7 +3,7 @@ use glam::{Mat4, Quat, Vec3};
 use zombiebox_core::{MotorcyclePhase, MotorcycleView};
 
 use super::motorcycle::{MotorcyclePaint, MotorcyclePart, motorcycle_part_pivot};
-use crate::coords::heading_to_render_quat;
+use crate::coords::{ground_align_quat, heading_to_render_quat};
 
 pub const MOTORCYCLE_SCALE: f32 = 0.60;
 
@@ -35,7 +35,9 @@ impl MotorcycleTransforms {
             _ => view.rider_lean.clamp(-0.5, 0.5),
         };
         let root = Mat4::from_translation(pos)
-            * Mat4::from_quat(upright * Quat::from_rotation_z(lean))
+            * Mat4::from_quat(
+                ground_align_quat(view.ground_normal) * upright * Quat::from_rotation_z(lean),
+            )
             * Mat4::from_scale(Vec3::splat(MOTORCYCLE_SCALE));
         let s = motorcycle_part_pivot(MotorcyclePart::Steering);
         let f = motorcycle_part_pivot(MotorcyclePart::FrontWheel);
@@ -90,6 +92,7 @@ mod tests {
             speed: 4.0,
             condition: 100,
             recovery_ticks: 0,
+            ground_normal: zombiebox_core::Vec3::Z,
         }
     }
 
@@ -127,6 +130,26 @@ mod tests {
             let t2 = MotorcycleTransforms::from_view(sample(heading), 2.0);
             assert!(front_pivot.distance(t2.front_wheel.transform_point3(Vec3::ZERO)) < 1e-4);
         }
+    }
+
+    #[test]
+    fn grounded_wheels_follow_terrain_slope() {
+        let mut view = sample(0.0);
+        let sim_normal = zombiebox_core::Vec3::new(-0.2, 0.0, 1.0).normalized();
+        view.ground_normal = sim_normal;
+        let t = MotorcycleTransforms::from_view(view, 0.0);
+        let origin = t.body.transform_point3(Vec3::ZERO);
+        let front = t.body.transform_point3(Vec3::new(0.0, 0.0, 0.835));
+        let rear = t.body.transform_point3(Vec3::new(0.0, 0.0, -0.835));
+        let render_normal = Vec3::new(sim_normal.x, sim_normal.z, sim_normal.y);
+        assert!((front - origin).dot(render_normal).abs() < 1e-4);
+        assert!((rear - origin).dot(render_normal).abs() < 1e-4);
+        assert!(front.y > rear.y, "uphill front wheel should sit higher");
+
+        let flat = MotorcycleTransforms::from_view(sample(0.0), 0.0);
+        let flat_front = flat.body.transform_point3(Vec3::new(0.0, 0.0, 0.835));
+        let flat_rear = flat.body.transform_point3(Vec3::new(0.0, 0.0, -0.835));
+        assert!((flat_front.y - flat_rear.y).abs() < 1e-4);
     }
 
     #[test]

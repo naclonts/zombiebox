@@ -7,7 +7,7 @@ use crate::Position;
 use crate::spatial::{
     BodyShape, BodyState, FLOOR_H, MotionState, MoveParams, QueryFilter, Ray3, SpatialWorld,
     SupportId, Vec3, move_kinematic_with_horizontal_vel, resolve_actor_support,
-    resolve_tile_support, semantic_floor_for_body,
+    resolve_tile_support, semantic_floor_for_body, support_normal_at,
 };
 
 use super::PLAYER_SHAPE;
@@ -473,6 +473,11 @@ impl Monster {
             }
             _ => (None, self.facing, None, self.facing.extend(0.0), None),
         };
+        let ground_normal = if body.motion.is_grounded() {
+            support_normal_at(world, body.position.xy(), body.motion.support(), self.floor)
+        } else {
+            Vec3::Z
+        };
 
         MonsterView {
             id: self.id,
@@ -482,6 +487,7 @@ impl Monster {
             facing: self.facing,
             floor: self.floor,
             body,
+            ground_normal,
             elevation,
             eye_pos,
             hp: self.hp,

@@ -240,7 +240,10 @@ impl Presentation {
         self.renderer.update_visibility(ctx, &frame.dynamic);
         let lighting = SceneLightingUniforms::for_scene(&frame.dynamic, &camera);
         self.actors.set_player_camera(camera);
-        self.actors.observe_events(&frame.events);
+        self.actors
+            .observe_events_with_ground(&frame.events, |xy, floor| {
+                game.ground_normal_at(xy, floor)
+            });
         let mut instances: [Vec<InstanceRaw>; BATCH_COUNT] = std::array::from_fn(|_| Vec::new());
         let actors = self.actors.prepare_with_openings(
             &frame.dynamic,
@@ -278,10 +281,8 @@ impl Presentation {
             }));
         }
         for cache in cache_instances(&frame.dynamic.caches) {
-            instances[ActorPart::MESH_COUNT + usize::from(cache.opened)].push(
-                InstanceRaw::from_transform(Mat4::from_translation(cache.position))
-                    .with_tint(cache.tint),
-            );
+            instances[ActorPart::MESH_COUNT + usize::from(cache.opened)]
+                .push(InstanceRaw::from_transform(cache.transform).with_tint(cache.tint));
         }
         let door_dt = if dt.is_finite() {
             dt.clamp(0.0, 0.1)

@@ -9,7 +9,7 @@ mod motorcycle;
 use std::collections::BTreeMap;
 
 use crate::Position;
-use crate::spatial::{BodyState, SupportId, Vec2};
+use crate::spatial::{BodyState, SpatialWorld, SupportId, Vec2, Vec3, support_normal_at};
 use crate::world::MotorcycleSpawn;
 
 pub use motorcycle::MotorcycleCrashKind;
@@ -58,6 +58,9 @@ pub struct MotorcycleView {
     pub speed: f32,
     pub condition: u8,
     pub recovery_ticks: u16,
+    /// Upward ground normal at the contact point (simulation `+z` up).
+    /// `Vec3::Z` when flat or airborne.
+    pub ground_normal: Vec3,
 }
 
 /// Read-only vehicle presentation state.
@@ -97,17 +100,30 @@ impl VehicleState {
         self.body().position.xy()
     }
 
-    pub(crate) fn view(&self) -> VehicleView {
+    pub(crate) fn view(&self, world: &dyn SpatialWorld) -> VehicleView {
         match self {
-            Self::Motorcycle(bike) => VehicleView::Motorcycle(MotorcycleView {
-                body: bike.body,
-                phase: bike.phase,
-                steer_angle: bike.steer_angle,
-                rider_lean: bike.rider_lean,
-                speed: bike.speed(),
-                condition: bike.condition,
-                recovery_ticks: bike.recovery_ticks,
-            }),
+            Self::Motorcycle(bike) => {
+                let ground_normal = if bike.body.motion.is_grounded() {
+                    support_normal_at(
+                        world,
+                        bike.body.position.xy(),
+                        bike.body.motion.support(),
+                        0,
+                    )
+                } else {
+                    Vec3::Z
+                };
+                VehicleView::Motorcycle(MotorcycleView {
+                    body: bike.body,
+                    phase: bike.phase,
+                    steer_angle: bike.steer_angle,
+                    rider_lean: bike.rider_lean,
+                    speed: bike.speed(),
+                    condition: bike.condition,
+                    recovery_ticks: bike.recovery_ticks,
+                    ground_normal,
+                })
+            }
         }
     }
 }

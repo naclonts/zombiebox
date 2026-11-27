@@ -1,9 +1,12 @@
 //! Deterministic CPU meshes for static county props and reusable cache geometry.
 use super::{GeometryTag, MaterialFlags, MeshBuffer, MeshBuilder, VertexMeta};
+use crate::coords::ground_align_quat;
 use crate::materials::MaterialRegistry;
 use crate::scene::snapshot::{CacheSnapshot, ChunkSnapshot};
-use glam::{Mat4, Vec3};
-use zombiebox_core::{CHUNK_SIZE, CacheId, PropKind, TileKind, TileVisibility, WallOrientation};
+use glam::{Mat4, Quat, Vec3};
+use zombiebox_core::{
+    CHUNK_SIZE, CacheId, PropKind, TileKind, TileVisibility, WallOrientation, sample_quad_00_11,
+};
 
 const WOOD: [f32; 4] = [0.47, 0.30, 0.18, 1.];
 const WOOD_L: [f32; 4] = [0.68, 0.47, 0.27, 1.];
@@ -328,13 +331,21 @@ pub fn build_chunk_props_mesh(chunk: &ChunkSnapshot) -> MeshBuffer {
                     TileKind::Rubble => PropMeshBuilder::build_rubble(),
                     _ => continue,
                 };
-                let height = if let Some(building) = chunk.building(cell.building_id) {
-                    building.info.foundation_z + floor as f32 * crate::FLOOR_H
-                } else {
-                    let heights = &chunk.terrain.heights;
-                    (heights[y as usize][x as usize] + heights[y as usize + 1][x as usize + 1])
-                        * 0.5
-                };
+                let (height, ground_normal) =
+                    if let Some(building) = chunk.building(cell.building_id) {
+                        (
+                            building.info.foundation_z + floor as f32 * crate::FLOOR_H,
+                            zombiebox_core::Vec3::Z,
+                        )
+                    } else {
+                        let heights = &chunk.terrain.heights;
+                        let z00 = heights[y as usize][x as usize];
+                        let z10 = heights[y as usize][x as usize + 1];
+                        let z01 = heights[y as usize + 1][x as usize];
+                        let z11 = heights[y as usize + 1][x as usize + 1];
+                        let (z, normal, _) = sample_quad_00_11(z00, z10, z01, z11, 0.5, 0.5);
+                        (z, normal)
+                    };
                 let mut meta = META;
                 if cell.building_id != 0 {
                     meta = meta
@@ -355,12 +366,23 @@ pub fn build_chunk_props_mesh(chunk: &ChunkSnapshot) -> MeshBuffer {
                         vertex.color[2] *= foliage.z / 0.22;
                     }
                 }
+                let slope_rotation = if cell.building_id == 0
+                    && !matches!(
+                        cell.kind,
+                        TileKind::Prop(PropKind::BirchTree)
+                            | TileKind::Streetlight
+                            | TileKind::BrokenStreetlight
+                    ) {
+                    ground_align_quat(ground_normal)
+                } else {
+                    Quat::IDENTITY
+                };
                 let rotation = if matches!(cell.kind, TileKind::Prop(PropKind::Fence))
                     && cell.orientation == WallOrientation::AlongY
                 {
-                    glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
+                    slope_rotation * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)
                 } else {
-                    glam::Quat::IDENTITY
+                    slope_rotation
                 };
                 let position = Vec3::new((origin.x + x) as f32, height, (origin.y + y) as f32);
                 out.append_transformed(&mesh, Mat4::from_rotation_translation(rotation, position));
@@ -374,7 +396,7 @@ pub fn build_chunk_props_mesh(chunk: &ChunkSnapshot) -> MeshBuffer {
 pub struct CacheInstance {
     pub id: CacheId,
     pub opened: bool,
-    pub position: Vec3,
+    pub transform: Mat4,
     pub tint: [f32; 4],
 }
 #[must_use]
@@ -395,7 +417,11 @@ pub fn cache_instances(caches: &[CacheSnapshot]) -> Vec<CacheInstance> {
         .map(|c| CacheInstance {
             id: c.view.id,
             opened: c.view.opened,
-            position: Vec3::new(c.world_pos.x, c.world_pos.z, c.world_pos.y),
+            transform: Mat4::from_translation(Vec3::new(
+                c.world_pos.x,
+                c.world_pos.z,
+                c.world_pos.y,
+            )) * Mat4::from_quat(ground_align_quat(c.ground_normal)),
             tint: if c.visibility == TileVisibility::Explored {
                 [0.55, 0.55, 0.55, 1.]
             } else {

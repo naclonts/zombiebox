@@ -280,6 +280,8 @@ pub struct CacheSnapshot {
     pub view: CacheView,
     /// Authoritative 3D ground/floor support position (`+z` up).
     pub world_pos: SimVec3,
+    /// Upward ground normal at `world_pos` (simulation `+z` up).
+    pub ground_normal: SimVec3,
     pub visibility: TileVisibility,
 }
 

@@ -272,6 +272,7 @@ impl SceneManager {
             .map(|c| CacheSnapshot {
                 view: *c,
                 world_pos: c.world_pos,
+                ground_normal: game.ground_normal_at(c.world_pos.xy(), c.pos.floor),
                 visibility: local_visibility.visibility_at(c.pos),
             })
             .collect();

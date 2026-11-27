@@ -532,6 +532,9 @@ pub struct MonsterView {
     pub floor: Floor,
     /// Authoritative 3D kinematic body state (`position` is foot contact in `+z` up world space).
     pub body: BodyState,
+    /// Upward ground normal at the foot contact (simulation `+z` up).
+    /// `Vec3::Z` on flat ground, floors, stairs, or while airborne.
+    pub ground_normal: Vec3,
     /// Authoritative world-space foot elevation (`== body.position.z`).
     pub elevation: f32,
     /// World-space eye position (`+z` up).
@@ -848,6 +851,9 @@ pub struct PlayerRenderState {
     pub pose: Pose,
     /// Authoritative 3D kinematic body state (`position` is foot contact in `+z` up world space).
     pub body: BodyState,
+    /// Upward ground normal at the foot contact (simulation `+z` up).
+    /// `Vec3::Z` on flat ground, floors, stairs, or while airborne.
+    pub ground_normal: Vec3,
     /// Authoritative world-space foot elevation (`== body.position.z`).
     pub elevation: f32,
     /// Unit 3D aim direction vector in `+z` up simulation space.

@@ -1,6 +1,6 @@
 //! Procedural rigid-part actor poses. Only currently visible monsters are emitted.
 use crate::camera::{CameraFrame, CameraMode};
-use crate::coords::sim_to_render_point;
+use crate::coords::{ground_align_quat, sim_to_render_point};
 use crate::interaction::{DoorReach, WindowVault};
 use crate::mesh::doors::DOOR_REACH_SECONDS;
 use crate::mesh::motorcycle::{MotorcycleLocator, motorcycle_locator};
@@ -37,6 +37,7 @@ struct Corpse {
     at: SimVec3,
     floor: u8,
     facing: SimVec2,
+    ground_normal: SimVec3,
     remaining: f32,
 }
 #[derive(Clone, Copy)]
@@ -145,6 +146,15 @@ impl ActorAnimator {
     }
     /// Consume each simulation event once, including events accumulated across catch-up ticks.
     pub fn observe_events(&mut self, events: &[ActionEvent]) {
+        self.observe_events_with_ground(events, |_, _| SimVec3::Z);
+    }
+
+    /// Consume events while sampling the ground normal for corpse placement.
+    pub fn observe_events_with_ground(
+        &mut self,
+        events: &[ActionEvent],
+        ground_normal: impl Fn(SimVec2, u8) -> SimVec3,
+    ) {
         for event in events {
             match *event {
                 ActionEvent::AxeSwing { .. } => self.action = Some((PlayerAction::Swing, 0.30)),
@@ -185,6 +195,7 @@ impl ActorAnimator {
                         at,
                         floor,
                         facing,
+                        ground_normal: ground_normal(at.xy(), floor),
                         remaining: CORPSE_LIFETIME,
                     });
                 }
@@ -259,8 +270,10 @@ impl ActorAnimator {
             .rem_euclid(std::f32::consts::TAU)
             - std::f32::consts::PI)
             * (1.0 - interaction.amount);
-        let player_root =
-            Mat4::from_translation(render_position) * Mat4::from_rotation_y(render_angle);
+        let player_root = Mat4::from_translation(render_position)
+            * Mat4::from_quat(
+                ground_align_quat(p.ground_normal) * Quat::from_rotation_y(render_angle),
+            );
         let weapon = p.equipped.map(|w| match w {
             Weapon::Axe => ActorPart::Axe,
             Weapon::Pistol => ActorPart::Pistol,
@@ -365,7 +378,8 @@ impl ActorAnimator {
                 m.body.position.x,
                 m.body.position.z,
                 m.body.position.y,
-            )) * Mat4::from_rotation_y(m.facing.x.atan2(m.facing.y));
+            )) * Mat4::from_quat(ground_align_quat(m.ground_normal))
+                * Mat4::from_rotation_y(m.facing.x.atan2(m.facing.y));
             let telegraph = m.telegraph_progress.unwrap_or(0.0).clamp(0.0, 1.0);
             let weapon = (m.kind == MonsterKind::Shooter).then_some(ActorPart::BoltLauncher);
             draw_actor(
@@ -402,7 +416,8 @@ impl ActorAnimator {
                 corpse.at.x,
                 corpse.at.z + radius * 0.5,
                 corpse.at.y,
-            )) * Mat4::from_rotation_y(corpse.facing.x.atan2(corpse.facing.y))
+            )) * Mat4::from_quat(ground_align_quat(corpse.ground_normal))
+                * Mat4::from_rotation_y(corpse.facing.x.atan2(corpse.facing.y))
                 * Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
             draw_actor(
                 &mut out,
@@ -667,6 +682,32 @@ mod tests {
             .count();
         assert_eq!(batches[&ActorPart::Survivor(SurvivorNode::Pelvis)].len(), 1);
         assert_eq!(batches[&ActorPart::Body].len(), non_shamblers);
+    }
+
+    #[test]
+    fn sloped_ground_normal_tilts_actor_roots() {
+        let game = ActionGame::residential(42);
+        let mut scene = SceneManager::new()
+            .prepare_at_focus(&game, game.player_tile().pos(), 0.0)
+            .dynamic;
+        for cell in &mut scene.local_visibility.cells {
+            cell.visibility = TileVisibility::Visible;
+        }
+        let flat = ActorAnimator::new().prepare(&scene, 0.0);
+        let flat_player = flat[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model;
+        let flat_monster = flat[&ActorPart::ZombieBody][0].model;
+
+        let slope = zombiebox_core::Vec3::new(-0.35, 0.0, 1.0).normalized();
+        scene.player.render.ground_normal = slope;
+        for monster in &mut scene.monsters {
+            monster.ground_normal = slope;
+        }
+        let sloped = ActorAnimator::new().prepare(&scene, 0.0);
+        assert_ne!(
+            flat_player,
+            sloped[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model
+        );
+        assert_ne!(flat_monster, sloped[&ActorPart::ZombieBody][0].model);
     }
 
     #[test]

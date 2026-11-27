@@ -12,7 +12,7 @@ pub mod terrain;
 
 pub use action_adapter::{
     ActionSpatialView, WorldSpatialView, resolve_actor_support, resolve_tile_support,
-    semantic_floor_for_body,
+    semantic_floor_for_body, support_normal_at,
 };
 pub use collision::{raycast_world, sphere_cast_world};
 pub use kinematics::{

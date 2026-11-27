@@ -21,7 +21,7 @@ pub use weapons::{
 use crate::spatial::{
     Aabb3, BodyShape, Collider, FLOOR_H, MotionState, MoveParams, QueryFilter, Ray3, SurfaceQuad,
     TerrainSample, move_kinematic_with_horizontal_vel, resolve_actor_support, resolve_tile_support,
-    select_grounded_support, semantic_floor_for_body,
+    select_grounded_support, semantic_floor_for_body, support_normal_at,
 };
 use crate::{District, House, Position, World};
 use ai::{AiSystem, Monster, damage_monster, propagate_noise};
@@ -620,7 +620,7 @@ impl ActionGame {
                 && p.x <= max.x as f32 + 0.5
                 && p.y >= min.y as f32 - 0.5
                 && p.y <= max.y as f32 + 0.5)
-                .then(|| (id, state.view()))
+                .then(|| (id, state.view(&self.stage)))
         })
     }
 
@@ -2044,10 +2044,21 @@ impl ActionGame {
             range,
             &self.monsters,
         );
+        let ground_normal = if self.player_body.motion.is_grounded() {
+            support_normal_at(
+                &self.stage,
+                self.player_body.position.xy(),
+                self.player_body.motion.support(),
+                self.player.floor,
+            )
+        } else {
+            Vec3::Z
+        };
         PlayerRenderState {
             pose: self.player,
             elevation: self.player_body.position.z,
             body: self.player_body,
+            ground_normal,
             aim_dir,
             muzzle_pos,
             equipped: self.inventory.equipped,
@@ -2074,6 +2085,12 @@ impl ActionGame {
 
     pub fn spatial(&self) -> crate::spatial::ActionSpatialView<'_> {
         crate::spatial::ActionSpatialView::new(self)
+    }
+
+    /// Upward support normal at an `(xy, floor)` point (`+z` up).
+    /// Terrain and bridge decks tilt; floors, stairs, and empty space return `Vec3::Z`.
+    pub fn ground_normal_at(&self, xy: Vec2, floor: Floor) -> Vec3 {
+        support_normal_at(&self.stage, xy, None, floor)
     }
 
     pub fn toggle_door(&mut self, tile: Tile3D) -> Option<bool> {

@@ -55,6 +55,25 @@ fn seeded_roster_and_starter_identity_replay() {
 }
 
 #[test]
+fn parked_starter_bike_reports_ground_slope_normal() {
+    let game = ActionGame::county(42);
+    let bike = motorcycle_views(&game)
+        .into_iter()
+        .find_map(|(id, view)| match view {
+            VehicleView::Motorcycle(bike) if id.0 & 0xff == 0 => Some(bike),
+            _ => None,
+        })
+        .expect("starter motorcycle in the active window");
+    assert!(bike.body.motion.is_grounded());
+    assert!(bike.ground_normal.z > 0.0);
+    assert!(
+        bike.ground_normal.xy().length() > 1e-3,
+        "starter bike should report its slope: {:?}",
+        bike.ground_normal
+    );
+}
+
+#[test]
 fn headless_mount_coast_brake_dismount_and_remount_same_id() {
     let mut game = ActionGame::county(42);
     let (id, bike_pos) = starter_bike(&game);
