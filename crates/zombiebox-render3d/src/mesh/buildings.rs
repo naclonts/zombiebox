@@ -114,6 +114,157 @@ fn stair_dirs(
             .unwrap_or(opp),
     )
 }
+
+/// Clip a support triangle against a horizontal elevation boundary.
+fn clip_stair_polygon(poly: &[Vec3], threshold: f32, keep_above: bool) -> Vec<Vec3> {
+    let mut result = Vec::new();
+    if poly.is_empty() {
+        return result;
+    }
+    let inside = |p: Vec3| {
+        if keep_above {
+            p.y >= threshold
+        } else {
+            p.y <= threshold
+        }
+    };
+    let mut prev = *poly.last().unwrap();
+    for &cur in poly {
+        if inside(prev) != inside(cur) {
+            let t = (threshold - prev.y) / (cur.y - prev.y);
+            result.push(prev.lerp(cur, t));
+        }
+        if inside(cur) {
+            result.push(cur);
+        }
+        prev = cur;
+    }
+    result
+}
+
+/// Cut horizontal treads and vertical risers from the collision support's
+/// piecewise-linear triangles, so turns follow its exact elevation contours.
+fn emit_stairs(
+    out: &mut MeshBuilder,
+    g: &StairGeometry,
+    z: f32,
+    color: [f32; 4],
+    meta: VertexMeta,
+) {
+    const STEPS: usize = 8;
+    let step = FLOOR_H / STEPS as f32;
+    let x0 = g.tile.x as f32 - 0.5;
+    let y0 = g.tile.y as f32 - 0.5;
+    let divisions = if g.is_straight() { 1 } else { 2 };
+    let size = 1.0 / divisions as f32;
+    let meta = meta.with_tag(GeometryTag::Stair);
+    for iy in 0..divisions {
+        for ix in 0..divisions {
+            let gx = ix * (2 / divisions);
+            let gy = iy * (2 / divisions);
+            let stride = 2 / divisions;
+            let x = x0 + ix as f32 * size;
+            let y = y0 + iy as f32 * size;
+            let a = Vec3::new(x, g.grid[gy][gx], y);
+            let b = Vec3::new(x + size, g.grid[gy][gx + stride], y);
+            let d = Vec3::new(x, g.grid[gy + stride][gx], y + size);
+            let e = Vec3::new(x + size, g.grid[gy + stride][gx + stride], y + size);
+            for triangle in [[a, e, b], [a, d, e]] {
+                let underside = triangle.map(|v| v - Vec3::Y * step);
+                out.push_triangle(underside[0], underside[2], underside[1], color, meta);
+                for level in 0..=STEPS {
+                    let low = z + (level as f32 - 0.5) * step;
+                    let high = z + (level as f32 + 0.5) * step;
+                    let poly = clip_stair_polygon(&triangle, low, true);
+                    let poly = clip_stair_polygon(&poly, high, false);
+                    if poly.len() >= 3 {
+                        let h = z + level as f32 * step;
+                        let point = |v: Vec3| Vec3::new(v.x, h, v.z);
+                        for i in 1..poly.len() - 1 {
+                            let (a, b, c) = (point(poly[0]), point(poly[i]), point(poly[i + 1]));
+                            if (b - a).cross(c - a).length_squared() > 1e-12 {
+                                out.push_triangle(a, b, c, color, meta);
+                            }
+                        }
+                        // Close only the perimeter, from the tread down to the
+                        // sloping underside. Interior contour edges are risers.
+                        for i in 0..poly.len() {
+                            let p = poly[i];
+                            let q = poly[(i + 1) % poly.len()];
+                            let boundary = |a: f32, b: f32, edge: f32| {
+                                (a - edge).abs() < 1e-5 && (b - edge).abs() < 1e-5
+                            };
+                            if !(boundary(p.x, q.x, x0)
+                                || boundary(p.x, q.x, x0 + 1.0)
+                                || boundary(p.z, q.z, y0)
+                                || boundary(p.z, q.z, y0 + 1.0))
+                                || (p - q).length_squared() < 1e-12
+                            {
+                                continue;
+                            }
+                            let v = [point(p), point(q), q - Vec3::Y * step, p - Vec3::Y * step];
+                            let outward = Vec3::new(
+                                (p.x + q.x) * 0.5 - (x0 + 0.5),
+                                0.0,
+                                (p.z + q.z) * 0.5 - (y0 + 0.5),
+                            );
+                            let normal = (v[1] - v[0]).cross(v[2] - v[0]);
+                            if normal.dot(outward) > 0.0 {
+                                out.push_quad(v[0], v[1], v[2], v[3], color, meta);
+                            } else {
+                                out.push_quad(v[3], v[2], v[1], v[0], color, meta);
+                            }
+                        }
+                    }
+                }
+                for level in 0..STEPS {
+                    let threshold = z + (level as f32 + 0.5) * step;
+                    let mut crossings = Vec::new();
+                    for i in 0..3 {
+                        let a = triangle[i];
+                        let b = triangle[(i + 1) % 3];
+                        if (a.y < threshold) != (b.y < threshold) {
+                            crossings.push(a.lerp(b, (threshold - a.y) / (b.y - a.y)));
+                        }
+                    }
+                    if crossings.len() == 2 && crossings[0].distance_squared(crossings[1]) > 1e-12 {
+                        let low = z + level as f32 * step;
+                        let high = low + step;
+                        let p = crossings[0];
+                        let q = crossings[1];
+                        let vertices = [
+                            Vec3::new(p.x, low, p.z),
+                            Vec3::new(q.x, low, q.z),
+                            Vec3::new(q.x, high, q.z),
+                            Vec3::new(p.x, high, p.z),
+                        ];
+                        let lower = triangle.iter().find(|p| p.y < threshold).unwrap();
+                        let normal = (vertices[1] - vertices[0]).cross(vertices[2] - vertices[0]);
+                        if normal.dot(*lower - vertices[0]) > 0.0 {
+                            out.push_quad(
+                                vertices[0],
+                                vertices[1],
+                                vertices[2],
+                                vertices[3],
+                                color,
+                                meta,
+                            );
+                        } else {
+                            out.push_quad(
+                                vertices[3],
+                                vertices[2],
+                                vertices[1],
+                                vertices[0],
+                                color,
+                                meta,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 fn footprint(s: &ChunkSnapshot, p: Position, f: u8, id: u32) -> (f32, f32, f32, f32) {
     let same = |dx, dy| {
         cell(s, Position::new(p.x + dx, p.y + dy), f)
@@ -213,18 +364,7 @@ pub fn build_chunk_buildings_mesh(s: &ChunkSnapshot) -> MeshBuffer {
                 {
                     let (lo, hi) = stair_dirs(s, p, f, c);
                     let g = StairGeometry::new(Tile3D::from_pos(p, f), z, lo, hi);
-                    for iy in 0..2 {
-                        for ix in 0..2 {
-                            let px = x - 0.5 + ix as f32 * 0.5;
-                            let py = y - 0.5 + iy as f32 * 0.5;
-                            let a = Vec3::new(px, g.grid[iy][ix], py);
-                            let b = Vec3::new(px + 0.5, g.grid[iy][ix + 1], py);
-                            let d = Vec3::new(px, g.grid[iy + 1][ix], py + 0.5);
-                            let e = Vec3::new(px + 0.5, g.grid[iy + 1][ix + 1], py + 0.5);
-                            out.push_triangle(a, e, b, palette.carpet_trim.to_array(), floormeta);
-                            out.push_triangle(a, d, e, palette.carpet_trim.to_array(), floormeta);
-                        }
-                    }
+                    emit_stairs(&mut out, &g, z, palette.carpet_trim.to_array(), floormeta);
                 }
                 if f + 1 == info.floors {
                     let (rx0, rx1, ry0, ry1) = footprint(s, p, f, c.building_id as u32);
@@ -249,6 +389,12 @@ pub fn build_chunk_buildings_mesh(s: &ChunkSnapshot) -> MeshBuffer {
                         let e = Vec3::new(rx1, eave + rise(rx1, ry1), ry1);
                         out.push_triangle(a, e, b, palette.roof_front.to_array(), roofmeta);
                         out.push_triangle(a, d, e, palette.roof_front.to_array(), roofmeta);
+                        // Face the room and meet the wall tops at the eaves.
+                        let thickness = Vec3::Y * SLAB_THICKNESS;
+                        let (a, b, d, e) =
+                            (a - thickness, b - thickness, d - thickness, e - thickness);
+                        out.push_triangle(a, b, e, palette.roof_side.to_array(), roofmeta);
+                        out.push_triangle(a, e, d, palette.roof_side.to_array(), roofmeta);
                     } else {
                         box3(
                             &mut out,
@@ -422,6 +568,57 @@ mod tests {
     use super::*;
     use crate::{coords::ChunkCoord, scene::build_chunk_snapshot};
     use zombiebox_core::{ActionGame, Tile3D};
+
+    #[test]
+    fn stair_mesh_has_level_treads_and_vertical_risers_for_each_orientation() {
+        for low in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            for high in [(-low.0, -low.1), (low.1, -low.0), (-low.1, low.0)] {
+                let stair = StairGeometry::new(Tile3D::new(0, 0, 0), 0.0, low, high);
+                let mut builder = MeshBuilder::new();
+                emit_stairs(&mut builder, &stair, 0.0, [1.0; 4], VertexMeta::DEFAULT);
+                let mesh = builder.build();
+                mesh.validate().unwrap();
+                assert!(mesh.vertices.iter().any(|v| v.normal[1] > 0.99));
+                assert!(mesh.vertices.iter().any(|v| v.normal[1].abs() < 0.01));
+                assert!(
+                    mesh.vertices
+                        .iter()
+                        .all(|v| v.normal[1] < 0.01 || v.normal[1] > 0.99)
+                );
+                assert!(mesh.vertices.iter().any(|v| v.normal[1] < -0.01));
+                assert!(
+                    mesh.vertices
+                        .iter()
+                        .any(|v| v.normal[1].abs() < 0.01 && v.position[1] < -1e-5)
+                );
+                assert!(mesh.vertices.iter().any(|v| v.position[1].abs() < 1e-5));
+                assert!(
+                    mesh.vertices
+                        .iter()
+                        .any(|v| (v.position[1] - FLOOR_H).abs() < 1e-5)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pitched_roof_has_interior_facing_triangles() {
+        let game = ActionGame::residential(42);
+        let building = game
+            .buildings()
+            .iter()
+            .find(|b| b.style.has_pitched_roof())
+            .unwrap();
+        let coord = ChunkCoord::from_pos(Position::new(building.x, building.y));
+        let mesh = build_chunk_buildings_mesh(&build_chunk_snapshot(&game, coord, 1));
+        let roof: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.unpacked_meta().tag == GeometryTag::Roof)
+            .collect();
+        assert!(roof.iter().any(|v| v.normal[1] > 0.0));
+        assert!(roof.iter().any(|v| v.normal[1] < 0.0));
+    }
 
     #[test]
     fn residential_mesh_is_valid_and_tracks_openings_and_damage() {

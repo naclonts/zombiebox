@@ -1039,7 +1039,8 @@ pub(crate) fn stage_supports_at<S: SpatialStageSource + ?Sized>(
                 surface: c0.surface,
                 water_z: None,
             });
-        } else if inside_clipped_footprint(src, p, 0, c0.building_id, xy) {
+        }
+        if inside_clipped_footprint(src, p, 0, c0.building_id, xy) {
             out.push(SupportSurface {
                 id: super::SupportId::Floor(Tile3D::from_pos(p, 0)),
                 z: foundation_z,

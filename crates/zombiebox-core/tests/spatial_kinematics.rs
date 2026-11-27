@@ -973,6 +973,59 @@ fn birch_street_stairs_window_drop_and_collapse_fall() {
 }
 
 #[test]
+fn falling_under_stair_ramp_lands_on_the_floor_below() {
+    let game = ActionGame::residential(42);
+    let origin = game.block().unwrap().origin();
+    let stair = Tile3D::new(origin.x + 12, origin.y + 21, 0);
+    let shape = BodyShape::new(0.23, 1.05);
+    let spatial = game.spatial();
+    let stair_center = stair.center();
+    let mut supports = Vec::new();
+    spatial.supports_at(stair_center, &mut supports);
+    assert!(supports.iter().any(|s| s.is_stair));
+
+    // A body that has slipped beneath the winder is below the ramp surface. The
+    // floor plane under the ramp must still catch it instead of letting it fall
+    // through the entire house to the terrain.
+    let mut state = BodyState::airborne(
+        stair_center.extend(FLOOR_H * 0.3),
+        Vec3::new(0.0, 0.0, -0.5),
+        0.0,
+    );
+    let params = MoveParams::default();
+    for _ in 0..30 {
+        state = step_kinematic_body(&spatial, shape, state, DT, &params).state;
+        if state.motion.is_grounded() {
+            break;
+        }
+    }
+    assert!(
+        state.motion.is_grounded(),
+        "body must land on the stairwell floor"
+    );
+    assert_eq!(state.motion, MotionState::Grounded(SupportId::Floor(stair)));
+    assert!(state.position.z.abs() < 1e-4);
+    let landed_x = state.position.x;
+    for _ in 0..20 {
+        let res = move_kinematic_with_horizontal_vel(
+            &spatial,
+            shape,
+            state,
+            Vec2::new(-1.5, 0.0),
+            DT,
+            &params,
+        );
+        assert_eq!(res.landed_impact_speed, 0.0);
+        state = res.state;
+        assert!(state.motion.is_grounded());
+    }
+    assert!(
+        state.position.x < landed_x - 0.2,
+        "player must walk out from under the ramp"
+    );
+}
+
+#[test]
 fn county_seed_42_bridge_underpass_and_3story_apartments() {
     let mut game = ActionGame::county(42);
     let world = game.world().clone();

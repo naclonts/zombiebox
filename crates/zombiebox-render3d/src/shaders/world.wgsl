@@ -106,12 +106,17 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tag = in.v_meta.x & 0xFFu;
     let floor_index = (in.v_meta.x >> 8u) & 0xFFu;
     let building = in.v_meta.y & 0xFFFFu;
+    let first_person = (lighting.counts_and_flags.y & 8u) != 0u;
+    // A slab's underside belongs to the room below, not the floor above it.
+    let ceiling = first_person && building != 0u &&
+        (tag == 4u || tag == 8u) && floor_index > 0u && in.normal.y < -0.01;
+    let shading_floor = floor_index - select(0u, 1u, ceiling);
     let active_floor = lighting.counts_and_flags.z;
     var opacity_u8 = in.inst_fx.y & 0xFFu;
     var explored = false;
     var shrouded = false;
     if (lighting.counts_and_flags.y & 4u) != 0u {
-        if building != 0u && (flags & 8u) == 0u {
+        if building != 0u && (flags & 8u) == 0u && !first_person {
             let view_side = camera.eye_pos.xz - lighting.player_position.xz;
             let offset = in.world_pos.xz - lighting.player_position.xz;
             let front_wall = tag == 6u && length(offset) < 5.0 && dot(view_side, offset) > 0.0;
@@ -121,12 +126,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             }
         }
 
-        if tag == 4u || (tag == 9u && (flags & 4u) != 0u) {
+        if tag == 4u || tag == 12u || (tag == 9u && (flags & 4u) != 0u) {
             let grid = lighting.visibility_grid;
             let tile = vec2<i32>(floor(in.world_pos.xz + vec2(0.5))) - grid.xy;
             var state = 0u;
-            if i32(floor_index) < grid.w && all(tile >= vec2(0)) && all(tile < vec2(grid.z)) {
-                state = textureLoad(visibility, vec2(tile.x, tile.y + 256 + i32(floor_index) * grid.z), 0).r;
+            if i32(shading_floor) < grid.w && all(tile >= vec2(0)) && all(tile < vec2(grid.z)) {
+                state = textureLoad(visibility, vec2(tile.x, tile.y + 256 + i32(shading_floor) * grid.z), 0).r;
             }
             shrouded = state == 0u;
             explored = state == 1u;
@@ -177,7 +182,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let light_vec = pl_pos - in.world_pos;
             let dist = length(light_vec);
             let light_floor = pl.color_and_floor.w;
-            if dist < pl_radius && (floor_index == 255u || light_floor < 0.0 || f32(floor_index) == light_floor) {
+            if dist < pl_radius && (shading_floor == 255u || light_floor < 0.0 || f32(shading_floor) == light_floor) {
                 let L = light_vec / max(dist, 1e-4);
                 let att = pow(clamp(1.0 - dist / pl_radius, 0.0, 1.0), 2.0) * max(dot(N, L), 0.25);
                 point_sum = point_sum + pl.color_and_floor.rgb * att;
@@ -201,7 +206,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let luminance = dot(lit_rgb, vec3(0.299, 0.587, 0.114));
         lit_rgb = mix(lit_rgb, vec3(luminance), 0.45) * 0.45;
     }
-    if (lighting.counts_and_flags.y & 2u) != 0u && floor_index < active_floor {
+    if (lighting.counts_and_flags.y & 2u) != 0u && shading_floor < active_floor {
         lit_rgb *= lighting.shroud_and_dim.w;
     }
 

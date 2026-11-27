@@ -172,6 +172,20 @@ pub fn select_grounded_support(
     let mut best: Option<(f32, SupportSurface)> = None;
 
     for &s in candidates {
+        // The foundation plane beneath a stair ramp is retained so a falling
+        // actor can land below the ramp. While grounded, keep that lower plane
+        // from stealing the actor from the sloped stair surface.
+        if let SupportId::Floor(tile) = s.id
+            && !s.is_stair
+            && candidates.iter().any(|other| {
+                matches!(other.id, SupportId::Stair(stair) if stair == tile)
+                    && other.z > s.z + 1e-4
+                    && other.z >= foot_z - max_step_down - 1e-4
+                    && other.z <= foot_z + max_step_up + 1e-4
+            })
+        {
+            continue;
+        }
         if !is_surface_standable(&s, max_walkable_slope, avoid_water) {
             continue;
         }

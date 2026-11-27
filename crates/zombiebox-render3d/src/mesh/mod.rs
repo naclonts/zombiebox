@@ -32,6 +32,7 @@ pub enum GeometryTag {
     Prop = 9,
     Actor = 10,
     Effect = 11,
+    Stair = 12,
 }
 
 impl GeometryTag {
@@ -50,6 +51,7 @@ impl GeometryTag {
             9 => Self::Prop,
             10 => Self::Actor,
             11 => Self::Effect,
+            12 => Self::Stair,
             _ => Self::Prop,
         }
     }
