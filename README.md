@@ -106,6 +106,7 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | [docs/world-design.md](docs/world-design.md) | Seed-driven procedural county design, plausible district rules, loot/infected ecology, and vehicles |
 | [docs/motorcycle-plan.md](docs/motorcycle-plan.md) | Motorcycle gameplay, shared vehicle types, and implementation handoff |
 | [docs/living-buildings-plan.md](docs/living-buildings-plan.md) | Realistic multi-floor buildings, interior furnishing, signage, themed zombies, and extensible compounds |
+| [docs/world-and-town-layout-plan.md](docs/world-and-town-layout-plan.md) | Organic town morphologies, freeways/roadside stops, and scaling to a practically-infinite world |
 
 ## Run the checks
 
