@@ -78,7 +78,10 @@ enum ZbInteractKind {
     ZB_INTERACT_CLIMB_WINDOW = 4,
     ZB_INTERACT_DROP_WINDOW = 5,
     ZB_INTERACT_STAIRS_UP = 6,
-    ZB_INTERACT_STAIRS_DOWN = 7
+    ZB_INTERACT_STAIRS_DOWN = 7,
+    ZB_INTERACT_MOUNT = 8,
+    ZB_INTERACT_DISMOUNT = 9,
+    ZB_INTERACT_RIGHT_BIKE = 10
 };
 
 enum ZbObjectiveKind {
@@ -154,6 +157,9 @@ enum ZbActionV2Status {
 #define ZB_SFX_WIN               (UINT64_C(1) << 26)
 #define ZB_SFX_DEATH             (UINT64_C(1) << 27)
 #define ZB_SFX_STRUCTURAL_BREACH (UINT64_C(1) << 28)
+#define ZB_SFX_VEHICLE_CRASH     (UINT64_C(1) << 29)
+#define ZB_SFX_VEHICLE_SKID      (UINT64_C(1) << 30)
+#define ZB_SFX_VEHICLE_IMPACT    (UINT64_C(1) << 31)
 
 typedef struct {
     float move_x;
@@ -191,6 +197,39 @@ typedef struct {
     uint8_t objective_kind;
 } ZbActionFrameOutput;
 
+enum ZbActionControlKind {
+    ZB_CONTROL_ON_FOOT = 0,
+    ZB_CONTROL_MOTORCYCLE = 1
+};
+
+enum ZbMountedCamera {
+    ZB_MOUNTED_CHASE = 0,
+    ZB_MOUNTED_ISOMETRIC = 1
+};
+
+enum ZbRidingFlags {
+    ZB_RIDE_RECOVERING = 1u << 0
+};
+
+typedef struct {
+    ZbActionFrameInput base;
+    float steer, throttle, brake, lean;
+    uint8_t control_kind;
+    uint8_t mounted_camera;
+    uint8_t reserved[2];
+} ZbActionFrameInputV3;
+
+typedef struct {
+    ZbActionFrameOutput base;
+    uint8_t control_kind;
+    uint8_t grip_use;
+    uint16_t speed_mph_x10;
+    uint8_t engine_load;
+    uint8_t riding_flags;
+    uint8_t condition_pct;
+    uint8_t reserved;
+} ZbActionFrameOutputV3;
+
 /* Create either the Birch Street encounter or the procedural county run. */
 ZbAction *zb_action_v2_create(uint64_t seed);
 ZbAction *zb_action_v2_create_county(uint64_t seed);
@@ -201,6 +240,9 @@ void zb_action_v2_reset_clock(ZbAction *run);
  * accepts simulation-space directions. The surface entry point maps screen input. */
 bool zb_action_v2_update(ZbAction *run, uint64_t frame_time_ns,
                          const ZbActionFrameInput *input, ZbActionFrameOutput *out);
+/* Pass the previous frame's control kind. Motorcycle axes are raw stick values. */
+bool zb_action_v3_update(ZbAction *run, uint64_t frame_time_ns,
+                         const ZbActionFrameInputV3 *input, ZbActionFrameOutputV3 *out);
 
 #ifdef __ANDROID__
 typedef struct {
@@ -216,6 +258,8 @@ bool zb_action_v2_resize_window(ZbAction *run, uint32_t width, uint32_t height);
 bool zb_action_v2_camera_mode(ZbAction *run, uint8_t mode);
 bool zb_action_v2_frame_surface(ZbAction *run, uint64_t frame_time_ns,
                                 const ZbActionFrameInput *input, ZbActionFrameOutput *out);
+bool zb_action_v3_frame_surface(ZbAction *run, uint64_t frame_time_ns,
+                                const ZbActionFrameInputV3 *input, ZbActionFrameOutputV3 *out);
 bool zb_action_v2_frame_timing(const ZbAction *run, ZbFrameTiming *out);
 bool zb_action_v2_frame_percentiles(const ZbAction *run, ZbFramePercentiles *out);
 #endif

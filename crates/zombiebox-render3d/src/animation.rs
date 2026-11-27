@@ -1,10 +1,13 @@
 //! Procedural rigid-part actor poses. Only currently visible monsters are emitted.
+use crate::coords::heading_to_render_quat;
+use crate::mesh::motorcycle::{MotorcycleLocator, motorcycle_locator};
+use crate::mesh::vehicles::MotorcycleTransforms;
 use crate::mesh::{GeometryTag, MaterialFlags, VertexMeta, actors::ActorPart};
 use crate::scene::DynamicSceneState;
 use glam::{Mat4, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use zombiebox_core::{
-    ActionEvent, MonsterId, MonsterKind, Vec2 as SimVec2, Vec3 as SimVec3, Weapon,
+    ActionEvent, MonsterId, MonsterKind, Vec2 as SimVec2, Vec3 as SimVec3, VehicleView, Weapon,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -121,7 +124,13 @@ impl ActorAnimator {
             Weapon::RocketLauncher => ActorPart::RocketLauncher,
         });
         let meta = actor_meta(p.pose.floor);
-        if self.draw_player {
+        let mounted = scene.mounted_vehicle.and_then(|id| {
+            scene
+                .vehicles
+                .iter()
+                .find_map(|(vehicle_id, v)| (*vehicle_id == id).then_some(*v))
+        });
+        if self.draw_player && mounted.is_none() {
             draw_actor(
                 &mut out,
                 player_root,
@@ -140,6 +149,38 @@ impl ActorAnimator {
                 weapon,
                 meta,
                 motion,
+                false,
+            );
+        }
+        if self.draw_player
+            && let Some(VehicleView::Motorcycle(moto)) = mounted
+        {
+            let transforms = MotorcycleTransforms::from_view(moto, 0.0);
+            let (parent, local) = motorcycle_locator(MotorcycleLocator::Seat);
+            let seat = transforms.part_transform(parent).transform_point3(local);
+            let orientation = heading_to_render_quat(moto.body.heading)
+                * glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+            let rider_root =
+                Mat4::from_translation(seat + Vec3::Y * 0.20) * Mat4::from_quat(orientation);
+            draw_actor(
+                &mut out,
+                rider_root,
+                0.72,
+                0.18,
+                [0.48, 0.58, 0.64, 1.0],
+                self.phase,
+                0.0,
+                false,
+                false,
+                false,
+                false,
+                0.0,
+                0.0,
+                0.0,
+                None,
+                actor_meta(p.pose.floor),
+                0.0,
+                true,
             );
         }
         for m in &scene.monsters {
@@ -173,6 +214,7 @@ impl ActorAnimator {
                 weapon,
                 actor_meta(m.floor),
                 0.0,
+                false,
             );
         }
         for corpse in &self.corpses {
@@ -208,6 +250,7 @@ impl ActorAnimator {
                 None,
                 actor_meta(corpse.floor),
                 0.0,
+                false,
             );
         }
         let elapsed = if dt.is_finite() {
@@ -262,6 +305,7 @@ fn draw_actor(
     weapon: Option<ActorPart>,
     meta: [u32; 2],
     action_motion: f32,
+    seated: bool,
 ) {
     let gait = phase.sin() * (speed * 0.3).clamp(0.0, 0.55);
     let crouch_y = if crouch { -0.10 * h } else { 0.0 };
@@ -324,7 +368,7 @@ fn draw_actor(
         };
         let leg = root
             * Mat4::from_translation(Vec3::new(side * r * 0.38, h * 0.43, 0.0))
-            * Mat4::from_rotation_x(gait * side);
+            * Mat4::from_rotation_x(if seated { -0.85 * side } else { gait * side });
         add(
             leg_part,
             leg,
@@ -346,7 +390,9 @@ fn draw_actor(
             * Mat4::from_translation(Vec3::new(side * r * 0.95, h * 0.75, 0.0))
             * Mat4::from_rotation_y(if side > 0.0 { aim } else { 0.0 })
             * Mat4::from_rotation_x(
-                (if side > 0.0 && weapon.is_some() {
+                (if seated {
+                    -1.05
+                } else if side > 0.0 && weapon.is_some() {
                     -1.2 - pitch
                 } else {
                     -gait * side

@@ -226,51 +226,111 @@ pub unsafe extern "C" fn zb_action_v2_frame_surface(
     if out.is_null() {
         return false;
     }
-    let Ok(weapon) = parse_select_weapon(input.select_weapon) else {
+    let Some((audio, rendered)) = run.frame_surface(frame_time_ns, input, None, None) else {
         return false;
     };
-    let Some(gpu) = run.gpu.as_mut() else {
-        return false;
-    };
-    gpu.presentation
-        .camera_mut()
-        .set_look_ahead(input.action_flags & ZB_INPUT_LOOK_AHEAD != 0);
-    let previous = run.last_frame;
-    let dt = previous.map_or(0.0, |t| {
-        frame_time_ns.saturating_sub(t).min(MAX_FRAME_NS) as f32 / 1_000_000_000.0
-    });
-    let camera = gpu.presentation.camera_mut();
-    let (movement, aim) = match camera.mode() {
-        CameraMode::Chase | CameraMode::FirstPerson => {
-            camera.apply_look_input(Vec2::new(input.aim_x, input.aim_y), dt);
-            let frame = camera.current_frame();
-            let movement = frame.map_stick_to_world(Vec2::new(input.move_x, input.move_y));
-            let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
-            (movement, Some(aim))
-        }
-        _ => {
-            let frame = camera.current_frame();
-            let movement = frame.map_stick_to_world(Vec2::new(input.move_x, input.move_y));
-            let aim = frame.map_stick_to_world(Vec2::new(input.aim_x, input.aim_y));
-            (movement, (aim != Vec2::ZERO).then_some(aim))
-        }
-    };
-    let audio = run.advance_v2(frame_time_ns, movement, aim, input.action_flags, weapon);
-    let gpu = run.gpu.as_mut().expect("checked above");
-    let rendered =
-        gpu.presentation
-            .render_to_surface(&gpu.context, &gpu.surface, &gpu.config, &run.game, dt);
-    if matches!(
-        rendered,
-        Ok(SurfaceFrameOutcome::NeedsReconfigure
-            | SurfaceFrameOutcome::SurfaceLost
-            | SurfaceFrameOutcome::Presented {
-                suboptimal: true,
-                ..
-            })
-    ) {
-        configure(&gpu.surface, &gpu.context, &gpu.config);
-    }
     unsafe { out.write(run.output_v2(audio)) };
-    rendered.is_ok()
+    rendered
+}
+
+/// Pointers must be live, aligned, disjoint and exclusively accessible for this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zb_action_v3_frame_surface(
+    run: *mut ZbAction,
+    frame_time_ns: u64,
+    input: *const ZbActionFrameInputV3,
+    out: *mut ZbActionFrameOutputV3,
+) -> bool {
+    let (Some(run), Some(input)) = (unsafe { run.as_mut() }, unsafe { input.as_ref() }) else {
+        return false;
+    };
+    if out.is_null() {
+        return false;
+    }
+    let Ok(ride) = input.ride_input() else {
+        return false;
+    };
+    let Some((audio, rendered)) =
+        run.frame_surface(frame_time_ns, &input.base, ride, Some(input.mounted_camera))
+    else {
+        return false;
+    };
+    unsafe { out.write(run.output_v3(audio)) };
+    rendered
+}
+
+impl ZbAction {
+    fn frame_surface(
+        &mut self,
+        frame_time_ns: u64,
+        input: &ZbActionFrameInput,
+        ride: Option<RideInput>,
+        mounted_camera: Option<u8>,
+    ) -> Option<(u64, bool)> {
+        let run = self;
+        let weapon = parse_select_weapon(input.select_weapon).ok()?;
+        let Some(gpu) = run.gpu.as_mut() else {
+            return None;
+        };
+        if let Some(preference) = mounted_camera {
+            gpu.presentation
+                .set_mounted_camera_preference(preference == ZB_MOUNTED_ISOMETRIC);
+        }
+        gpu.presentation
+            .camera_mut()
+            .set_look_ahead(input.action_flags & ZB_INPUT_LOOK_AHEAD != 0);
+        let previous = run.last_frame;
+        let dt = previous.map_or(0.0, |t| {
+            frame_time_ns.saturating_sub(t).min(MAX_FRAME_NS) as f32 / 1_000_000_000.0
+        });
+        let camera = gpu.presentation.camera_mut();
+        let on_foot = ride.is_none()
+            && run.game.control_mode() == ControlMode::OnFoot
+            && !run.game.is_recovering_from_vehicle_crash();
+        let (movement, aim) = match (on_foot, camera.mode()) {
+            (false, _) => (Vec2::ZERO, None),
+            (true, CameraMode::Chase | CameraMode::FirstPerson) => {
+                camera.apply_look_input(Vec2::new(input.aim_x, input.aim_y), dt);
+                let frame = camera.current_frame();
+                let movement = frame.map_stick_to_world(Vec2::new(input.move_x, input.move_y));
+                let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
+                (movement, Some(aim))
+            }
+            (true, _) => {
+                let frame = camera.current_frame();
+                let movement = frame.map_stick_to_world(Vec2::new(input.move_x, input.move_y));
+                let aim = frame.map_stick_to_world(Vec2::new(input.aim_x, input.aim_y));
+                (movement, (aim != Vec2::ZERO).then_some(aim))
+            }
+        };
+        let audio = run.advance(
+            frame_time_ns,
+            movement,
+            aim,
+            input.action_flags,
+            weapon,
+            ride,
+            mounted_camera.is_some(),
+        );
+        let gpu = run.gpu.as_mut().expect("checked above");
+        let rendered = gpu.presentation.render_to_surface(
+            &gpu.context,
+            &gpu.surface,
+            &gpu.config,
+            &run.game,
+            dt,
+        );
+        if matches!(
+            rendered,
+            Ok(SurfaceFrameOutcome::NeedsReconfigure
+                | SurfaceFrameOutcome::SurfaceLost
+                | SurfaceFrameOutcome::Presented {
+                    suboptimal: true,
+                    ..
+                })
+        ) {
+            configure(&gpu.surface, &gpu.context, &gpu.config);
+        }
+        Some((audio, rendered.is_ok()))
+    }
 }

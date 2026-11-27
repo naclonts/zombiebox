@@ -5,10 +5,15 @@ pub mod ai;
 pub mod block;
 pub mod county;
 pub mod types;
+pub mod vehicles;
 pub mod weapons;
 
 pub use ai::{MonsterSpec, monster_spec};
 pub use types::*;
+pub use vehicles::{
+    ControlMode, MotorcycleCrashKind, MotorcycleInput, MotorcyclePhase, MotorcycleView, MountedHud,
+    RideInput, VehicleId, VehicleView,
+};
 pub use weapons::{
     Inventory, Projectile, ReloadMode, WEAPON_MUZZLE_HEIGHT, WeaponSpec, weapon_spec,
 };
@@ -22,6 +27,7 @@ use crate::{District, House, Position, World};
 use ai::{AiSystem, Monster, damage_monster, propagate_noise};
 use block::{ResidentialBlock, SupplyCache};
 use county::CountyStage;
+use vehicles::{MotorcycleTuning, VehicleContactBody, Vehicles, step_motorcycle};
 use weapons::{
     compute_player_aim_3d, is_rocket_danger_close_3d, step_projectiles_3d, try_fire_or_swing_3d,
 };
@@ -53,6 +59,9 @@ enum InteractAction {
     DropWindow(Tile3D, Tile3D),
     ClimbWindow(Tile3D, Tile3D),
     TakeStairs(Tile3D, Tile3D, (i8, i8), bool), // bool = goes_up
+    Mount(VehicleId, Tile3D),
+    Dismount(VehicleId, Tile3D),
+    RightBike(VehicleId, Tile3D),
 }
 
 impl InteractAction {
@@ -65,6 +74,9 @@ impl InteractAction {
             Self::ClimbWindow(..) => InteractPrompt::ClimbWindow,
             Self::TakeStairs(_, _, _, true) => InteractPrompt::StairsUp,
             Self::TakeStairs(_, _, _, false) => InteractPrompt::StairsDown,
+            Self::Mount(..) => InteractPrompt::Mount,
+            Self::Dismount(..) => InteractPrompt::Dismount,
+            Self::RightBike(..) => InteractPrompt::RightBike,
         }
     }
 
@@ -74,7 +86,10 @@ impl InteractAction {
             | Self::ToggleDoor(t, _)
             | Self::DropWindow(t, _)
             | Self::ClimbWindow(t, _)
-            | Self::TakeStairs(t, _, _, _) => t,
+            | Self::TakeStairs(t, _, _, _)
+            | Self::Mount(_, t)
+            | Self::Dismount(_, t)
+            | Self::RightBike(_, t) => t,
         }
     }
 }
@@ -418,6 +433,7 @@ pub struct ActionGame {
     next_proj_id: u32,
     active_blasts: Vec<ActiveBlast>,
     next_blast_id: u32,
+    vehicles: Vehicles,
     ai: AiSystem,
     events: Vec<ActionEvent>,
     noises: Vec<NoiseEvent>,
@@ -446,6 +462,27 @@ impl ActionGame {
         let zombies_total = county.total_monsters_spawned();
         county.update_visibility(player.position, player.floor);
 
+        let vehicle_spawns = crate::world::motorcycle_spawns(&world, spawn.pos(), |spawn| {
+            let pos = spawn.tile;
+            if county.contains_world_tile(pos) {
+                if !county.circle_walkable(Vec2::new(pos.x as f32, pos.y as f32), 0, 0.55, false) {
+                    return false;
+                }
+                if county
+                    .caches()
+                    .iter()
+                    .any(|c| c.pos.floor == 0 && c.pos.pos().distance(pos) <= 1)
+                {
+                    return false;
+                }
+            }
+            true
+        });
+        let vehicles = Vehicles::from_spawns(seed, &vehicle_spawns, |tile| {
+            let (z, support, _) = resolve_tile_support(&county, Tile3D::from_pos(tile, 0));
+            (z, support)
+        });
+
         Self {
             seed,
             world,
@@ -473,6 +510,7 @@ impl ActionGame {
             next_proj_id: 1,
             active_blasts: Vec::new(),
             next_blast_id: 1,
+            vehicles,
             ai: AiSystem::new(),
             events: Vec::new(),
             noises: Vec::new(),
@@ -533,6 +571,7 @@ impl ActionGame {
             next_proj_id: 1,
             active_blasts: Vec::new(),
             next_blast_id: 1,
+            vehicles: Vehicles::default(),
             ai: AiSystem::new(),
             events: Vec::new(),
             noises: Vec::new(),
@@ -550,6 +589,39 @@ impl ActionGame {
 
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// Authoritative control mode from the latest fixed tick.
+    pub fn control_mode(&self) -> ControlMode {
+        match self.vehicles.mounted() {
+            Some(_) => ControlMode::Motorcycle,
+            None => ControlMode::OnFoot,
+        }
+    }
+
+    /// Vehicle currently occupied by the player, if any.
+    pub fn mounted_vehicle(&self) -> Option<VehicleId> {
+        self.vehicles.mounted()
+    }
+
+    /// True while a crash has temporarily removed full on-foot control.
+    pub fn is_recovering_from_vehicle_crash(&self) -> bool {
+        self.vehicles
+            .iter()
+            .any(|(_, v)| v.motorcycle().is_some_and(|b| b.recovery_ticks > 0))
+    }
+
+    /// Read-only vehicle views filtered to the active streaming bounds.
+    pub fn vehicle_views(&self) -> impl Iterator<Item = (VehicleId, VehicleView)> + '_ {
+        let (min, max, _) = self.stage.bounds();
+        self.vehicles.iter().filter_map(move |(id, state)| {
+            let p = state.position();
+            (p.x >= min.x as f32 - 0.5
+                && p.x <= max.x as f32 + 0.5
+                && p.y >= min.y as f32 - 0.5
+                && p.y <= max.y as f32 + 0.5)
+                .then(|| (id, state.view()))
+        })
     }
 
     pub fn player_tile(&self) -> Tile3D {
@@ -581,7 +653,11 @@ impl ActionGame {
     }
 
     pub fn teleport(&mut self, target: Tile3D) -> Option<Tile3D> {
-        if self.mode() != ActionMode::County || self.outcome != ActionOutcome::Playing {
+        if self.mode() != ActionMode::County
+            || self.outcome != ActionOutcome::Playing
+            || self.control_mode() != ControlMode::OnFoot
+            || self.is_recovering_from_vehicle_crash()
+        {
             return None;
         }
         let current_pos = self.player_tile().pos();
@@ -610,12 +686,22 @@ impl ActionGame {
     }
 
     pub fn step(&mut self, input: ActionInput) {
+        self.step_impl(input, true);
+    }
+
+    /// Run a fixed tick without enabling motorcycle interaction candidates.
+    pub fn step_without_vehicle_interactions(&mut self, input: ActionInput) {
+        self.step_impl(input, false);
+    }
+
+    fn step_impl(&mut self, input: ActionInput, vehicle_interactions: bool) {
         self.events.clear();
         self.noises.clear();
         if self.outcome != ActionOutcome::Playing {
             return;
         }
         self.tick += 1;
+        let start_mode = self.control_mode();
 
         // 1. Tick timers, active blasts & dynamic light flashes.
         for b in &mut self.active_blasts {
@@ -629,61 +715,76 @@ impl ActionGame {
         self.stair_cooldown = self.stair_cooldown.saturating_sub(1);
         self.footstep_timer = self.footstep_timer.saturating_sub(1);
 
-        // 2. Weapon switching, quick-heal, and manual reload.
-        if let Some(weapon) = input.select_weapon {
-            self.inventory.select_weapon(weapon, &mut self.events);
-        } else if input.cycle_weapon {
-            self.inventory.cycle_weapon(&mut self.events);
-        }
-        if input.use_medkit {
-            self.inventory.try_use_medkit_3d(
-                &mut self.health,
-                self.max_health,
-                self.player_body.position,
-                self.player.floor,
-                &mut self.events,
-                &mut self.noises,
-            );
-        }
-        if input.reload {
-            self.inventory.try_start_reload(&mut self.events);
+        // 2. On-foot weapon switching, quick-heal, and manual reload. These
+        // actions are unavailable while seated.
+        if start_mode == ControlMode::OnFoot {
+            if let Some(weapon) = input.select_weapon {
+                self.inventory.select_weapon(weapon, &mut self.events);
+            } else if input.cycle_weapon {
+                self.inventory.cycle_weapon(&mut self.events);
+            }
+            if input.use_medkit {
+                self.inventory.try_use_medkit_3d(
+                    &mut self.health,
+                    self.max_health,
+                    self.player_body.position,
+                    self.player.floor,
+                    &mut self.events,
+                    &mut self.noises,
+                );
+            }
+            if input.reload {
+                self.inventory.try_start_reload(&mut self.events);
+            }
         }
 
-        // 3. Player analog movement, quiet walk, knockback, and stair transitions.
-        self.step_player_movement(input);
+        // 3. Route movement by the authoritative mode at the start of the tick.
+        if start_mode == ControlMode::Motorcycle {
+            self.step_mounted_movement(input.ride);
+        } else {
+            self.step_player_movement(input);
+        }
+        self.step_unmounted_vehicles();
         let focus = self.player_tile().pos();
         if let Stage::County(county) = &mut self.stage {
             county.sync_active_window(&self.world, focus, &mut self.monsters);
         }
 
-        // 4. Aim / facing update (right-stick retains facing on release).
-        let aim_raw = input.aim.filter(|aim| {
-            let len_sq = aim.length_squared();
-            len_sq.is_finite() && len_sq > AIM_DEADZONE * AIM_DEADZONE
-        });
-        if let Some(aim) = aim_raw {
-            let aim = aim.normalized();
-            self.player.facing = aim;
-            self.player_body.heading = aim.y.atan2(aim.x);
-            self.aim_explicit = true;
-        } else if !self.aim_explicit {
-            let move_len_sq = input.movement.length_squared();
-            if move_len_sq.is_finite() && move_len_sq > PLAYER_DEADZONE * PLAYER_DEADZONE {
-                let mv = input.movement.normalized();
-                self.player.facing = mv;
-                self.player_body.heading = mv.y.atan2(mv.x);
+        // 4. On-foot aim / facing update (right-stick retains facing on release).
+        // Vehicle heading is authoritative while mounted; carried look input is ignored.
+        if start_mode == ControlMode::OnFoot {
+            let aim_raw = input.aim.filter(|aim| {
+                let len_sq = aim.length_squared();
+                len_sq.is_finite() && len_sq > AIM_DEADZONE * AIM_DEADZONE
+            });
+            if let Some(aim) = aim_raw {
+                let aim = aim.normalized();
+                self.player.facing = aim;
+                self.player_body.heading = aim.y.atan2(aim.x);
+                self.aim_explicit = true;
+            } else if !self.aim_explicit {
+                let move_len_sq = input.movement.length_squared();
+                if move_len_sq.is_finite() && move_len_sq > PLAYER_DEADZONE * PLAYER_DEADZONE {
+                    let mv = input.movement.normalized();
+                    self.player.facing = mv;
+                    self.player_body.heading = mv.y.atan2(mv.x);
+                }
             }
         }
 
-        // 5. Contextual interaction (cache -> door -> upper drop -> F0 vault -> stairs).
+        // 5. Contextual interaction. Mounted ticks accept only dismount; on-foot
+        // ticks keep the existing cache/door/window/stair priority and then bikes.
         if input.interact {
-            self.resolve_interact();
+            self.resolve_interact(vehicle_interactions);
         }
 
         let ev_combat_start = self.events.len();
 
-        // 6. Firing / melee swing.
-        if input.fire {
+        // 6. Firing / melee swing. A mode change in this tick suppresses carried fire.
+        if start_mode == ControlMode::OnFoot
+            && self.control_mode() == ControlMode::OnFoot
+            && input.fire
+        {
             try_fire_or_swing_3d(
                 &mut self.stage,
                 &mut self.inventory,
@@ -699,7 +800,7 @@ impl ActionGame {
             );
         }
 
-        // 7. Advance active rockets and shooter bolts.
+        // 7. Advance active rockets and shooter bolts on every path.
         step_projectiles_3d(
             &mut self.stage,
             &mut self.projectiles,
@@ -796,6 +897,362 @@ impl ActionGame {
         // 12. Update room-based LOS visibility.
         self.stage
             .update_visibility(self.player.position, self.player.floor);
+    }
+
+    fn vehicle_contact_bodies(&self) -> Vec<VehicleContactBody> {
+        self.monsters
+            .iter()
+            .filter(|m| m.alive && m.floor == 0)
+            .map(|m| {
+                let spec = m.spec();
+                VehicleContactBody {
+                    id: m.id.0 as u64,
+                    bounds: Aabb3::from_center_half_extents(
+                        m.body.position + Vec3::new(0.0, 0.0, spec.height * 0.5),
+                        Vec3::new(spec.radius, spec.radius, spec.height * 0.5),
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    fn step_mounted_movement(&mut self, ride: Option<RideInput>) {
+        let Some(id) = self.vehicles.mounted() else {
+            return;
+        };
+        let input = match ride {
+            Some(RideInput::Motorcycle(input)) => Some(input),
+            None => Some(MotorcycleInput::default()),
+        };
+        let tuning = MotorcycleTuning::default();
+        let contacts = self.vehicle_contact_bodies();
+        let (body, step, phase, condition) = {
+            let stage = &self.stage;
+            let Some(bike) = self.vehicles.motorcycle_mut(id) else {
+                return;
+            };
+            let step = step_motorcycle(bike, input, stage, &contacts, &tuning);
+            (bike.body, step, bike.phase, bike.condition)
+        };
+        if let Some(kind) = step.wipeout {
+            self.events.push(ActionEvent::VehicleCrash {
+                id,
+                at: body.position,
+                kind: kind.into(),
+            });
+            self.vehicles.set_mounted(None);
+            if kind == vehicles::MotorcycleWipeout::HighSpeedEjection {
+                self.events.push(ActionEvent::VehicleSkidStarted {
+                    id,
+                    at: body.position,
+                    velocity: body.velocity,
+                });
+                let damage = if step.pre_impact_speed > 16.0 { 2 } else { 1 };
+                self.health = self.health.saturating_sub(damage);
+                self.hurt_iframes = 24;
+                self.events.push(ActionEvent::PlayerHurt {
+                    at: body.position,
+                    floor: 0,
+                    damage,
+                    remaining_hp: self.health,
+                    from: body.position - body.velocity * 0.04,
+                });
+                self.drop_recovery_ticks = 45;
+                self.player_knockback = body.velocity.xy() * 0.55;
+            } else {
+                self.drop_recovery_ticks = 24;
+                self.player_knockback = body.velocity.xy() * 0.1;
+            }
+        }
+        if phase == MotorcyclePhase::Skidding && condition == 0 {
+            self.vehicles.set_mounted(None);
+        }
+        let mut target = None;
+        if let Some(target_id) = step.contact_target {
+            if let Some(monster) = self
+                .monsters
+                .iter_mut()
+                .find(|m| m.id.0 as u64 == target_id)
+            {
+                let damage = (step.pre_impact_speed / 3.0).round().clamp(1.0, 5.0) as u8;
+                let dir = body.velocity.xy().normalized();
+                let _ = damage_monster(monster, damage, dir * 5.0, 16, false, &mut self.events);
+                target = Some(monster.id);
+            }
+        }
+        if step.impact {
+            if target.is_none() {
+                self.apply_vehicle_terrain_damage(body, step.pre_impact_speed);
+            }
+            let damage = (step.pre_impact_speed * 0.7).round().clamp(1.0, 18.0) as u8;
+            self.events.push(ActionEvent::VehicleImpact {
+                id,
+                at: body.position,
+                target,
+                speed: step.pre_impact_speed,
+                damage,
+            });
+        }
+        self.player.position = body.position.xy();
+        self.player.floor = 0;
+        self.player.facing = body.facing_xy();
+        self.player_body = body;
+        self.quiet_walking = false;
+        if step.wipeout.is_none() {
+            self.player_knockback = Vec2::ZERO;
+        }
+        self.aim_explicit = false;
+    }
+
+    fn apply_vehicle_terrain_damage(&mut self, body: BodyState, speed: f32) {
+        let direction = if body.velocity.xy().length_squared() > 0.04 {
+            body.velocity.xy().normalized()
+        } else {
+            body.facing_xy()
+        };
+        let tile = Tile3D::from_vec2(body.position.xy() + direction * 0.70, 0);
+        let Some(result) = self.stage.damage_tile(tile, DamageKind::VehicleImpact) else {
+            return;
+        };
+        if !result.damaged {
+            return;
+        }
+        let hit_pos = tile.center().extend(body.position.z + 0.45);
+        self.events.push(ActionEvent::MaterialHit {
+            at: tile,
+            hit_pos,
+            hit_normal: (-direction).extend(0.0),
+            material: result.material,
+            destroyed: result.destroyed,
+            light_changed: result.light_changed,
+        });
+        if result.sound_radius > 0.0 {
+            self.noises.push(NoiseEvent {
+                origin: tile.center(),
+                origin_z: body.position.z,
+                floor: 0,
+                radius: result.sound_radius.max(speed * 0.6),
+                priority: 2,
+                kind: NoiseKind::PropBreak,
+            });
+        }
+    }
+
+    fn step_unmounted_vehicles(&mut self) {
+        let ids: Vec<_> = self
+            .vehicles
+            .iter()
+            .filter_map(|(id, v)| {
+                (Some(id) != self.vehicles.mounted()
+                    && v.motorcycle()
+                        .is_some_and(|b| !b.is_stopped() || b.recovery_ticks > 0))
+                .then_some(id)
+            })
+            .collect();
+        let tuning = MotorcycleTuning::default();
+        for id in ids {
+            let contacts = self.vehicle_contact_bodies();
+            let (step, body) = {
+                let Some(bike) = self.vehicles.motorcycle_mut(id) else {
+                    continue;
+                };
+                let step = step_motorcycle(bike, None, &self.stage, &contacts, &tuning);
+                (step, bike.body)
+            };
+            if step.impact {
+                let mut target = None;
+                if let Some(target_id) = step.contact_target
+                    && let Some(monster) = self
+                        .monsters
+                        .iter_mut()
+                        .find(|m| m.id.0 as u64 == target_id)
+                {
+                    let damage = (step.pre_impact_speed / 3.0).round().clamp(1.0, 5.0) as u8;
+                    let dir = body.velocity.xy().normalized();
+                    let _ = damage_monster(monster, damage, dir * 5.0, 16, false, &mut self.events);
+                    target = Some(monster.id);
+                }
+                if target.is_none() {
+                    self.apply_vehicle_terrain_damage(body, step.pre_impact_speed);
+                }
+                let damage = if target.is_some() {
+                    (step.pre_impact_speed * 0.45).round().clamp(1.0, 14.0) as u8
+                } else {
+                    (step.pre_impact_speed * 0.7).round().clamp(1.0, 18.0) as u8
+                };
+                self.events.push(ActionEvent::VehicleImpact {
+                    id,
+                    at: body.position,
+                    target,
+                    speed: step.pre_impact_speed,
+                    damage,
+                });
+            }
+        }
+    }
+
+    fn sync_mounted_pose(&mut self, id: VehicleId) {
+        let Some(body) = self.vehicles.motorcycle(id).map(|bike| bike.body) else {
+            return;
+        };
+        self.player.position = body.position.xy();
+        self.player.floor = 0;
+        self.player.facing = body.facing_xy();
+        self.player_body = body;
+    }
+
+    fn mount_candidate(&self) -> Option<VehicleId> {
+        if self.control_mode() != ControlMode::OnFoot || self.player.floor != 0 {
+            return None;
+        }
+        let eye = self.player_eye_position();
+        let mut best: Option<(f32, VehicleId)> = None;
+        for (id, state) in self.vehicles.iter() {
+            let Some(bike) = state.motorcycle() else {
+                continue;
+            };
+            if !bike.is_operable()
+                || !bike.is_stopped()
+                || !bike.body.motion.is_grounded()
+                || !matches!(
+                    bike.phase,
+                    MotorcyclePhase::Parked | MotorcyclePhase::Rolling
+                )
+            {
+                continue;
+            }
+            let d = bike.body.position.xy().distance(self.player.position);
+            if d > 1.35 || (bike.body.position.z - self.player_body.position.z).abs() > 0.75 {
+                continue;
+            }
+            let seat = bike.body.position.with_z(bike.body.position.z + 0.55);
+            if let Some((ray, dist)) = Ray3::from_points(eye, seat)
+                && dist > 0.1
+                && self
+                    .spatial()
+                    .raycast_filtered(ray, dist - 0.08, QueryFilter::LINE_OF_SIGHT)
+                    .is_some()
+            {
+                continue;
+            }
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    fn dismount_candidate(&self) -> Option<VehicleId> {
+        if self.control_mode() != ControlMode::Motorcycle {
+            return None;
+        }
+        let id = self.vehicles.mounted()?;
+        let bike = self.vehicles.motorcycle(id)?;
+        if !bike.is_stopped() || !bike.body.motion.is_grounded() {
+            return None;
+        }
+        self.dismount_spot(id).map(|_| id)
+    }
+
+    fn right_bike_candidate(&self) -> Option<VehicleId> {
+        if self.control_mode() != ControlMode::OnFoot || self.player.floor != 0 {
+            return None;
+        }
+        let mut best: Option<(f32, VehicleId)> = None;
+        for (id, state) in self.vehicles.iter() {
+            let Some(bike) = state.motorcycle() else {
+                continue;
+            };
+            if bike.phase != MotorcyclePhase::Tipped || !bike.is_operable() {
+                continue;
+            }
+            if bike.recovery_ticks > 0 {
+                continue;
+            }
+            let d = bike.body.position.xy().distance(self.player.position);
+            if d <= 1.35 && (bike.body.position.z - self.player_body.position.z).abs() <= 0.75 {
+                if best.is_none_or(|(bd, _)| d < bd) {
+                    best = Some((d, id));
+                }
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    fn dismount_spot(&self, id: VehicleId) -> Option<(Vec2, f32, crate::spatial::SupportId)> {
+        let bike = self.vehicles.motorcycle(id)?;
+        let center = bike.body.position.xy();
+        let forward = bike.body.facing_xy();
+        let right = Vec2::new(-forward.y, forward.x);
+        for offset in [right, -right, -forward] {
+            let spot = center + offset * 0.9;
+            if !self.stage.circle_walkable(spot, 0, PLAYER_RADIUS, false) {
+                continue;
+            }
+            let (z, support, surface) = resolve_actor_support(&self.stage, spot, 0);
+            if matches!(surface, Surface::Water | Surface::Mountain) {
+                continue;
+            }
+            if (z - bike.body.position.z).abs() > 0.45 {
+                continue;
+            }
+            return Some((spot, z, support));
+        }
+        None
+    }
+
+    fn try_mount(&mut self, id: VehicleId) {
+        if self.control_mode() != ControlMode::OnFoot || self.mount_candidate() != Some(id) {
+            return;
+        }
+        if self.vehicles.motorcycle(id).is_none() {
+            return;
+        }
+        self.vehicles.set_mounted(Some(id));
+        if let Some(bike) = self.vehicles.motorcycle_mut(id) {
+            bike.set_parked();
+        }
+        self.sync_mounted_pose(id);
+        self.fall_peak_z = None;
+        self.player_knockback = Vec2::ZERO;
+        self.drop_recovery_ticks = 0;
+        self.aim_explicit = false;
+        self.quiet_walking = false;
+    }
+
+    fn try_dismount(&mut self, id: VehicleId) {
+        if self.dismount_candidate() != Some(id) {
+            return;
+        }
+        let Some((spot, z, support)) = self.dismount_spot(id) else {
+            return;
+        };
+        let facing = self.player.facing;
+        self.vehicles.set_mounted(None);
+        if let Some(bike) = self.vehicles.motorcycle_mut(id) {
+            bike.set_parked();
+        }
+        self.player.position = spot;
+        self.player.floor = 0;
+        self.player_body = BodyState::from_pose_2d(spot, facing, z, support);
+        self.fall_peak_z = None;
+        self.player_knockback = Vec2::ZERO;
+        self.drop_recovery_ticks = 0;
+        self.aim_explicit = false;
+    }
+
+    fn try_right_bike(&mut self, id: VehicleId) {
+        if self.right_bike_candidate() != Some(id) {
+            return;
+        }
+        if let Some(bike) = self.vehicles.motorcycle_mut(id) {
+            bike.phase = MotorcyclePhase::Parked;
+            bike.body.velocity = Vec3::ZERO;
+            bike.body.pitch = 0.0;
+            bike.body.roll = 0.0;
+            bike.steer_angle = 0.0;
+            bike.rider_lean = 0.0;
+        }
     }
 
     fn sync_player_if_overridden(&mut self) {
@@ -1150,7 +1607,19 @@ impl ActionGame {
         });
     }
 
-    fn compute_interact_action(&self) -> Option<InteractAction> {
+    fn compute_interact_action(&self, vehicle_interactions: bool) -> Option<InteractAction> {
+        if self.control_mode() == ControlMode::Motorcycle {
+            if !vehicle_interactions {
+                return None;
+            }
+            let id = self.dismount_candidate()?;
+            let tile = self
+                .vehicles
+                .motorcycle(id)
+                .map(|bike| Tile3D::from_vec2(bike.body.position.xy(), 0))?;
+            return Some(InteractAction::Dismount(id, tile));
+        }
+
         let p = self.player.position;
         let floor = self.player.floor;
         let facing = self.player.facing.normalized();
@@ -1262,11 +1731,27 @@ impl ActionGame {
             return Some(action);
         }
 
+        // Vehicles are considered only after the on-foot prompts have no candidate.
+        if vehicle_interactions && let Some(id) = self.right_bike_candidate() {
+            let tile = self
+                .vehicles
+                .motorcycle(id)
+                .map(|bike| Tile3D::from_vec2(bike.body.position.xy(), 0))?;
+            return Some(InteractAction::RightBike(id, tile));
+        }
+        if vehicle_interactions && let Some(id) = self.mount_candidate() {
+            let tile = self
+                .vehicles
+                .motorcycle(id)
+                .map(|bike| Tile3D::from_vec2(bike.body.position.xy(), 0))?;
+            return Some(InteractAction::Mount(id, tile));
+        }
+
         None
     }
 
-    fn resolve_interact(&mut self) {
-        let Some(action) = self.compute_interact_action() else {
+    fn resolve_interact(&mut self, vehicle_interactions: bool) {
+        let Some(action) = self.compute_interact_action(vehicle_interactions) else {
             return;
         };
         match action {
@@ -1397,6 +1882,9 @@ impl ActionGame {
             InteractAction::TakeStairs(stair_t, dest, landing, _) => {
                 self.take_stairs(stair_t, dest, landing);
             }
+            InteractAction::Mount(id, _) => self.try_mount(id),
+            InteractAction::Dismount(id, _) => self.try_dismount(id),
+            InteractAction::RightBike(id, _) => self.try_right_bike(id),
         }
     }
 
@@ -1519,7 +2007,7 @@ impl ActionGame {
     }
 
     pub fn player_render_state(&self) -> PlayerRenderState {
-        let interact = self.compute_interact_action();
+        let interact = self.compute_interact_action(true);
         let p_tile = Tile3D::from_vec2(self.player.position, self.player.floor);
         let range = self
             .inventory
@@ -1644,7 +2132,7 @@ impl ActionGame {
 
     pub fn near_loot(&self) -> bool {
         matches!(
-            self.compute_interact_action(),
+            self.compute_interact_action(true),
             Some(InteractAction::Search(..))
         )
     }
@@ -1741,7 +2229,7 @@ impl ActionGame {
     }
 
     pub fn hud(&self) -> ActionHud {
-        let interact = self.compute_interact_action();
+        let interact = self.compute_interact_action(true);
         let interact_prompt = interact.map_or(InteractPrompt::None, InteractAction::prompt);
         let equipped = self.inventory.equipped;
         let (active_mag, active_mag_cap, active_reserve) = match equipped {
@@ -1818,6 +2306,7 @@ impl ActionGame {
             outcome: self.outcome,
             player_pos: p_tile.pos(),
             district: self.current_district(),
+            mounted: self.vehicles.mounted_hud(),
         }
     }
 
@@ -1868,6 +2357,119 @@ impl ActionGame {
 mod tests {
     use super::*;
     use crate::WORLD_SIZE;
+
+    #[test]
+    fn disabled_motorcycle_skid_remains_in_registry_across_streaming_revisit() {
+        let mut game = ActionGame::county(42);
+        let (id, spawn, _) = game
+            .vehicles
+            .iter()
+            .find_map(|(id, state)| {
+                state.motorcycle().map(|bike| {
+                    (
+                        id,
+                        Tile3D::from_vec2(bike.body.position.xy(), 0),
+                        bike.condition,
+                    )
+                })
+            })
+            .expect("seeded bike");
+        let bike = game.vehicles.motorcycle_mut(id).unwrap();
+        bike.condition = 0;
+        bike.phase = MotorcyclePhase::Skidding;
+        bike.body.velocity = Vec3::new(6.0, 0.0, 0.0);
+        bike.recovery_ticks = 0;
+        game.step(ActionInput::default());
+        let moved = game.vehicles.motorcycle(id).unwrap().body.position;
+        assert!(
+            moved.xy().distance(spawn.center()) > 0.02,
+            "disabled bike should finish its skid"
+        );
+        assert_eq!(game.vehicles.motorcycle(id).unwrap().condition, 0);
+        assert!(
+            game.teleport(Tile3D::new(spawn.x + 100, spawn.y, 0))
+                .is_some()
+        );
+        assert!(game.vehicle_views().all(|(view_id, _)| view_id != id));
+        assert!(game.teleport(spawn).is_some());
+        let restored = game
+            .vehicle_views()
+            .find(|(view_id, _)| *view_id == id)
+            .expect("bike restored by live position")
+            .1;
+        assert!(
+            matches!(restored, VehicleView::Motorcycle(bike) if bike.condition == 0 && bike.phase == MotorcyclePhase::Skidding)
+        );
+    }
+
+    #[test]
+    fn mounted_bike_disables_and_releases_rider_when_contact_uses_last_condition() {
+        let mut game = ActionGame::county(42);
+        let (id, state) = game.vehicles.iter().next().expect("seeded bike");
+        let bike = state.motorcycle().unwrap();
+        let bike_pos = bike.body.position;
+        let forward = bike.body.facing_xy();
+        let target_pos = bike_pos + forward.extend(0.0) * 0.25 + Vec3::new(0.0, 0.0, 0.8);
+        let monster = game
+            .monsters
+            .iter_mut()
+            .find(|m| m.alive && m.floor == 0)
+            .expect("active infected");
+        monster.body.position = target_pos - Vec3::new(0.0, 0.0, 0.8);
+        monster.pos = target_pos.xy();
+        let bike = game.vehicles.motorcycle_mut(id).unwrap();
+        bike.condition = 1;
+        bike.body.velocity = forward.extend(0.0) * 2.0;
+        bike.phase = MotorcyclePhase::Rolling;
+        game.vehicles.set_mounted(Some(id));
+        game.sync_mounted_pose(id);
+
+        game.step(ActionInput {
+            ride: Some(RideInput::Motorcycle(MotorcycleInput::default())),
+            ..ActionInput::default()
+        });
+
+        assert_eq!(game.vehicles.motorcycle(id).unwrap().condition, 0);
+        assert_eq!(game.control_mode(), ControlMode::OnFoot);
+        assert!(
+            game.events()
+                .iter()
+                .any(|e| matches!(e, ActionEvent::VehicleCrash { id: got, .. } if *got == id))
+        );
+    }
+
+    #[test]
+    fn riderless_skid_hits_and_damages_an_infected() {
+        let mut game = ActionGame::county(42);
+        let (id, state) = game.vehicles.iter().next().expect("seeded bike");
+        let pos = state.body().position;
+        let forward = state.body().facing_xy();
+        let target_pos = pos + forward.extend(0.0) * 0.25 + Vec3::new(0.0, 0.0, 0.8);
+        let monster = game
+            .monsters
+            .iter_mut()
+            .find(|m| m.alive && m.floor == 0)
+            .expect("active infected");
+        monster.body.position = target_pos - Vec3::new(0.0, 0.0, 0.8);
+        monster.pos = target_pos.xy();
+        let monster_id = monster.id;
+        let monster_hp = monster.hp;
+        let bike = game.vehicles.motorcycle_mut(id).unwrap();
+        bike.phase = MotorcyclePhase::Skidding;
+        bike.body.velocity = forward.extend(0.0) * 2.0;
+
+        game.step(ActionInput::default());
+
+        assert!(
+            game.monsters
+                .iter()
+                .find(|m| m.id == monster_id)
+                .unwrap()
+                .hp
+                < monster_hp
+        );
+        assert!(game.events().iter().any(|e| matches!(e, ActionEvent::VehicleImpact { id: got, target: Some(target), .. } if *got == id && *target == monster_id)));
+    }
 
     #[test]
     fn projectile_views_use_3d_los_not_floor_visibility() {

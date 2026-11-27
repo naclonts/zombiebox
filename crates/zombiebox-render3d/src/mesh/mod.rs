@@ -2,9 +2,11 @@
 
 pub mod actors;
 pub mod buildings;
+pub mod motorcycle;
 pub mod primitives;
 pub mod props;
 pub mod terrain;
+pub mod vehicles;
 #[allow(clippy::excessive_precision)] // generated f32 literal table
 pub mod zombie;
 

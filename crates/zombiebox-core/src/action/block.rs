@@ -257,10 +257,12 @@ pub fn tile_spec(kind: TileKind, wall_mat: Material) -> (Material, u16) {
 pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
     use DamageKind::{
         Axe, Bullet, CausticBurst, MonsterMelee, RocketBlast, RocketSplash, ShotgunPellet,
+        VehicleImpact,
     };
     match mat {
         Material::Glass => match kind {
             Axe | Bullet | CausticBurst => 25,
+            VehicleImpact => 80,
             ShotgunPellet | MonsterMelee => 15,
             RocketBlast => 200,
             RocketSplash => 100,
@@ -272,6 +274,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
             RocketBlast => 300,
             RocketSplash => 120,
             MonsterMelee => 12,
+            VehicleImpact => 100,
         },
         Material::WoodDoor => match kind {
             Axe => 20,
@@ -280,6 +283,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
             RocketBlast => 300,
             RocketSplash => 120,
             CausticBurst => 25,
+            VehicleImpact => 120,
         },
         Material::TreeWood => match kind {
             Axe | CausticBurst => 20,
@@ -287,6 +291,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
             ShotgunPellet | MonsterMelee => 8,
             RocketBlast => 300,
             RocketSplash => 120,
+            VehicleImpact => 160,
         },
         Material::MetalPole => match kind {
             Axe | Bullet => 25,
@@ -295,6 +300,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
             RocketSplash => 120,
             MonsterMelee => 5,
             CausticBurst => 20,
+            VehicleImpact => 200,
         },
         Material::Drywall => match kind {
             Axe | ShotgunPellet | MonsterMelee => 2,
@@ -302,6 +308,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
             RocketBlast => 1200,
             RocketSplash => 350,
             CausticBurst => 15,
+            VehicleImpact => 90,
         },
         Material::WoodSiding | Material::BrickMasonry => match kind {
             Axe | ShotgunPellet | MonsterMelee => 1,
@@ -309,6 +316,7 @@ pub fn damage_against(mat: Material, kind: DamageKind) -> u16 {
             RocketBlast => 1200,
             RocketSplash => 380,
             CausticBurst => 10,
+            VehicleImpact => 120,
         },
         Material::None | Material::Flesh | Material::Caustic => 0,
     }

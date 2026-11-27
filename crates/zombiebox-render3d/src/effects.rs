@@ -6,7 +6,10 @@ use crate::{
     },
 };
 use glam::Vec3;
-use zombiebox_core::{ActionEvent, Floor, ProjectileKind, TileVisibility, Vec3 as SimVec3};
+use zombiebox_core::{
+    ActionEvent, Floor, MotorcyclePhase, ProjectileKind, TileVisibility, Vec3 as SimVec3,
+    VehicleView,
+};
 
 #[derive(Clone, Copy)]
 struct Spark {
@@ -163,6 +166,30 @@ impl Effects {
                     blast.floor,
                 );
             }
+        }
+        for (_, view) in &frame.dynamic.vehicles {
+            let VehicleView::Motorcycle(bike) = *view;
+            if bike.phase != MotorcyclePhase::Skidding || bike.speed.abs() < 0.5 {
+                continue;
+            }
+            let h = bike.body.heading;
+            let forward = Vec3::new(h.cos(), 0.0, h.sin());
+            let side = Vec3::new(-h.sin(), 0.0, h.cos());
+            let center = Vec3::new(
+                bike.body.position.x,
+                bike.body.position.z + 0.025,
+                bike.body.position.y,
+            ) - forward * 0.55;
+            let half_len = 0.45;
+            let half_w = 0.055;
+            let a = center - forward * half_len - side * half_w;
+            let b = center - forward * half_len + side * half_w;
+            let c = center + forward * half_len + side * half_w;
+            let d = center + forward * half_len - side * half_w;
+            let meta = VertexMeta::DEFAULT
+                .with_tag(GeometryTag::Effect)
+                .with_flags(MaterialFlags::UNLIT);
+            mesh.push_quad_with_normal(a, b, c, d, Vec3::Y, [0.12, 0.11, 0.10, 1.0], meta);
         }
         mesh.build()
     }

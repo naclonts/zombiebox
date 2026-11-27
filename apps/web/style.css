@@ -778,6 +778,30 @@ body.action-body {
   overflow:hidden;
   text-overflow:ellipsis;
 }
+
+.ride-readout {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  z-index: 4;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 8px 12px;
+  color: #e8f1df;
+  background: rgb(11 20 18 / 88%);
+  border: 1px solid rgb(203 219 167 / 42%);
+  border-radius: 6px;
+  font-size: 11px;
+  letter-spacing: .06em;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.ride-readout[hidden] { display: none; }
+.ride-readout strong { color: #f5d984; }
+.ride-grip.is-slipping { color: #ff986e; }
+.ride-controls { color: rgb(232 241 223 / 70%); white-space: nowrap; }
 .action-toast[hidden] {
   display:none;
 }

@@ -13,8 +13,8 @@ use std::{
 };
 use zombiebox_core::{
     ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionMode, ActionOutcome,
-    Command, Direction, Event, FloorTransition, Game, Ground, Material, Position, ProjectileKind,
-    Tile3D, Vec2, WORLD_SIZE, Weapon, county_survey_json,
+    Command, Direction, Event, FloorTransition, Game, Ground, Material, MotorcycleInput, Position,
+    ProjectileKind, RideInput, Tile3D, Vec2, WORLD_SIZE, Weapon, county_survey_json,
 };
 use zombiebox_render3d::{CameraFrame, CameraMode, GpuContext, Presentation};
 
@@ -79,6 +79,9 @@ const ZB_SFX_PLAYER_HURT: u64 = 1 << 25;
 const ZB_SFX_WIN: u64 = 1 << 26;
 const ZB_SFX_DEATH: u64 = 1 << 27;
 const ZB_SFX_STRUCTURAL_BREACH: u64 = 1 << 28;
+const ZB_SFX_VEHICLE_CRASH: u64 = 1 << 29;
+const ZB_SFX_VEHICLE_IMPACT: u64 = 1 << 30;
+const ZB_SFX_VEHICLE_SKID: u64 = 1 << 31;
 
 const INDEX: &str = include_str!("../../../apps/web/index.html");
 const ACTION_JS: &str = include_str!("../../../apps/web/action.js");
@@ -103,6 +106,7 @@ struct ActionSession {
     pending_reload: bool,
     pending_heal: bool,
     pending_select_weapon: Option<Weapon>,
+    frame_version: u8,
 }
 
 impl ActionSession {
@@ -118,6 +122,7 @@ impl ActionSession {
             pending_reload: false,
             pending_heal: false,
             pending_select_weapon: None,
+            frame_version: 2,
         }
     }
 
@@ -154,22 +159,27 @@ impl ActionSession {
     fn step_frame(
         &mut self,
         frame_time_ns: u64,
-        movement: Vec2,
-        aim: Option<Vec2>,
+        mut movement: Vec2,
+        mut aim: Option<Vec2>,
         action_flags: u32,
         select_weapon: Option<Weapon>,
+        mut ride: Option<MotorcycleInput>,
+        control_kind: u8,
     ) -> u64 {
         self.advance_clock(frame_time_ns);
 
         self.pending_fire_pulse |= (action_flags & ZB_INPUT_FIRE_PULSE) != 0;
-        self.pending_interact |= (action_flags & ZB_INPUT_INTERACT) != 0;
+        let request_mode_matches = self.frame_version != 3
+            || control_kind
+                == u8::from(self.game.control_mode() == zombiebox_core::ControlMode::Motorcycle);
+        self.pending_interact |= (action_flags & ZB_INPUT_INTERACT) != 0 && request_mode_matches;
         self.pending_reload |= (action_flags & ZB_INPUT_RELOAD) != 0;
         self.pending_heal |= (action_flags & ZB_INPUT_HEAL) != 0;
         if let Some(weapon) = select_weapon {
             self.pending_select_weapon = Some(weapon);
         }
 
-        let fire_hold = (action_flags & ZB_INPUT_FIRE_HOLD) != 0;
+        let mut fire_hold = (action_flags & ZB_INPUT_FIRE_HOLD) != 0;
         let mut frame_audio = 0u64;
 
         while self.partial_tick >= TICK_UNIT {
@@ -180,7 +190,9 @@ impl ActionSession {
             let use_medkit = mem::take(&mut self.pending_heal);
             let select_weapon = self.pending_select_weapon.take();
 
-            self.game.step(ActionInput {
+            let mode_before = self.game.control_mode();
+            let recovery_before = self.game.is_recovering_from_vehicle_crash();
+            let input = ActionInput {
                 movement,
                 aim,
                 fire,
@@ -190,7 +202,26 @@ impl ActionSession {
                 reload,
                 use_medkit,
                 quiet_walk: false,
-            });
+                ride: ride.map(RideInput::Motorcycle),
+            };
+            if self.frame_version == 3 {
+                self.game.step(input);
+            } else {
+                self.game.step_without_vehicle_interactions(input);
+            }
+            let mode_after = self.game.control_mode();
+            let recovery_after = self.game.is_recovering_from_vehicle_crash();
+            if mode_before != mode_after || recovery_before != recovery_after {
+                self.pending_fire_pulse = false;
+                self.pending_interact = false;
+                self.pending_reload = false;
+                self.pending_heal = false;
+                self.pending_select_weapon = None;
+                movement = Vec2::ZERO;
+                aim = None;
+                fire_hold = false;
+                ride = None;
+            }
             frame_audio |= events_to_sfx_mask(self.game.events());
             if let Some(renderer) = &mut self.renderer {
                 renderer.observe_tick(&self.game);
@@ -852,9 +883,57 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
     let mut weapon: i32 = ZB_WEAPON_UNCHANGED;
     let mut advance: u8 = 0;
     let mut camera: Option<u8> = None;
+    let mut frame_version: u8 = 2;
+    let mut control_kind: u8 = 0;
+    let mut steer = 0.0f32;
+    let mut throttle = 0.0f32;
+    let mut brake = 0.0f32;
+    let mut lean = 0.0f32;
+    let mut mounted_isometric = false;
 
     for (k, v) in fields {
         match k {
+            "frame_version" => match v {
+                "2" => frame_version = 2,
+                "3" => frame_version = 3,
+                _ => {
+                    return response_conn(
+                        400,
+                        "text/plain",
+                        b"invalid frame_version\n",
+                        keep_alive,
+                    );
+                }
+            },
+            "control_kind" => match v.parse::<u8>() {
+                Ok(kind) if kind <= 1 => control_kind = kind,
+                _ => {
+                    return response_conn(400, "text/plain", b"invalid control_kind\n", keep_alive);
+                }
+            },
+            "steer" | "throttle" | "brake" | "lean" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid ride axis\n", keep_alive);
+                };
+                match k {
+                    "steer" => steer = parsed,
+                    "throttle" => throttle = parsed,
+                    "brake" => brake = parsed,
+                    _ => lean = parsed,
+                }
+            }
+            "mounted_isometric" => match v {
+                "0" => mounted_isometric = false,
+                "1" => mounted_isometric = true,
+                _ => {
+                    return response_conn(
+                        400,
+                        "text/plain",
+                        b"invalid mounted_isometric\n",
+                        keep_alive,
+                    );
+                }
+            },
             "w" => {
                 let Ok(parsed) = v.parse::<u16>() else {
                     return response_conn(400, "text/plain", b"invalid w\n", keep_alive);
@@ -965,9 +1044,11 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
         .action_sessions
         .get_mut(&id)
         .expect("run checked above");
+    session.frame_version = frame_version;
     session.ensure_renderer(&gpu_context, u32::from(w), u32::from(h));
     let player_heading = session.game.player_body().heading;
     if let Some(renderer) = &mut session.renderer {
+        renderer.set_mounted_camera_preference(mounted_isometric);
         renderer
             .camera_mut()
             .set_look_ahead((flags & ZB_INPUT_LOOK_AHEAD) != 0);
@@ -982,31 +1063,50 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
 
     let audio_events = if advance == 1 {
         let look_dt = session.last_dt;
+        let mounted = session.game.control_mode() == zombiebox_core::ControlMode::Motorcycle;
         let camera = session
             .renderer
             .as_mut()
             .expect("renderer initialized")
             .camera_mut();
-        let (movement, aim) = match camera.mode() {
-            CameraMode::Chase | CameraMode::FirstPerson => {
-                // Browser mouse-look arrives as a direct angular delta so a flick
-                // turns by the same amount regardless of frame pacing and stops
-                // immediately when the pointer stops. Touch keeps the stick-rate path.
-                camera.adjust_first_person_look(look_yaw, look_pitch);
-                camera.apply_look_input(Vec2::new(ax, ay), look_dt);
-                let frame = camera.current_frame();
-                let movement = stick(mx, my, &frame);
-                let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
-                (movement, Some(aim))
-            }
-            _ => {
-                let frame = camera.current_frame();
-                let movement = stick(mx, my, &frame);
-                let aim = stick(ax, ay, &frame);
-                (movement, (aim != Vec2::ZERO).then_some(aim))
+        let (movement, aim) = if mounted {
+            (Vec2::ZERO, None)
+        } else {
+            match camera.mode() {
+                CameraMode::Chase | CameraMode::FirstPerson => {
+                    // Browser mouse-look arrives as a direct angular delta so a flick
+                    // turns by the same amount regardless of frame pacing and stops
+                    // immediately when the pointer stops. Touch keeps the stick-rate path.
+                    camera.adjust_first_person_look(look_yaw, look_pitch);
+                    camera.apply_look_input(Vec2::new(ax, ay), look_dt);
+                    let frame = camera.current_frame();
+                    let movement = stick(mx, my, &frame);
+                    let aim = Vec2::new(-frame.yaw.cos(), -frame.yaw.sin());
+                    (movement, Some(aim))
+                }
+                _ => {
+                    let frame = camera.current_frame();
+                    let movement = stick(mx, my, &frame);
+                    let aim = stick(ax, ay, &frame);
+                    (movement, (aim != Vec2::ZERO).then_some(aim))
+                }
             }
         };
-        session.step_frame(t_ns, movement, aim, flags, select_weapon)
+        let ride = (frame_version == 3 && control_kind == 1).then_some(MotorcycleInput {
+            steer,
+            throttle,
+            brake,
+            lean,
+        });
+        session.step_frame(
+            t_ns,
+            movement,
+            aim,
+            flags,
+            select_weapon,
+            ride,
+            control_kind,
+        )
     } else {
         session.reset_clock_and_latches();
         0
@@ -1032,7 +1132,11 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
             );
         }
     };
-    let payload = encode_zbf2_frame(&session.game, w, h, audio_events, &pixels);
+    let payload = if session.frame_version == 3 {
+        encode_zbf3_frame(&session.game, w, h, audio_events, &pixels)
+    } else {
+        encode_zbf2_frame(&session.game, w, h, audio_events, &pixels)
+    };
     response_conn(200, "application/octet-stream", &payload, keep_alive)
 }
 
@@ -1116,6 +1220,31 @@ fn encode_zbf2_frame(
     let mut out = Vec::with_capacity(64 + pixels.len());
     out.extend_from_slice(&header);
     out.extend_from_slice(pixels);
+    out
+}
+
+fn encode_zbf3_frame(
+    game: &ActionGame,
+    w: u16,
+    h: u16,
+    audio_events: u64,
+    pixels: &[u8],
+) -> Vec<u8> {
+    let mut out = encode_zbf2_frame(game, w, h, audio_events, pixels);
+    out[0..4].copy_from_slice(b"ZBF3");
+    let mounted = game.hud().mounted;
+    let mut ext = [0u8; 8];
+    if let Some(hud) = mounted {
+        ext[0] = 1;
+        ext[1] = hud.grip_use;
+        ext[2..4].copy_from_slice(&hud.speed_mph_x10.to_le_bytes());
+        ext[4] = hud.engine_load;
+        ext[5] = 1; // occupied riding state
+        ext[6] = hud.condition_pct;
+    }
+    ext[0] = u8::from(game.control_mode() == zombiebox_core::ControlMode::Motorcycle);
+    // Preserve the v2 header and insert the v3 extension before its RGBA pixels.
+    out.splice(64..64, ext);
     out
 }
 
@@ -1250,6 +1379,9 @@ fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
             }
             ActionEvent::Died => mask |= ZB_SFX_DEATH,
             ActionEvent::Won => mask |= ZB_SFX_WIN,
+            ActionEvent::VehicleCrash { .. } => mask |= ZB_SFX_VEHICLE_CRASH,
+            ActionEvent::VehicleSkidStarted { .. } => mask |= ZB_SFX_VEHICLE_SKID,
+            ActionEvent::VehicleImpact { .. } => mask |= ZB_SFX_VEHICLE_IMPACT,
         }
     }
     mask
@@ -1398,6 +1530,42 @@ fn response_conn(status: u16, mime: &str, body: &[u8], keep_alive: bool) -> Vec<
 mod tests {
     use super::*;
 
+    fn game_at_starter_motorcycle() -> ActionGame {
+        let mut game = ActionGame::county(42);
+        let (_, bike_pos) = game
+            .vehicle_views()
+            .find_map(|(id, view)| {
+                (id.0 & 0xff == 0).then(|| match view {
+                    zombiebox_core::VehicleView::Motorcycle(bike) => (id, bike.body.position.xy()),
+                })
+            })
+            .expect("seed 42 starter motorcycle");
+        assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+        game
+    }
+
+    fn game_after_low_speed_tip() -> ActionGame {
+        let mut game = game_at_starter_motorcycle();
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        for _ in 0..20 {
+            game.step(ActionInput {
+                ride: Some(RideInput::Motorcycle(MotorcycleInput {
+                    lean: 1.0,
+                    ..MotorcycleInput::default()
+                })),
+                ..ActionInput::default()
+            });
+            if game.control_mode() == zombiebox_core::ControlMode::OnFoot {
+                break;
+            }
+        }
+        assert!(game.is_recovering_from_vehicle_crash());
+        game
+    }
+
     fn split_http_response(resp: &[u8]) -> (&str, &[u8]) {
         let idx = resp
             .windows(4)
@@ -1428,6 +1596,81 @@ mod tests {
     fn command_parser_accepts_only_documented_ascii_commands() {
         assert!(b".NESWLA".iter().all(|b| command(*b).is_some()));
         assert!(b" neswla\n".iter().all(|b| command(*b).is_none()));
+    }
+
+    #[test]
+    fn v3_interact_requires_matching_authoritative_control_kind() {
+        let mut game = game_at_starter_motorcycle();
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert_eq!(game.control_mode(), zombiebox_core::ControlMode::Motorcycle);
+
+        let mut session = ActionSession::new(game);
+        session.frame_version = 3;
+        session.partial_tick = TICK_UNIT;
+        session.step_frame(0, Vec2::ZERO, None, ZB_INPUT_INTERACT, None, None, 0);
+        assert_eq!(
+            session.game.control_mode(),
+            zombiebox_core::ControlMode::Motorcycle,
+            "a stale on-foot Interact must not dismount a rider"
+        );
+
+        session.partial_tick = TICK_UNIT;
+        session.step_frame(0, Vec2::ZERO, None, ZB_INPUT_INTERACT, None, None, 1);
+        assert_eq!(
+            session.game.control_mode(),
+            zombiebox_core::ControlMode::OnFoot,
+            "a matching mounted Interact still dismounts at rest"
+        );
+    }
+
+    #[test]
+    fn v3_mount_interact_is_consumed_once_across_elapsed_ticks() {
+        let mut session = ActionSession::new(game_at_starter_motorcycle());
+        session.frame_version = 3;
+        session.partial_tick = 2 * TICK_UNIT;
+        session.step_frame(0, Vec2::ZERO, None, ZB_INPUT_INTERACT, None, None, 0);
+        assert_eq!(
+            session.game.control_mode(),
+            zombiebox_core::ControlMode::Motorcycle,
+            "the mount pulse must not be replayed as a dismount on the next tick"
+        );
+        assert!(!session.pending_interact);
+    }
+
+    #[test]
+    fn v3_recovery_expiry_clears_cached_movement_for_remaining_ticks() {
+        let mut batched = ActionSession::new(game_after_low_speed_tip());
+        let mut split = ActionSession::new(game_after_low_speed_tip());
+        assert_eq!(batched.game.hud().tick, split.game.hud().tick);
+        batched.frame_version = 3;
+        split.frame_version = 3;
+        let movement = Vec2::new(0.0, -1.0);
+
+        batched.partial_tick = 46 * TICK_UNIT;
+        batched.step_frame(0, movement, None, 0, None, None, 0);
+
+        split.partial_tick = 45 * TICK_UNIT;
+        split.step_frame(0, movement, None, 0, None, None, 0);
+        assert!(!split.game.is_recovering_from_vehicle_crash());
+        split.step_frame(
+            TICK_UNIT.div_ceil(u64::from(ACTION_TICKS_PER_SECOND)),
+            Vec2::ZERO,
+            None,
+            0,
+            None,
+            None,
+            0,
+        );
+
+        assert_eq!(batched.game.hud().tick, split.game.hud().tick);
+        assert_eq!(
+            batched.game.player_pose(),
+            split.game.player_pose(),
+            "the final same-request tick should use the neutralized input after recovery expires"
+        );
     }
 
     #[test]
@@ -1536,6 +1779,27 @@ mod tests {
                 .mode(),
             CameraMode::FirstPerson
         );
+
+        let v3 = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&flags=0&weapon=-1&advance=0&frame_version=3&control_kind=0&steer=0&throttle=0&brake=0&lean=0&mounted_isometric=0",
+            &mut state,
+        );
+        let (_, v3_body) = split_http_response(&v3);
+        assert_eq!(&v3_body[0..4], b"ZBF3");
+        assert_eq!(v3_body.len(), 72 + 320 * 180 * 4);
+        assert_eq!(v3_body[64], 0, "on-foot control kind is authoritative");
+
+        let legacy = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&flags=0&weapon=-1&advance=0",
+            &mut state,
+        );
+        let (_, legacy_body) = split_http_response(&legacy);
+        assert_eq!(&legacy_body[0..4], b"ZBF2");
+        assert_eq!(legacy_body.len(), 64 + 320 * 180 * 4);
     }
 
     #[test]

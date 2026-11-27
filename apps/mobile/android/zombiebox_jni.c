@@ -48,8 +48,9 @@ JNIEXPORT void JNICALL Java_game_zombiebox_mobile_NativeGame_resetClockV2(
     zb_action_v2_reset_clock((ZbAction *)(intptr_t)handle);
 }
 
-static void write_frame_output(JNIEnv *env, jintArray out_state, const ZbAction *run, const ZbActionFrameOutput *out) {
-    jint packed[12];
+static void write_frame_output(JNIEnv *env, jintArray out_state, const ZbAction *run, const ZbActionFrameOutputV3 *frame) {
+    const ZbActionFrameOutput *out = &frame->base;
+    jint packed[13];
     packed[0] = pack_u8x4(out->health, out->max_health, out->floor, out->equipped_weapon);
     packed[1] = pack_u8x4(out->owned_weapons_mask, out->active_mag, out->active_mag_cap,
                           out->reload_progress);
@@ -71,9 +72,11 @@ static void write_frame_output(JNIEnv *env, jintArray out_state, const ZbAction 
                        | (((uint32_t)(loc.mode & 0x0Fu)) << 28));
     packed[9] = (jint)(uint32_t)(out->audio_events & UINT64_C(0xFFFFFFFF));
     packed[10] = (jint)(uint32_t)(out->audio_events >> 32);
-    packed[11] = 0;
+    packed[11] = pack_u8x4(frame->control_kind, frame->grip_use, frame->engine_load,
+                           frame->riding_flags);
+    packed[12] = pack_u16x2(frame->speed_mph_x10, frame->condition_pct);
 
-    (*env)->SetIntArrayRegion(env, out_state, 0, 12, packed);
+    (*env)->SetIntArrayRegion(env, out_state, 0, 13, packed);
 }
 
 JNIEXPORT jboolean JNICALL Java_game_zombiebox_mobile_NativeGame_locationV2(
@@ -159,24 +162,32 @@ JNIEXPORT jboolean JNICALL Java_game_zombiebox_mobile_NativeGame_resizeSurface(
 }
 JNIEXPORT jboolean JNICALL Java_game_zombiebox_mobile_NativeGame_frameSurface(
     JNIEnv *env, jclass type, jlong handle, jlong frame_time_ns, jfloat move_x, jfloat move_y,
-    jfloat aim_x, jfloat aim_y, jint action_flags, jint select_weapon, jintArray out_state) {
+    jfloat aim_x, jfloat aim_y, jint action_flags, jint select_weapon, jint control_kind,
+    jfloat steer, jfloat throttle, jfloat brake, jfloat lean, jboolean mounted_isometric,
+    jintArray out_state) {
     (void)type;
-    if (!out_state || (*env)->GetArrayLength(env, out_state) < 12) return JNI_FALSE;
-    ZbActionFrameInput input = { move_x, move_y, aim_x, aim_y, (uint32_t)action_flags, (int32_t)select_weapon };
-    ZbActionFrameOutput out;
+    if (!out_state || (*env)->GetArrayLength(env, out_state) < 13) return JNI_FALSE;
+    ZbActionFrameInputV3 input = {
+        .base = { move_x, move_y, aim_x, aim_y, (uint32_t)action_flags, (int32_t)select_weapon },
+        .steer = steer, .throttle = throttle, .brake = brake, .lean = lean,
+        .control_kind = (uint8_t)control_kind,
+        .mounted_camera = mounted_isometric ? ZB_MOUNTED_ISOMETRIC : ZB_MOUNTED_CHASE,
+    };
+    ZbActionFrameOutputV3 out;
     ZbAction *run = (ZbAction *)(intptr_t)handle;
-    if (!zb_action_v2_frame_surface(run, (uint64_t)frame_time_ns, &input, &out)) return JNI_FALSE;
+    if (!zb_action_v3_frame_surface(run, (uint64_t)frame_time_ns, &input, &out)) return JNI_FALSE;
     ZbFrameTiming timing;
     ZbFramePercentiles percentiles;
     if (zb_action_v2_frame_timing(run, &timing) && timing.frame_number % 120 == 0
             && zb_action_v2_frame_percentiles(run, &percentiles)) {
         __android_log_print(ANDROID_LOG_DEBUG, "Zombiebox3D",
             "frame=%" PRIu64 " samples=%" PRIu32 " p50_ms=%.2f p95_ms=%.2f p99_ms=%.2f "
-            "prepare_ms=%.2f render_ms=%.2f chunks=%" PRIu32 " instances=%" PRIu32 " scale=%" PRIu32,
+            "prepare_ms=%.2f render_ms=%.2f chunks=%" PRIu32 " instances=%" PRIu32
+            " triangles=%" PRIu64 " scale=%" PRIu32 " mph_x10=%u",
             timing.frame_number, percentiles.samples, percentiles.p50_ns / 1e6,
             percentiles.p95_ns / 1e6, percentiles.p99_ns / 1e6, timing.prepare_ns / 1e6,
             timing.render_ns / 1e6, timing.chunks_drawn, timing.instances_drawn,
-            timing.resolution_percent);
+            timing.triangles, timing.resolution_percent, (unsigned)out.speed_mph_x10);
     }
     write_frame_output(env, out_state, run, &out);
     return JNI_TRUE;

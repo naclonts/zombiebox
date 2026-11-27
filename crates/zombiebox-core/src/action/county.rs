@@ -210,6 +210,12 @@ impl CountyStage {
             && pos.y < self.window_origin.y + WINDOW_SIZE
     }
 
+    /// True when `pos` currently has materialized collision and support cells.
+    #[inline]
+    pub(crate) fn contains_world_tile(&self, pos: Position) -> bool {
+        Self::in_world(pos) && self.in_window(pos)
+    }
+
     #[inline]
     fn window_cell_idx(&self, wx: i32, wy: i32, fl: usize) -> Option<usize> {
         let lx = wx - self.window_origin.x;

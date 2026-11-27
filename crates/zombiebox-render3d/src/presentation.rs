@@ -11,12 +11,16 @@ use crate::gpu::{
 };
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
 use crate::mesh::buildings::build_chunk_buildings_mesh;
+use crate::mesh::motorcycle::{MotorcyclePart, motorcycle_part_mesh};
 use crate::mesh::props::{build_chunk_props_mesh, cache_instances, cache_mesh};
+use crate::mesh::vehicles::{MotorcycleTransforms, default_motorcycle_paint};
 use crate::telemetry::{FramePercentiles, FrameTelemetry, FrameTiming};
 use crate::{
     CameraFrame, CameraMode, CameraRig, CameraTarget, FrameSnapshot, RgbaImage, SceneConfig,
     SceneManager, build_chunk_terrain_mesh, weapon_look_ahead_distance,
 };
+use std::collections::BTreeMap;
+use zombiebox_core::{MotorcyclePhase, VehicleView};
 
 /// Shared camera, scene, and rendering state for a single action run.
 pub struct Presentation {
@@ -26,13 +30,19 @@ pub struct Presentation {
     actors: ActorAnimator,
     actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
     cache_prototypes: [PrototypeMeshId; 2],
+    motorcycle_prototypes: [PrototypeMeshId; 4],
+    motorcycle_wheel_phase: BTreeMap<zombiebox_core::VehicleId, f32>,
+    mounted_camera_preference_isometric: bool,
+    was_mounted: bool,
+    on_foot_camera_mode: CameraMode,
     effects: Effects,
     telemetry: FrameTelemetry,
     adaptive_resolution: bool,
 }
 
 const CACHE_BATCH_COUNT: usize = 2;
-const BATCH_COUNT: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT;
+const MOTORCYCLE_BATCH_COUNT: usize = 4;
+const BATCH_COUNT: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
 
 impl Presentation {
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
@@ -47,6 +57,25 @@ impl Presentation {
             renderer.register_prototype(ctx, "closed_cache", cache_mesh(false)),
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
         ];
+        let motorcycle_prototypes = [
+            MotorcyclePart::Body,
+            MotorcyclePart::Steering,
+            MotorcyclePart::FrontWheel,
+            MotorcyclePart::RearWheel,
+        ]
+        .map(|part| {
+            let mesh = motorcycle_part_mesh(part, default_motorcycle_paint());
+            renderer.register_prototype(
+                ctx,
+                match part {
+                    MotorcyclePart::Body => "motorcycle_body",
+                    MotorcyclePart::Steering => "motorcycle_steering",
+                    MotorcyclePart::FrontWheel => "motorcycle_front_wheel",
+                    MotorcyclePart::RearWheel => "motorcycle_rear_wheel",
+                },
+                &mesh,
+            )
+        });
         Self {
             camera: CameraRig::new(width, height),
             scene: SceneManager::with_config(SceneConfig {
@@ -59,6 +88,11 @@ impl Presentation {
             actors: ActorAnimator::new(),
             actor_prototypes,
             cache_prototypes,
+            motorcycle_prototypes,
+            motorcycle_wheel_phase: BTreeMap::new(),
+            mounted_camera_preference_isometric: false,
+            was_mounted: false,
+            on_foot_camera_mode: CameraMode::default(),
             effects: Effects::new(),
             telemetry: FrameTelemetry::default(),
             adaptive_resolution: false,
@@ -73,11 +107,21 @@ impl Presentation {
         &mut self.camera
     }
 
+    /// Select the fixed isometric mounted view (`true`) or heading-following chase view (`false`).
+    pub fn set_mounted_camera_preference(&mut self, isometric: bool) {
+        self.mounted_camera_preference_isometric = isometric;
+    }
+
     pub fn observe_tick(&mut self, game: &ActionGame) {
         self.scene.observe_tick(game);
     }
 
     pub fn reset(&mut self) {
+        if self.was_mounted {
+            self.camera.set_mode(self.on_foot_camera_mode);
+        }
+        self.was_mounted = false;
+        self.motorcycle_wheel_phase.clear();
         self.scene.reset();
         self.renderer.chunks_mut().clear();
         self.actors = ActorAnimator::new();
@@ -129,12 +173,43 @@ impl Presentation {
     ) {
         let body = game.player_body();
         let pose = game.player_pose();
+        let mounted_id = game.mounted_vehicle();
+        let mounted_view = mounted_id.and_then(|id| {
+            game.vehicle_views()
+                .find_map(|(candidate, view)| (candidate == id).then_some(view))
+        });
+        if mounted_id.is_some() && !self.was_mounted {
+            self.on_foot_camera_mode = self.camera.mode();
+        }
+        if mounted_id.is_some() {
+            let desired = if self.mounted_camera_preference_isometric {
+                CameraMode::Isometric
+            } else {
+                CameraMode::Chase
+            };
+            if self.camera.mode() != desired {
+                self.camera.set_mode(desired);
+            }
+        } else if self.was_mounted && self.camera.mode() != self.on_foot_camera_mode {
+            self.camera.set_mode(self.on_foot_camera_mode);
+        }
+        self.was_mounted = mounted_id.is_some();
         let target = CameraTarget {
-            position: body.position,
-            velocity: body.velocity,
+            position: mounted_view.map_or(body.position, |v| match v {
+                VehicleView::Motorcycle(m) => m.body.position,
+            }),
+            velocity: mounted_view.map_or(body.velocity, |v| match v {
+                VehicleView::Motorcycle(m) => m.body.velocity,
+            }),
             aim: pose.facing,
-            heading: body.heading,
-            look_ahead_distance: weapon_look_ahead_distance(game.inventory().equipped),
+            heading: mounted_view.map_or(body.heading, |v| match v {
+                VehicleView::Motorcycle(m) => m.body.heading,
+            }),
+            look_ahead_distance: if mounted_id.is_some() {
+                0.0
+            } else {
+                weapon_look_ahead_distance(game.inventory().equipped)
+            },
         };
         self.camera.set_obstruction_distance(None);
         let mut camera = self.camera.update(target, dt);
@@ -189,12 +264,43 @@ impl Presentation {
                     .with_tint(cache.tint),
             );
         }
+        self.motorcycle_wheel_phase.retain(|id, _| {
+            frame
+                .dynamic
+                .vehicles
+                .iter()
+                .any(|(vehicle_id, _)| vehicle_id == id)
+        });
+        let vehicle_base = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT;
+        for (id, view) in &frame.dynamic.vehicles {
+            let VehicleView::Motorcycle(moto) = *view;
+            let speed = moto.speed.abs();
+            let phase = self.motorcycle_wheel_phase.entry(*id).or_default();
+            if dt.is_finite() {
+                *phase += speed * dt.clamp(0.0, 0.1) / (0.21 * 2.0);
+            }
+            let transforms = MotorcycleTransforms::from_view(moto, *phase);
+            let parts = [
+                MotorcyclePart::Body,
+                MotorcyclePart::Steering,
+                MotorcyclePart::FrontWheel,
+                MotorcyclePart::RearWheel,
+            ];
+            for (index, part) in parts.into_iter().enumerate() {
+                let mut instance = InstanceRaw::from_transform(transforms.part_transform(part));
+                if moto.phase == MotorcyclePhase::Tipped || moto.condition == 0 {
+                    instance = instance.with_tint([0.62, 0.62, 0.62, 1.0]);
+                }
+                instances[vehicle_base + index].push(instance);
+            }
+        }
         (camera, frame, lighting, instances)
     }
 
     fn batches<'a>(
         actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
         cache_prototypes: [PrototypeMeshId; 2],
+        motorcycle_prototypes: [PrototypeMeshId; 4],
         instances: &'a [Vec<InstanceRaw>; BATCH_COUNT],
     ) -> Vec<InstanceBatch<'a>> {
         let mut batches = Vec::with_capacity(BATCH_COUNT);
@@ -210,6 +316,12 @@ impl Presentation {
                 instances: &instances[ActorPart::MESH_COUNT + index],
             });
         }
+        for (index, mesh) in motorcycle_prototypes.into_iter().enumerate() {
+            batches.push(InstanceBatch {
+                mesh,
+                instances: &instances[ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + index],
+            });
+        }
         batches
     }
 
@@ -222,7 +334,12 @@ impl Presentation {
         let started = Instant::now();
         let (camera, frame, lighting, instances) = self.prepare(ctx, game, dt);
         let effects = self.effects.prepare(&frame, dt);
-        let batches = Self::batches(self.actor_prototypes, self.cache_prototypes, &instances);
+        let batches = Self::batches(
+            self.actor_prototypes,
+            self.cache_prototypes,
+            self.motorcycle_prototypes,
+            &instances,
+        );
         let prepare_time = started.elapsed();
         let render_started = Instant::now();
         let rendered =
@@ -269,7 +386,12 @@ impl Presentation {
         self.camera.config_mut().iso_pixels_per_unit = original_iso_scale;
         self.camera.set_display_surface(config.width, config.height);
         let effects = self.effects.prepare(&frame, dt);
-        let batches = Self::batches(self.actor_prototypes, self.cache_prototypes, &instances);
+        let batches = Self::batches(
+            self.actor_prototypes,
+            self.cache_prototypes,
+            self.motorcycle_prototypes,
+            &instances,
+        );
         let prepare_time = started.elapsed();
         let render_started = Instant::now();
         let rendered = self.renderer.render_to_surface(

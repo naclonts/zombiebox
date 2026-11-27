@@ -82,6 +82,11 @@ internal class ZombieboxSurfaceManager : SimpleViewManager<ZombieboxSurfaceView>
         view.cameraMode = cameraMode ?: "isometric"
     }
 
+    @ReactProp(name = "mountedIsometric", defaultBoolean = false)
+    override fun setMountedIsometric(view: ZombieboxSurfaceView, mountedIsometric: Boolean) {
+        view.mountedIsometric = mountedIsometric
+    }
+
     override fun openCounty(view: ZombieboxSurfaceView) = view.openCounty()
 
     override fun requestInteract(view: ZombieboxSurfaceView) = view.requestInteract()

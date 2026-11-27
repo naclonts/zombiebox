@@ -1,8 +1,9 @@
 use std::mem;
 
 use zombiebox_core::{
-    ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionOutcome, FloorTransition,
-    Material, ProjectileKind, Tile3D, Vec2, Weapon,
+    ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionInput, ActionOutcome, ControlMode,
+    FloorTransition, InteractPrompt, Material, MotorcycleInput, ProjectileKind, RideInput, Tile3D,
+    Vec2, Weapon,
 };
 
 const TICK_UNIT: u64 = 1_000_000_000;
@@ -57,6 +58,15 @@ const ZB_SFX_PLAYER_HURT: u64 = 1 << 25;
 const ZB_SFX_WIN: u64 = 1 << 26;
 const ZB_SFX_DEATH: u64 = 1 << 27;
 const ZB_SFX_STRUCTURAL_BREACH: u64 = 1 << 28;
+const ZB_SFX_VEHICLE_CRASH: u64 = 1 << 29;
+const ZB_SFX_VEHICLE_SKID: u64 = 1 << 30;
+const ZB_SFX_VEHICLE_IMPACT: u64 = 1 << 31;
+
+const ZB_CONTROL_ON_FOOT: u8 = 0;
+const ZB_CONTROL_MOTORCYCLE: u8 = 1;
+const ZB_MOUNTED_CHASE: u8 = 0;
+const ZB_MOUNTED_ISOMETRIC: u8 = 1;
+const ZB_RIDE_RECOVERING: u8 = 1 << 0;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -96,6 +106,50 @@ pub struct ZbActionFrameOutput {
     pub caches_total: u8,
     pub interact_kind: u8,
     pub objective_kind: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ZbActionFrameInputV3 {
+    pub base: ZbActionFrameInput,
+    pub steer: f32,
+    pub throttle: f32,
+    pub brake: f32,
+    pub lean: f32,
+    pub control_kind: u8,
+    pub mounted_camera: u8,
+    pub reserved: [u8; 2],
+}
+
+impl ZbActionFrameInputV3 {
+    fn ride_input(&self) -> Result<Option<RideInput>, ()> {
+        if !matches!(self.mounted_camera, ZB_MOUNTED_CHASE | ZB_MOUNTED_ISOMETRIC) {
+            return Err(());
+        }
+        match self.control_kind {
+            ZB_CONTROL_ON_FOOT => Ok(None),
+            ZB_CONTROL_MOTORCYCLE => Ok(Some(RideInput::Motorcycle(MotorcycleInput {
+                steer: self.steer,
+                throttle: self.throttle,
+                brake: self.brake,
+                lean: self.lean,
+            }))),
+            _ => Err(()),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ZbActionFrameOutputV3 {
+    pub base: ZbActionFrameOutput,
+    pub control_kind: u8,
+    pub grip_use: u8,
+    pub speed_mph_x10: u16,
+    pub engine_load: u8,
+    pub riding_flags: u8,
+    pub condition_pct: u8,
+    pub reserved: u8,
 }
 
 #[repr(C)]
@@ -160,15 +214,19 @@ impl ZbAction {
     fn reset_clock_and_latches(&mut self) {
         self.last_frame = None;
         self.partial_tick = 0;
+        self.clear_latches();
+        #[cfg(target_os = "android")]
+        if let Some(gpu) = &mut self.gpu {
+            gpu.presentation.interrupt_frame_timing();
+        }
+    }
+
+    fn clear_latches(&mut self) {
         self.pending_fire_pulse = false;
         self.pending_interact = false;
         self.pending_reload = false;
         self.pending_heal = false;
         self.pending_select_weapon = None;
-        #[cfg(target_os = "android")]
-        if let Some(gpu) = &mut self.gpu {
-            gpu.presentation.interrupt_frame_timing();
-        }
     }
 
     fn advance_clock(&mut self, frame_time_ns: u64) {
@@ -181,21 +239,34 @@ impl ZbAction {
         self.partial_tick += elapsed * u64::from(ACTION_TICKS_PER_SECOND);
     }
 
-    fn advance_v2(
+    fn advance(
         &mut self,
         frame_time_ns: u64,
         movement: Vec2,
         aim: Option<Vec2>,
-        action_flags: u32,
+        mut action_flags: u32,
         select_weapon: Option<Weapon>,
+        ride: Option<RideInput>,
+        vehicles_enabled: bool,
     ) -> u64 {
         self.advance_clock(frame_time_ns);
 
+        let source_mode = if ride.is_some() {
+            ControlMode::Motorcycle
+        } else {
+            ControlMode::OnFoot
+        };
+        let mut accept_input = source_mode == self.game.control_mode()
+            && !self.game.is_recovering_from_vehicle_crash();
+        if !accept_input {
+            self.clear_latches();
+            action_flags = 0;
+        }
         self.pending_fire_pulse |= (action_flags & ZB_INPUT_FIRE_PULSE) != 0;
         self.pending_interact |= (action_flags & ZB_INPUT_INTERACT) != 0;
         self.pending_reload |= (action_flags & ZB_INPUT_RELOAD) != 0;
         self.pending_heal |= (action_flags & ZB_INPUT_HEAL) != 0;
-        if let Some(weapon) = select_weapon {
+        if let Some(weapon) = select_weapon.filter(|_| accept_input) {
             self.pending_select_weapon = Some(weapon);
         }
 
@@ -204,15 +275,15 @@ impl ZbAction {
 
         while self.partial_tick >= TICK_UNIT {
             self.partial_tick -= TICK_UNIT;
-            let fire = mem::take(&mut self.pending_fire_pulse) || fire_hold;
+            let fire = mem::take(&mut self.pending_fire_pulse) || (accept_input && fire_hold);
             let interact = mem::take(&mut self.pending_interact);
             let reload = mem::take(&mut self.pending_reload);
             let use_medkit = mem::take(&mut self.pending_heal);
             let select_weapon = self.pending_select_weapon.take();
 
-            self.game.step(ActionInput {
-                movement,
-                aim,
+            let input = ActionInput {
+                movement: if accept_input { movement } else { Vec2::ZERO },
+                aim: aim.filter(|_| accept_input),
                 fire,
                 interact,
                 select_weapon,
@@ -220,7 +291,19 @@ impl ZbAction {
                 reload,
                 use_medkit,
                 quiet_walk: false,
-            });
+                ride: ride.filter(|_| accept_input),
+            };
+            if vehicles_enabled {
+                self.game.step(input);
+            } else {
+                self.game.step_without_vehicle_interactions(input);
+            }
+            if self.game.control_mode() != source_mode
+                || self.game.is_recovering_from_vehicle_crash()
+            {
+                accept_input = false;
+                self.clear_latches();
+            }
             frame_audio |= events_to_sfx_mask(self.game.events());
             #[cfg(target_os = "android")]
             if let Some(gpu) = &mut self.gpu {
@@ -230,7 +313,7 @@ impl ZbAction {
         frame_audio
     }
 
-    fn output_v2(&self, audio_events: u64) -> ZbActionFrameOutput {
+    fn output_base(&self, audio_events: u64) -> ZbActionFrameOutput {
         let hud = self.game.hud();
         let low_ammo = matches!(
             hud.equipped,
@@ -289,6 +372,33 @@ impl ZbAction {
             caches_total: hud.caches_total,
             interact_kind: hud.interact_prompt as u8,
             objective_kind: hud.objective_kind as u8,
+        }
+    }
+
+    fn output_v2(&self, audio_events: u64) -> ZbActionFrameOutput {
+        let mut out = self.output_base(audio_events);
+        if out.interact_kind >= InteractPrompt::Mount as u8 {
+            out.interact_kind = InteractPrompt::None as u8;
+        }
+        out.audio_events &= ZB_SFX_VEHICLE_CRASH - 1;
+        out
+    }
+
+    fn output_v3(&self, audio_events: u64) -> ZbActionFrameOutputV3 {
+        let mounted = self.game.hud().mounted;
+        ZbActionFrameOutputV3 {
+            base: self.output_base(audio_events),
+            control_kind: mounted.map_or(ZB_CONTROL_ON_FOOT, |_| ZB_CONTROL_MOTORCYCLE),
+            grip_use: mounted.map_or(0, |hud| hud.grip_use),
+            speed_mph_x10: mounted.map_or(0, |hud| hud.speed_mph_x10),
+            engine_load: mounted.map_or(0, |hud| hud.engine_load),
+            riding_flags: if self.game.is_recovering_from_vehicle_crash() {
+                ZB_RIDE_RECOVERING
+            } else {
+                0
+            },
+            condition_pct: mounted.map_or(0, |hud| hud.condition_pct),
+            reserved: 0,
         }
     }
 }
@@ -387,6 +497,9 @@ fn events_to_sfx_mask(events: &[ActionEvent]) -> u64 {
             }
             ActionEvent::Died => mask |= ZB_SFX_DEATH,
             ActionEvent::Won => mask |= ZB_SFX_WIN,
+            ActionEvent::VehicleCrash { .. } => mask |= ZB_SFX_VEHICLE_CRASH,
+            ActionEvent::VehicleSkidStarted { .. } => mask |= ZB_SFX_VEHICLE_SKID,
+            ActionEvent::VehicleImpact { .. } => mask |= ZB_SFX_VEHICLE_IMPACT,
         }
     }
     mask
@@ -442,14 +555,54 @@ pub unsafe extern "C" fn zb_action_v2_update(
     };
     let movement = world_stick(input.move_x, input.move_y);
     let aim = world_stick(input.aim_x, input.aim_y);
-    let audio = run.advance_v2(
+    let audio = run.advance(
         frame_time_ns,
         movement,
         (aim != Vec2::ZERO).then_some(aim),
         input.action_flags,
         weapon,
+        None,
+        false,
     );
     unsafe { out.write(run.output_v2(audio)) };
+    true
+}
+
+/// Advance a run with simulation-space foot input or raw motorcycle axes.
+///
+/// # Safety
+/// Non-null pointers must be valid, properly aligned and disjoint during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zb_action_v3_update(
+    run: *mut ZbAction,
+    frame_time_ns: u64,
+    input: *const ZbActionFrameInputV3,
+    out: *mut ZbActionFrameOutputV3,
+) -> bool {
+    let (Some(run), Some(input)) = (unsafe { run.as_mut() }, unsafe { input.as_ref() }) else {
+        return false;
+    };
+    if out.is_null() {
+        return false;
+    }
+    let (Ok(weapon), Ok(ride)) = (
+        parse_select_weapon(input.base.select_weapon),
+        input.ride_input(),
+    ) else {
+        return false;
+    };
+    let movement = world_stick(input.base.move_x, input.base.move_y);
+    let aim = world_stick(input.base.aim_x, input.base.aim_y);
+    let audio = run.advance(
+        frame_time_ns,
+        movement,
+        (aim != Vec2::ZERO).then_some(aim),
+        input.base.action_flags,
+        weapon,
+        ride,
+        true,
+    );
+    unsafe { out.write(run.output_v3(audio)) };
     true
 }
 

@@ -55,6 +55,10 @@
   const hudObjective = $("hud-objective");
   const hudCaches = $("hud-caches");
   const hudThreats = $("hud-threats");
+  const rideReadout = $("ride-readout");
+  const rideSpeed = $("ride-speed");
+  const rideCondition = $("ride-condition");
+  const rideGrip = $("ride-grip");
 
   const btnAtlas = $("btn-atlas");
   const btnLook = $("btn-look");
@@ -105,6 +109,8 @@
     playerY: 0,
     playerFloor: 0,
     dead: false,
+    controlMode: 0,
+    mountedIsometric: false,
   };
 
   const input = {
@@ -148,6 +154,8 @@
   // --- Audio Synthesis ---
   let audioCtx = null;
   let noiseBuffer = null;
+  let engineOsc = null;
+  let engineGain = null;
 
   function ensureAudio() {
     if (state.muted) return null;
@@ -278,6 +286,44 @@
         playTone(ac, { type: "sawtooth", f0: f, f1: f * 0.9, dur: 0.18, gain: 0.1, delay: idx * 0.14 });
       });
     }
+    if (has(29)) {
+      playNoise(ac, { filterType: "lowpass", freq: 520, dur: 0.28, gain: 0.25 });
+      playTone(ac, { type: "sawtooth", f0: 120, f1: 34, dur: 0.3, gain: 0.2 });
+    }
+    if (has(30)) {
+      playNoise(ac, { filterType: "lowpass", freq: 1100, dur: 0.12, gain: 0.18 });
+      playTone(ac, { type: "triangle", f0: 210, f1: 70, dur: 0.12, gain: 0.15 });
+    }
+    if (has(31)) {
+      playNoise(ac, { filterType: "bandpass", freq: 340, q: 0.5, dur: 0.24, gain: 0.1 });
+    }
+  }
+
+  function syncEngineLoop(hud) {
+    const mounted = hud.controlKind === 1 && !state.muted && audioCtx?.state === "running";
+    if (!mounted) {
+      if (engineGain && audioCtx) {
+        engineGain.gain.cancelScheduledValues(audioCtx.currentTime);
+        engineGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.04);
+      }
+      if (engineOsc) {
+        const old = engineOsc;
+        engineOsc = null;
+        setTimeout(() => { try { old.stop(); old.disconnect(); } catch {} }, 180);
+      }
+      engineGain = null;
+      return;
+    }
+    if (!engineOsc) {
+      engineOsc = audioCtx.createOscillator();
+      engineGain = audioCtx.createGain();
+      engineOsc.type = "sawtooth";
+      engineGain.gain.value = 0;
+      engineOsc.connect(engineGain).connect(audioCtx.destination);
+      engineOsc.start();
+    }
+    engineOsc.frequency.setTargetAtTime(42 + hud.speedMphX10 * 0.16 + hud.engineLoad * 0.42, audioCtx.currentTime, 0.08);
+    engineGain.gain.setTargetAtTime(0.012 + hud.engineLoad * 0.00022, audioCtx.currentTime, 0.08);
   }
 
   // --- Utilities ---
@@ -380,6 +426,9 @@
     input.touchMove.mx = 0;
     input.touchMove.my = 0;
     input.touchAim.id = null;
+    input.touchAim.ax = 0;
+    input.touchAim.ay = 0;
+    input.touchAim.hasAim = false;
     input.touchAim.fireHold = false;
     input.touchAim.lookX = 0;
     input.touchAim.lookY = 0;
@@ -429,6 +478,12 @@
         return `[E] STAIRS ${floor + 2}F`;
       case 7:
         return `[E] STAIRS ${Math.max(1, floor)}F`;
+      case 8:
+        return "[E] MOUNT MOTORCYCLE";
+      case 9:
+        return "[E] DISMOUNT";
+      case 10:
+        return "[E] RIGHT MOTORCYCLE";
       default:
         return "";
     }
@@ -453,6 +508,10 @@
   }
 
   function updateHud(hud) {
+    const previousControlMode = state.controlMode;
+    state.controlMode = hud.controlKind;
+    if (previousControlMode !== state.controlMode) clearHeldInput();
+    syncEngineLoop(hud);
     state.hud = hud;
     state.playerX = hud.playerX;
     state.playerY = hud.playerY;
@@ -518,9 +577,28 @@
         ? `NEARBY: ${hud.zombies}`
         : `INFECTED: ${hud.zombies}/${hud.zombiesTotal}`;
 
-    if (hud.interactKind !== 0) {
+    const riding = hud.controlKind === 1;
+    rideReadout.hidden = !riding;
+    if (riding) {
+      btnCamera.textContent = `${state.mountedIsometric ? "ISO" : "CHASE"} [C]`;
+      btnCamera.setAttribute("aria-label", `Mounted camera: ${state.mountedIsometric ? "Isometric" : "Chase"}`);
+    } else {
+      const labels = ["ISO", "TOP", "ORBIT", "CHASE", "1ST"];
+      btnCamera.textContent = `${labels[state.cameraMode]} [C]`;
+      btnCamera.setAttribute("aria-label", `Camera view: ${["Isometric", "Overhead", "Orbit", "Chase", "First person"][state.cameraMode]}`);
+    }
+    if (riding) {
+      rideSpeed.textContent = `${(hud.speedMphX10 / 10).toFixed(1)} MPH`;
+      rideCondition.textContent = `${hud.conditionPct}%`;
+      const slipping = hud.gripUse >= 85;
+      rideGrip.textContent = slipping ? "LOW GRIP · EASE OFF" : "GRIP OK";
+      rideGrip.classList.toggle("is-slipping", slipping);
+      btnInteract.textContent = "[E] DISMOUNT";
+    }
+
+    if (hud.controlKind === 1 || hud.interactKind !== 0) {
       btnInteract.hidden = false;
-      btnInteract.textContent = interactLabelFor(hud.interactKind, hud.floor);
+      if (!riding) btnInteract.textContent = interactLabelFor(hud.interactKind, hud.floor);
     } else {
       btnInteract.hidden = true;
     }
@@ -567,6 +645,7 @@
   function openModal(kind, customCopy) {
     state.modalKind = kind;
     state.playing = false;
+    syncEngineLoop({ controlKind: 0 });
     clearHeldInput();
     overlayEl.hidden = false;
 
@@ -716,14 +795,16 @@
       view.getUint8(0) !== 0x5a ||
       view.getUint8(1) !== 0x42 ||
       view.getUint8(2) !== 0x46 ||
-      view.getUint8(3) !== 0x32
+      (view.getUint8(3) !== 0x32 && view.getUint8(3) !== 0x33)
     ) {
-      throw new Error("Invalid ZBF2 frame header");
+      throw new Error("Invalid ZBF frame header");
     }
 
     const fw = view.getUint16(4, true);
     const fh = view.getUint16(6, true);
-    const needed = 64 + fw * fh * 4;
+    const isV3 = view.getUint8(3) === 0x33;
+    const headerSize = isV3 ? 72 : 64;
+    const needed = headerSize + fw * fh * 4;
     if (buf.byteLength < needed) {
       throw new Error("Truncated ZBF2 pixel buffer");
     }
@@ -732,7 +813,7 @@
       canvas.width = fw;
       canvas.height = fh;
     }
-    const pixels = new Uint8ClampedArray(buf, 64, fw * fh * 4);
+    const pixels = new Uint8ClampedArray(buf, headerSize, fw * fh * 4);
     if (drawImage) {
       const imageData = new ImageData(pixels, fw, fh);
       ctx.putImageData(imageData, 0, 0);
@@ -768,6 +849,12 @@
       objectiveKind: view.getUint8(61),
       district: view.getUint8(62),
       mode: view.getUint8(63),
+      controlKind: isV3 ? view.getUint8(64) : 0,
+      gripUse: isV3 ? view.getUint8(65) : 0,
+      speedMphX10: isV3 ? view.getUint16(66, true) : 0,
+      engineLoad: isV3 ? view.getUint8(68) : 0,
+      ridingFlags: isV3 ? view.getUint8(69) : 0,
+      conditionPct: isV3 ? view.getUint8(70) : 0,
     };
     return hud;
   }
@@ -794,6 +881,11 @@
       my = vec.my;
       ax = vec.ax;
       ay = vec.ay;
+      if (state.controlMode === 1) {
+        const keyboardLean = (input.keysDown.has("l") ? 1 : 0) - (input.keysDown.has("j") ? 1 : 0);
+        ax = input.touchAim.id !== null ? input.touchAim.lookX : keyboardLean;
+        ay = 0;
+      }
       if (isLookCamera()) {
         lookYaw = input.mouseLookYaw;
         lookPitch = input.mouseLookPitch;
@@ -803,11 +895,13 @@
 
       flags |= input.pendingFlags;
       input.pendingFlags = 0;
-      if (input.mouseHold || input.spaceHold || input.touchAim.fireHold) {
+      if (state.controlMode === 0 && (input.mouseHold || input.spaceHold || input.touchAim.fireHold)) {
         flags |= FLAG_FIRE_HOLD;
       }
+      if (state.controlMode === 1) flags &= ~(FLAG_FIRE_PULSE | FLAG_FIRE_HOLD | FLAG_RELOAD | FLAG_HEAL);
       selectWeapon = input.pendingWeapon;
       input.pendingWeapon = -1;
+      if (state.controlMode === 1) selectWeapon = -1;
     }
 
     const body =
@@ -816,7 +910,13 @@
       `&ax=${ax.toFixed(4)}&ay=${ay.toFixed(4)}` +
       `&lyaw=${lookYaw.toFixed(5)}&lpitch=${lookPitch.toFixed(5)}` +
       `&flags=${flags}&weapon=${selectWeapon}&advance=${advance ? 1 : 0}` +
-      `&camera=${state.cameraMode}`;
+      `&camera=${state.cameraMode}&frame_version=3` +
+      `&control_kind=${state.controlMode}` +
+      `&steer=${state.controlMode ? mx.toFixed(4) : "0"}` +
+      `&throttle=${state.controlMode ? Math.max(0, -my).toFixed(4) : "0"}` +
+      `&brake=${state.controlMode ? Math.max(0, my).toFixed(4) : "0"}` +
+      `&lean=${state.controlMode ? ax.toFixed(4) : "0"}` +
+      `&mounted_isometric=${state.mountedIsometric ? 1 : 0}`;
 
     try {
       const res = await fetch(
@@ -1091,7 +1191,7 @@
     if (!state.playing) return;
     e.preventDefault();
 
-    if (e.pointerType === "touch") {
+      if (e.pointerType === "touch") {
       const rect = canvas.getBoundingClientRect();
       const isLeft = e.clientX < rect.left + rect.width * 0.5;
       try {
@@ -1127,8 +1227,10 @@
         input.mouseLastClientX = e.clientX;
         input.mouseLastClientY = e.clientY;
       }
-      input.mouseHold = true;
-      input.pendingFlags |= FLAG_FIRE_PULSE;
+      if (state.controlMode === 0) {
+        input.mouseHold = true;
+        input.pendingFlags |= FLAG_FIRE_PULSE;
+      }
     }
   });
 
@@ -1168,7 +1270,7 @@
           input.touchAim.lookX = 0;
           input.touchAim.lookY = 0;
         }
-        input.touchAim.fireHold = dist >= maxRadius * 0.78;
+        input.touchAim.fireHold = state.controlMode === 0 && dist >= maxRadius * 0.78;
         updateStickVisuals();
       }
       return;
@@ -1196,7 +1298,7 @@
         updateStickVisuals();
       } else if (e.pointerId === input.touchAim.id) {
         const elapsed = performance.now() - input.touchAim.downAt;
-        if (elapsed < 240 && input.touchAim.maxDist < 20 && state.playing) {
+        if (state.controlMode === 0 && elapsed < 240 && input.touchAim.maxDist < 20 && state.playing) {
           input.pendingFlags |= FLAG_FIRE_PULSE;
         }
         input.touchAim.id = null;
@@ -1254,7 +1356,7 @@
 
     if (!state.playing) return;
 
-    if (["w", "a", "s", "d", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(k)) {
+    if (["w", "a", "s", "d", "j", "l", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(k)) {
       e.preventDefault();
       input.keysDown.add(k);
       return;
@@ -1262,7 +1364,7 @@
 
     if (k === " ") {
       e.preventDefault();
-      if (!e.repeat) {
+      if (state.controlMode === 0 && !e.repeat) {
         ensureAudio();
         input.spaceHold = true;
         input.pendingFlags |= FLAG_FIRE_PULSE;
@@ -1276,15 +1378,15 @@
       e.preventDefault();
       ensureAudio();
       input.pendingFlags |= FLAG_INTERACT;
-    } else if (k === "r") {
+    } else if (state.controlMode === 0 && k === "r") {
       e.preventDefault();
       ensureAudio();
       input.pendingFlags |= FLAG_RELOAD;
-    } else if (k === "q" || k === "h") {
+    } else if (state.controlMode === 0 && (k === "q" || k === "h")) {
       e.preventDefault();
       ensureAudio();
       input.pendingFlags |= FLAG_HEAL;
-    } else if (k >= "1" && k <= "4") {
+    } else if (state.controlMode === 0 && k >= "1" && k <= "4") {
       e.preventDefault();
       ensureAudio();
       input.pendingWeapon = Number(k) - 1;
@@ -1336,7 +1438,16 @@
   });
 
   function cycleCamera() {
+    if (state.controlMode === 1) {
+      state.mountedIsometric = !state.mountedIsometric;
+      btnCamera.textContent = `${state.mountedIsometric ? "ISO" : "CHASE"} [C]`;
+      btnCamera.setAttribute("aria-label", `Mounted camera: ${state.mountedIsometric ? "Isometric" : "Chase"}`);
+      btnCamera.blur();
+      if (!state.playing && state.runId) requestFrame(false);
+      return;
+    }
     state.cameraMode = (state.cameraMode + 1) % 5;
+    state.mountedIsometric = state.cameraMode === 0;
     input.mouseLookYaw = 0;
     input.mouseLookPitch = 0;
     input.mouseTracking = false;
@@ -1353,6 +1464,7 @@
 
   btnSound.addEventListener("click", () => {
     state.muted = !state.muted;
+    if (state.muted) syncEngineLoop({ controlKind: 0 });
     btnSound.setAttribute("aria-pressed", String(state.muted));
     btnSound.setAttribute("aria-label", state.muted ? "Unmute sound" : "Mute sound");
     if (!state.muted) ensureAudio();

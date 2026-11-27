@@ -329,6 +329,8 @@ impl SceneManager {
             active_floor: floor,
             player_building_id,
             player,
+            vehicles: game.vehicle_views().collect(),
+            mounted_vehicle: game.mounted_vehicle(),
             monsters: game.monster_views(),
             projectiles: game.projectiles(),
             caches,

@@ -37,6 +37,12 @@ type Hud = Readonly<{
   playerY: CodegenTypes.Int32;
   district: CodegenTypes.Int32;
   worldMode: CodegenTypes.Int32;
+  controlKind: CodegenTypes.Int32;
+  gripUse: CodegenTypes.Int32;
+  engineLoad: CodegenTypes.Int32;
+  speedMphX10: CodegenTypes.Int32;
+  ridingFlags: CodegenTypes.Int32;
+  bikeCondition: CodegenTypes.Int32;
 }>;
 
 type AtlasTeleportEvent = Readonly<{
@@ -60,6 +66,7 @@ export interface NativeProps extends ViewProps {
   readonly hapticsEnabled?: CodegenTypes.WithDefault<boolean, true>;
   readonly aimLookAhead?: CodegenTypes.WithDefault<boolean, true>;
   readonly cameraMode?: string;
+  readonly mountedIsometric?: CodegenTypes.WithDefault<boolean, false>;
   readonly onHudChanged?: CodegenTypes.DirectEventHandler<Hud>;
   readonly onAtlasTeleport?: CodegenTypes.DirectEventHandler<AtlasTeleportEvent>;
 }

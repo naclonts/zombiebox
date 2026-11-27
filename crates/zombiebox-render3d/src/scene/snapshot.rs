@@ -2,8 +2,8 @@ use zombiebox_core::{
     ActionEvent, ActionGame, ActionMode, ActionOutcome, BuildingId, BuildingInfo, BuildingStyle,
     CHUNK_SIZE, CHUNK_VERTICES, CHUNKS_PER_SIDE, CacheView, District, FLOOR_H, Feature, Floor,
     Ground, LightSourceView, Material, MonsterView, NUM_FLOORS, Position, ProjectileView, PropKind,
-    Surface, Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2 as SimVec2, WORLD_SIZE,
-    WallOrientation, World,
+    Surface, Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2 as SimVec2, VehicleId,
+    VehicleView, WORLD_SIZE, WallOrientation, World,
 };
 
 use crate::coords::{ChunkCoord, RenderAabb, SimVec3};
@@ -387,6 +387,8 @@ pub struct DynamicSceneState {
     pub active_floor: Floor,
     pub player_building_id: BuildingId,
     pub player: PlayerSnapshot,
+    pub vehicles: Vec<(VehicleId, VehicleView)>,
+    pub mounted_vehicle: Option<VehicleId>,
     pub monsters: Vec<MonsterView>,
     pub projectiles: Vec<ProjectileView>,
     pub caches: Vec<CacheSnapshot>,

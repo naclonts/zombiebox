@@ -37,6 +37,8 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
     }
 
     private val bank: Array<ShortArray> = RetroSynth.buildBank()
+    private val engineCycle = RetroSynth.motorcycleEngineCycle()
+    private val ridingLevels = AtomicInteger(0)
     private val vibrator: Vibrator? = resolveVibrator(appContext)
 
     // Settings written on UI thread, read on mixer & UI threads.
@@ -85,6 +87,7 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
 
     fun suspend() {
         suspended.set(true)
+        ridingLevels.set(0)
         // Record tail so mixerLoop (sole writer of ringHead) drops stale pre-suspend triggers.
         discardTargetTail.set(ringTail.get())
         clearVoicesRequested.set(true)
@@ -101,6 +104,14 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
                 trackPlaying = false
             }
         }
+    }
+
+    fun setRiding(speedMphX10: Int, load: Int, grip: Int, mounted: Boolean) {
+        val levels = if (mounted) {
+            1 or (load.coerceIn(0, 100) shl 1) or (grip.coerceIn(0, 100) shl 8) or
+                (speedMphX10.coerceIn(0, 65535) shl 15)
+        } else 0
+        if (ridingLevels.getAndSet(levels) == 0 && levels != 0) LockSupport.unpark(mixerThread)
     }
 
     fun playUiClick() {
@@ -219,10 +230,18 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
         val outPcm = ShortArray(CHUNK_SAMPLES)
         var currentMasterGain = if (sfxMuted) 0f else sfxVolumePct / 100f
         var silentSamples = 0
+        var enginePhase = 0f
+        var engineHz = 24f
+        var engineGain = 0f
+        var tireGain = 0f
+        var tireNoise = 0f
+        var noiseState = 0x7534BE91
 
         while (true) {
             if (clearVoicesRequested.getAndSet(false)) {
                 voiceSfx.fill(-1)
+                engineGain = 0f
+                tireGain = 0f
                 val target = discardTargetTail.get()
                 val curHead = ringHead.get()
                 if (target - curHead > 0) {
@@ -263,10 +282,20 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
                 if (voiceSfx[v] >= 0) activeCount++
             }
 
+            val levels = ridingLevels.get()
+            val mounted = levels and 1 != 0
+            val load = ((levels ushr 1) and 0x7f) / 100f
+            val grip = (levels ushr 8) and 0x7f
+            val speed = ((levels ushr 15) / 500f).coerceAtMost(1f)
+            val targetHz = 24f + 55f * speed + 31f * load
+            val targetEngine = if (mounted) 0.09f + 0.12f * load else 0f
+            val targetTire = if (mounted) ((grip - 72).coerceAtLeast(0) / 28f) * speed * 0.26f else 0f
+            if (mounted) activeCount++
+
             if (activeCount == 0 && silentSamples >= IDLE_SILENCE_SAMPLES) {
                 pauseTrackIfIdle()
                 // Double-check ring before parking to prevent missed wakeups.
-                if (ringHead.get() == ringTail.get()) {
+                if (ringHead.get() == ringTail.get() && ridingLevels.get() == 0) {
                     LockSupport.park()
                 }
                 continue
@@ -283,6 +312,19 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
             for (i in 0 until CHUNK_SAMPLES) {
                 currentMasterGain += (targetGain - currentMasterGain) * GAIN_SLEW_ALPHA
                 var acc = 0f
+                if (mounted || engineGain > 0.001f || tireGain > 0.001f) {
+                    engineGain += (targetEngine - engineGain) * GAIN_SLEW_ALPHA
+                    tireGain += (targetTire - tireGain) * GAIN_SLEW_ALPHA
+                    engineHz += (targetHz - engineHz) * GAIN_SLEW_ALPHA
+                    enginePhase += engineHz * engineCycle.size / RetroSynth.SAMPLE_RATE
+                    if (enginePhase >= engineCycle.size) enginePhase -= engineCycle.size
+                    acc += engineCycle[enginePhase.toInt()] * engineGain
+                    noiseState = noiseState xor (noiseState shl 13)
+                    noiseState = noiseState xor (noiseState ushr 17)
+                    noiseState = noiseState xor (noiseState shl 5)
+                    tireNoise += (((noiseState and 0xff) / 127.5f - 1f) - tireNoise) * 0.25f
+                    acc += tireNoise * tireGain
+                }
                 for (v in 0 until MAX_VOICES) {
                     val sfxId = voiceSfx[v]
                     if (sfxId < 0) continue
@@ -506,12 +548,14 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
             RetroSynth.SFX_EXPLOSION,
             RetroSynth.SFX_STRUCTURAL_BREACH,
             RetroSynth.SFX_DEATH,
+            RetroSynth.SFX_VEHICLE_CRASH,
             -> HapticTier.HEAVY
 
             RetroSynth.SFX_SHOTGUN_FIRE,
             RetroSynth.SFX_ROCKET_LAUNCH,
             RetroSynth.SFX_PLAYER_HURT,
             RetroSynth.SFX_BLOATER_BURST,
+            RetroSynth.SFX_VEHICLE_IMPACT,
             -> HapticTier.MEDIUM
 
             RetroSynth.SFX_PISTOL_FIRE,
@@ -525,6 +569,7 @@ internal class AudioHapticsEngine private constructor(appContext: Context) {
             RetroSynth.SFX_MONSTER_DOWN,
             RetroSynth.SFX_MEDKIT_HEAL,
             RetroSynth.SFX_WIN,
+            RetroSynth.SFX_VEHICLE_SKID,
             -> HapticTier.LIGHT
 
             RetroSynth.SFX_DRY_FIRE,

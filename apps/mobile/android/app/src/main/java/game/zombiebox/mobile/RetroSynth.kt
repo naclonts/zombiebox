@@ -10,8 +10,7 @@ import kotlin.math.sin
 
 /**
  * Pure-Kotlin procedural 22,050 Hz 16-bit mono Genesis/PS1 retro sound bank.
- * Generates 30 compact PCM buffers (29 simulation SFX matching ZB_SFX_* bits 0..28
- * plus UI click at index 29) with deterministic noise and zero external dependencies.
+ * Generates compact PCM buffers for ZB_SFX_* events and the UI click.
  */
 internal object RetroSynth {
     const val SAMPLE_RATE = 22050
@@ -44,8 +43,11 @@ internal object RetroSynth {
     const val SFX_WIN = 26
     const val SFX_DEATH = 27
     const val SFX_STRUCTURAL_BREACH = 28
-    const val SFX_UI_CLICK = 29
-    const val SFX_COUNT = 30
+    const val SFX_VEHICLE_CRASH = 29
+    const val SFX_VEHICLE_SKID = 30
+    const val SFX_VEHICLE_IMPACT = 31
+    const val SFX_UI_CLICK = 32
+    const val SFX_COUNT = 33
 
     private const val TWO_PI = (2.0 * PI).toFloat()
 
@@ -80,8 +82,26 @@ internal object RetroSynth {
             SFX_WIN -> synthWin()
             SFX_DEATH -> synthDeath()
             SFX_STRUCTURAL_BREACH -> synthStructuralBreach()
+            SFX_VEHICLE_CRASH -> synthStreetlightBreak()
+            SFX_VEHICLE_SKID -> synthVehicleSkid()
+            SFX_VEHICLE_IMPACT -> synthStoneThud()
             SFX_UI_CLICK -> synthUiClick()
             else -> ShortArray(1)
+        }
+    }
+
+    fun motorcycleEngineCycle(): FloatArray = FloatArray(256) { i ->
+        val phase = i * TWO_PI / 256f
+        0.62f * sin(phase) + 0.25f * sin(phase * 2f + 0.6f) + 0.13f * sin(phase * 4f)
+    }
+
+    private fun synthVehicleSkid(): ShortArray = makeBuffer(280) { buf ->
+        val noise = XorShift32(0x245E31)
+        val filter = OnePoleLp(2200f)
+        for (i in buf.indices) {
+            val progress = i.toFloat() / buf.size
+            val scrape = filter.process(noise.nextFloat()) * 0.85f
+            buf[i] = scrape * sin(PI.toFloat() * progress) * (1f - progress) * 0.85f
         }
     }
 

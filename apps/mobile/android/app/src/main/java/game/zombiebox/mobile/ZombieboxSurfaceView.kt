@@ -15,6 +15,7 @@ import android.view.View
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
+import android.widget.Toast
 import java.util.concurrent.CountDownLatch
 import android.view.ViewConfiguration
 import android.view.WindowInsets
@@ -100,7 +101,9 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     var hapticsEnabled: Boolean = true
     var aimLookAhead: Boolean = true
     var cameraMode: String = "isometric"
+    var mountedIsometric: Boolean = false
     private var appliedCameraMode: String? = null
+    private var appliedMountedIsometric = false
 
     private var appliedRunId: String? = null
     private var appliedSeed: Long? = null
@@ -116,9 +119,12 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     private var currentInteractKind = 0
 
     // Zero-allocation frame output and HUD diff state.
-    private val frameOut = IntArray(12)
-    private val lastHudOut = IntArray(9)
+    private val frameOut = IntArray(13)
+    private val lastHudOut = IntArray(11)
     private var hasLastHud = false
+    private var controlKind = CONTROL_ON_FOOT
+    private var recovering = false
+    private val riding get() = controlKind == CONTROL_MOTORCYCLE
 
     private val audioEngine = AudioHapticsEngine.getInstance(reactContext.applicationContext)
 
@@ -148,6 +154,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     private var stickRadius = 46f * density
 
     private val moveStick = MoveStick()
+    private val leanStick = MoveStick()
     private val aimStick = AimStickController(density)
 
     // Misfire-free scene tap (triggers interact ONLY when an interact prompt is active).
@@ -221,6 +228,10 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
                 Runs.main.post { if (isAttachedToWindow) render(System.nanoTime(), false) }
             }
         }
+        if (appliedMountedIsometric != mountedIsometric) {
+            appliedMountedIsometric = mountedIsometric
+            render(System.nanoTime(), false)
+        }
         if (!id.isNullOrEmpty() && seedValue != null &&
             (appliedRunId != id || appliedSeed != seedValue || appliedScenario != scenario)
         ) {
@@ -249,6 +260,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             appliedScenario = scenario
             hasLastHud = false
             currentInteractKind = 0
+            controlKind = CONTROL_ON_FOOT
+            recovering = false
         }
         updateAudioLifecycle()
         updateFrames()
@@ -278,6 +291,12 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
 
     override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode != REQUEST_COUNTY_ATLAS || resultCode != Activity.RESULT_OK || data == null) return
+        if (riding || recovering) {
+            val message = if (riding) "Dismount before traveling from the atlas."
+                else "Wait for the survivor to recover before traveling from the atlas."
+            Toast.makeText(reactContext, message, Toast.LENGTH_SHORT).show()
+            return
+        }
         val seedStr = data.getStringExtra("seed") ?: return
         val seedLong = seedStr.toULongOrNull()?.toLong() ?: return
         val tx = data.getIntExtra("x", 0); val ty = data.getIntExtra("y", 0); val tf = data.getIntExtra("floor", 0)
@@ -318,21 +337,21 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     override fun onNewIntent(intent: Intent) = Unit
 
     fun requestInteract() {
-        if (canPlay()) interactQueued = true
+        if (canPlay() && !recovering) interactQueued = true
     }
 
     fun selectWeapon(slot: Int) {
-        if (canPlay() && slot in 0..3) {
+        if (canPlay() && !riding && !recovering && slot in 0..3) {
             pendingSelectWeapon = slot
         }
     }
 
     fun requestReload() {
-        if (canPlay()) reloadQueued = true
+        if (canPlay() && !riding && !recovering) reloadQueued = true
     }
 
     fun requestHeal() {
-        if (canPlay()) healQueued = true
+        if (canPlay() && !riding && !recovering) healQueued = true
     }
 
     fun playUiClick() {
@@ -418,6 +437,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         moveStick.centerY = y
         aimStick.centerX = width - margin - right
         aimStick.centerY = y
+        leanStick.centerX = aimStick.centerX
+        leanStick.centerY = y
     }
 
     private fun canAudioRun(): Boolean =
@@ -451,12 +472,14 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             Runs.post { val handle = Runs.handle(this); if (handle != 0L) NativeGame.resetClockV2(handle) }
             drawing = false
         }
+        audioEngine.setRiding(0, 0, 0, false)
         clearInput()
     }
 
     private fun clearInput() {
         moveStick.clear()
         aimStick.clear()
+        leanStick.clear()
         tapId = INVALID_POINTER
         interactQueued = false
         reloadQueued = false
@@ -471,25 +494,28 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         val nowMs = SystemClock.uptimeMillis()
         var actionFlags = if (aimLookAhead) INPUT_LOOK_AHEAD else 0
         var selectWeapon = WEAPON_UNCHANGED
-        val aimX: Float
-        val aimY: Float
-        if (advance) {
+        var aimX = 0f
+        var aimY = 0f
+        val activeInput = advance && !recovering
+        if (activeInput && !riding) {
             aimStick.prepareFrameAim()
             aimX = aimStick.frameAimX
             aimY = aimStick.frameAimY
             if (aimStick.consumeFirePulse()) actionFlags = actionFlags or INPUT_FIRE_PULSE
             if (aimStick.isFireHold(nowMs)) actionFlags = actionFlags or INPUT_FIRE_HOLD
-            if (interactQueued) actionFlags = actionFlags or INPUT_INTERACT
             if (reloadQueued) actionFlags = actionFlags or INPUT_RELOAD
             if (healQueued) actionFlags = actionFlags or INPUT_HEAL
             selectWeapon = pendingSelectWeapon
-        } else {
-            aimX = 0f
-            aimY = 0f
         }
+        if (activeInput && interactQueued) actionFlags = actionFlags or INPUT_INTERACT
 
-        val mx = if (advance) moveStick.x else 0f
-        val my = if (advance) moveStick.y else 0f
+        val mx = if (activeInput && !riding) moveStick.x else 0f
+        val my = if (activeInput && !riding) moveStick.y else 0f
+        val steer = if (activeInput && riding) moveStick.rawX else 0f
+        val pedal = if (activeInput && riding) moveStick.rawY else 0f
+        val lean = if (activeInput && riding) leanStick.rawX else 0f
+        val schema = controlKind
+        val fixedCamera = mountedIsometric
         val flags = actionFlags
         val selected = selectWeapon
         val token = generation
@@ -499,19 +525,36 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             pendingSelectWeapon = WEAPON_UNCHANGED
         }
         Runs.post {
-            val output = IntArray(12)
+            val output = IntArray(13)
             val handle = Runs.handle(this)
             if (!advance && handle != 0L) NativeGame.resetClockV2(handle)
-            val ok = handle != 0L && NativeGame.frameSurface(handle, now, mx, my, aimX, aimY, flags, selected, output)
+            val ok = handle != 0L && NativeGame.frameSurface(
+                handle, now, mx, my, aimX, aimY, flags, selected, schema,
+                steer, (-pedal).coerceAtLeast(0f), pedal.coerceAtLeast(0f), lean, fixedCamera, output,
+            )
             if (!advance && handle != 0L) NativeGame.resetClockV2(handle)
             Runs.main.post {
                 framePending = false
                 if (token == generation && ok) {
                     output.copyInto(frameOut)
                     currentInteractKind = (frameOut[6] ushr 16) and 0xff
-                    if (advance && canAudioRun()) {
+                    val ridingHud = frameOut[11]
+                    val nextControl = ridingHud and 0xff
+                    val nextRecovering = (ridingHud ushr 24) and RIDE_RECOVERING != 0
+                    if (controlKind != nextControl || recovering != nextRecovering) {
+                        clearInput()
+                        controlKind = nextControl
+                        recovering = nextRecovering
+                    }
+                    if (advance && canPlay()) {
                         val mask = (frameOut[9].toLong() and 0xFFFF_FFFFL) or (frameOut[10].toLong() shl 32)
                         if (mask != 0L) audioEngine.triggerSimEvents(mask)
+                        audioEngine.setRiding(
+                            frameOut[12] and 0xffff,
+                            (ridingHud ushr 16) and 0xff,
+                            (ridingHud ushr 8) and 0xff,
+                            riding,
+                        )
                     }
                     emitHudIfChanged()
                 }
@@ -522,7 +565,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
 
     private fun emitHudIfChanged() {
         if (id == NO_ID) return
-        var changed = !hasLastHud
+        var changed = !hasLastHud || frameOut[11] != lastHudOut[9] || frameOut[12] != lastHudOut[10]
         if (!changed) {
             for (i in 0 until 9) {
                 if (frameOut[i] != lastHudOut[i]) {
@@ -533,25 +576,25 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         }
         if (!changed) return
         val dispatcher = UIManagerHelper.getEventDispatcher(reactContext) ?: return
-        for (i in 0 until 9) {
-            lastHudOut[i] = frameOut[i]
-        }
+        frameOut.copyInto(lastHudOut, endIndex = 9)
+        lastHudOut[9] = frameOut[11]
+        lastHudOut[10] = frameOut[12]
         hasLastHud = true
         dispatcher.dispatchEvent(
             HudChangedEvent(
                 UIManagerHelper.getSurfaceId(reactContext),
                 id,
-                frameOut.copyOf(9),
+                lastHudOut.copyOf(),
             ),
         )
     }
 
     override fun dispatchDraw(canvas: Canvas) {
         super.dispatchDraw(canvas)
-        if (!paused) {
+        if (!paused && !recovering) {
             val nowMs = SystemClock.uptimeMillis()
             drawMoveStick(canvas)
-            drawAimStick(canvas, nowMs)
+            if (riding) drawLeanStick(canvas) else drawAimStick(canvas, nowMs)
         }
     }
 
@@ -570,20 +613,38 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
 
         // Subtle inner quiet-walk threshold ring (0.52).
         controlPaint.color = 0x559FABB0
-        canvas.drawCircle(x, y, radius * 0.52f, controlPaint)
+        if (!riding) canvas.drawCircle(x, y, radius * 0.52f, controlPaint)
         canvas.drawLine(x - radius * 0.82f, y, x + radius * 0.82f, y, controlPaint)
         canvas.drawLine(x, y - radius * 0.82f, x, y + radius * 0.82f, controlPaint)
 
         controlPaint.style = Paint.Style.FILL
         controlPaint.color = if (moveStick.active) 0xFFE1AE63.toInt() else 0xABBEBBB3.toInt()
         canvas.drawCircle(
-            x + moveStick.x * radius * 0.58f,
-            y + moveStick.y * radius * 0.58f,
+            x + (if (riding) moveStick.rawX else moveStick.x) * radius * 0.58f,
+            y + (if (riding) moveStick.rawY else moveStick.y) * radius * 0.58f,
             radius * 0.24f,
             controlPaint,
         )
 
-        drawStickLabel(canvas, "MOVE", x, y + radius + 16f * density, 0xFFF1EAE0.toInt())
+        val label = if (riding) "STEER / GAS / BRAKE" else "MOVE"
+        drawStickLabel(canvas, label, x, y + radius + 16f * density, 0xFFF1EAE0.toInt())
+    }
+
+    private fun drawLeanStick(canvas: Canvas) {
+        val x = leanStick.centerX
+        val y = leanStick.centerY
+        val radius = stickRadius
+        controlPaint.style = Paint.Style.FILL
+        controlPaint.color = 0xB5171D22.toInt()
+        canvas.drawCircle(x, y, radius, controlPaint)
+        controlPaint.style = Paint.Style.STROKE
+        controlPaint.strokeWidth = density
+        controlPaint.color = if (leanStick.active) 0xFFE1AE63.toInt() else 0xC79FABB0.toInt()
+        canvas.drawCircle(x, y, radius, controlPaint)
+        canvas.drawLine(x - radius * 0.82f, y, x + radius * 0.82f, y, controlPaint)
+        controlPaint.style = Paint.Style.FILL
+        canvas.drawCircle(x + leanStick.rawX * radius * 0.58f, y, radius * 0.24f, controlPaint)
+        drawStickLabel(canvas, "LEAN", x, y + radius + 16f * density, 0xFFF1EAE0.toInt())
     }
 
     private fun drawAimStick(canvas: Canvas, nowMs: Long) {
@@ -673,20 +734,23 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!canPlay()) return false
+        if (!canPlay() || recovering) return false
         val index = event.actionIndex
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> touchDown(event, index)
             MotionEvent.ACTION_MOVE -> {
                 moveStick.update(event, stickRadius)
-                aimStick.update(event, stickRadius)
+                if (riding) leanStick.update(event, stickRadius) else aimStick.update(event, stickRadius)
                 val tapIndex = event.findPointerIndex(tapId)
                 if (tapIndex >= 0) {
                     tapMoved = tapMoved || hypot(event.getX(tapIndex) - tapX, event.getY(tapIndex) - tapY) > touchSlop
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> touchUp(event, index)
-            MotionEvent.ACTION_CANCEL -> clearInput()
+            MotionEvent.ACTION_CANCEL -> {
+                clearInput()
+                Runs.post { val handle = Runs.handle(this); if (handle != 0L) NativeGame.resetClockV2(handle) }
+            }
         }
         return true
     }
@@ -702,7 +766,11 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
                 if (!moveStick.active) moveStick.take(pointer, x, y, stickRadius)
             }
             aimStick.contains(x, y, aimHitRadius) -> {
-                if (!aimStick.active) aimStick.down(pointer, x, y, event.eventTime, stickRadius)
+                if (riding) {
+                    if (!leanStick.active) leanStick.take(pointer, x, y, stickRadius)
+                } else if (!aimStick.active) {
+                    aimStick.down(pointer, x, y, event.eventTime, stickRadius)
+                }
             }
             tapId == INVALID_POINTER -> {
                 tapId = pointer
@@ -718,7 +786,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     private fun touchUp(event: MotionEvent, index: Int) {
         val pointer = event.getPointerId(index)
         if (moveStick.pointer == pointer) moveStick.clear()
-        if (aimStick.pointer == pointer) {
+        if (leanStick.pointer == pointer) leanStick.clear()
+        if (!riding && aimStick.pointer == pointer) {
             aimStick.up(event.getX(index), event.getY(index), event.eventTime, stickRadius)
         }
         if (tapId == pointer) {
@@ -733,7 +802,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             }
             tapId = INVALID_POINTER
         }
-        if (!moveStick.active && !aimStick.active && tapId == INVALID_POINTER) {
+        if (!moveStick.active && !aimStick.active && !leanStick.active && tapId == INVALID_POINTER) {
             parent?.requestDisallowInterceptTouchEvent(false)
         }
     }
@@ -754,6 +823,10 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         var x = 0f
             private set
         var y = 0f
+            private set
+        var rawX = 0f
+            private set
+        var rawY = 0f
             private set
         private var startX = 0f
         private var startY = 0f
@@ -778,6 +851,9 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             val dx = x - startX
             val dy = y - startY
             val length = hypot(dx, dy)
+            val scale = maxOf(radius, length, 1f)
+            rawX = dx / scale
+            rawY = dy / scale
             val deadZone = radius * 0.17f
             if (length <= deadZone) {
                 this.x = 0f
@@ -793,6 +869,8 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             pointer = INVALID_POINTER
             x = 0f
             y = 0f
+            rawX = 0f
+            rawY = 0f
         }
     }
 
@@ -1119,6 +1197,9 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         private const val REQUEST_COUNTY_ATLAS = 0x5A42
         private const val INVALID_POINTER = -1
         private const val WEAPON_UNCHANGED = -1
+        private const val CONTROL_ON_FOOT = 0
+        private const val CONTROL_MOTORCYCLE = 1
+        private const val RIDE_RECOVERING = 1
         private const val TAP_DURATION_MS = 250L
         private const val QUICK_TAP_MAX_MS = 220L
         private const val DOUBLE_TAP_GAP_MS = 280L
@@ -1204,6 +1285,13 @@ internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: I
         putInt("playerY", (w8 ushr 12) and 0xfff)
         putInt("district", (w8 ushr 24) and 0xf)
         putInt("worldMode", (w8 ushr 28) and 0xf)
+        val riding = words[9]
+        putInt("controlKind", riding and 0xff)
+        putInt("gripUse", (riding ushr 8) and 0xff)
+        putInt("engineLoad", (riding ushr 16) and 0xff)
+        putInt("ridingFlags", riding ushr 24)
+        putInt("speedMphX10", words[10] and 0xffff)
+        putInt("bikeCondition", words[10] ushr 16)
     }
 
     companion object {

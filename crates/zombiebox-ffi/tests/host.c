@@ -138,6 +138,89 @@ static void check_action_v2_county_and_teleport(void) {
     zb_action_v2_destroy(county);
 }
 
+static void check_action_v3_motorcycle(void) {
+    const uint64_t tick_ns = 16666667ULL;
+    uint64_t time_ns = 1000000000ULL;
+    ZbAction *county = zb_action_v2_create_county(42);
+    assert(county);
+    /* Seed 42's deterministic starter motorcycle is at tile (354, 166). */
+    assert(zb_action_v2_teleport(county, 354, 166, 0, NULL));
+
+    ZbActionFrameInputV3 v3;
+    memset(&v3, 0, sizeof v3);
+    v3.base.select_weapon = ZB_WEAPON_UNCHANGED;
+    v3.control_kind = ZB_CONTROL_ON_FOOT;
+    v3.mounted_camera = ZB_MOUNTED_CHASE;
+    ZbActionFrameOutputV3 out;
+    memset(&out, 0, sizeof out);
+    assert(zb_action_v3_update(county, time_ns, &v3, &out));
+    assert(out.control_kind == ZB_CONTROL_ON_FOOT);
+    assert(out.base.interact_kind == ZB_INTERACT_MOUNT);
+
+    /* One queued Interact remains one action across several catch-up ticks. */
+    v3.base.action_flags = ZB_INPUT_INTERACT;
+    time_ns += 100000000ULL;
+    assert(zb_action_v3_update(county, time_ns, &v3, &out));
+    assert(out.control_kind == ZB_CONTROL_MOTORCYCLE);
+    assert(out.base.interact_kind == ZB_INTERACT_DISMOUNT);
+    assert(out.condition_pct == 100);
+    assert(!zb_action_v2_teleport(county, 360, 166, 0, NULL));
+
+    /* A stale on-foot schema cannot repeat Interact or apply foot movement. */
+    const uint16_t mounted_speed = out.speed_mph_x10;
+    v3.control_kind = ZB_CONTROL_ON_FOOT;
+    v3.base.action_flags = ZB_INPUT_INTERACT;
+    v3.base.move_x = 1.0f;
+    v3.throttle = 1.0f;
+    time_ns += tick_ns;
+    assert(zb_action_v3_update(county, time_ns, &v3, &out));
+    assert(out.control_kind == ZB_CONTROL_MOTORCYCLE);
+    assert(out.speed_mph_x10 == mounted_speed);
+
+    /* Restore authoritative mounted schema and accelerate; speed and condition are quantized. */
+    v3.control_kind = ZB_CONTROL_MOTORCYCLE;
+    v3.base.action_flags = 0;
+    v3.base.move_x = 0.0f;
+    v3.throttle = 1.0f;
+    for (int i = 0; i < 220; ++i) {
+        time_ns += tick_ns;
+        assert(zb_action_v3_update(county, time_ns, &v3, &out));
+    }
+    assert(out.control_kind == ZB_CONTROL_MOTORCYCLE);
+    assert(out.speed_mph_x10 > 300);
+    assert(out.condition_pct > 0 && out.condition_pct <= 100);
+
+    /* Brake to a safe stop, then dismount once through contextual Interact. */
+    v3.throttle = 0.0f;
+    v3.brake = 1.0f;
+    for (int i = 0; i < 90; ++i) {
+        time_ns += tick_ns;
+        assert(zb_action_v3_update(county, time_ns, &v3, &out));
+    }
+    v3.base.action_flags = ZB_INPUT_INTERACT;
+    time_ns += tick_ns;
+    assert(zb_action_v3_update(county, time_ns, &v3, &out));
+    assert(out.control_kind == ZB_CONTROL_ON_FOOT);
+    assert(zb_action_v2_teleport(county, 354, 166, 0, NULL));
+    zb_action_v2_destroy(county);
+
+    /* Legacy v2 stays on foot and never exposes the motorcycle-only prompt. */
+    county = zb_action_v2_create_county(42);
+    assert(county);
+    assert(zb_action_v2_teleport(county, 354, 166, 0, NULL));
+    ZbActionFrameInput v2;
+    memset(&v2, 0, sizeof v2);
+    v2.select_weapon = ZB_WEAPON_UNCHANGED;
+    ZbActionFrameOutput legacy;
+    memset(&legacy, 0, sizeof legacy);
+    assert(zb_action_v2_update(county, 3000000000ULL, &v2, &legacy));
+    time_ns = 3016666667ULL;
+    v2.action_flags = ZB_INPUT_INTERACT;
+    assert(zb_action_v2_update(county, time_ns, &v2, &legacy));
+    assert(legacy.interact_kind < ZB_INTERACT_MOUNT);
+    zb_action_v2_destroy(county);
+}
+
 int main(void) {
     char *atlas = zb_survey_v1_generate(UINT64_MAX);
     assert(atlas && strstr(atlas, "\"seed\":\"18446744073709551615\""));
@@ -166,6 +249,7 @@ int main(void) {
     zb_v1_destroy(NULL);
     check_action_v2_update();
     check_action_v2_county_and_teleport();
-    puts("C host created a Rust run, scavenged, moved east, read its HUD and exercised action timing, HUD, audio, and county teleportation.");
+    check_action_v3_motorcycle();
+    puts("C host verified v2 legacy controls and v3 motorcycle opt-in, one-shot interaction, schema rejection, speed, condition, dismount, and teleport gating.");
     return 0;
 }

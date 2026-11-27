@@ -6,7 +6,11 @@ mod parcels;
 use parcels::{ParcelTiles, Parcels};
 mod relief;
 mod sites;
+mod vehicles;
 pub use sites::*;
+#[cfg(test)]
+pub(crate) use vehicles::MOTORCYCLE_SLOTS;
+pub(crate) use vehicles::{MotorcycleSpawn, motorcycle_spawns};
 
 use crate::spatial::{
     CHUNK_VERTICES, TerrainGrid, TerrainSample, TerrainTriangle, Vec2, Vec3, WATER_SURFACE_Z,
@@ -463,6 +467,11 @@ impl World {
 fn fixture_hash(seed: u64, x: i32, y: i32) -> u64 {
     let packed = (u64::from(x as u32) << 32) | u64::from(y as u32);
     crate::mix64(seed ^ packed)
+}
+
+/// Dedicated deterministic hash stream for vehicle roster tie-breaks.
+pub(crate) fn noise_for_vehicles(seed: u64, key: u64) -> u64 {
+    crate::mix64(seed ^ 0x6d6f_746f_7263_7963 ^ key)
 }
 
 fn noise(seed: u64, domain: u64, x: i32, y: i32) -> u64 {

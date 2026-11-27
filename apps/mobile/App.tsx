@@ -73,6 +73,12 @@ function getInteractLabel(interactKind: number, floor: number): string | null {
       return `STAIRS ${floor + 2}F`;
     case 7:
       return `STAIRS ${Math.max(1, floor)}F`;
+    case 8:
+      return 'MOUNT';
+    case 9:
+      return 'DISMOUNT';
+    case 10:
+      return 'RIGHT BIKE';
     default:
       return null;
   }
@@ -189,6 +195,7 @@ function Game() {
   const [hapticsEnabled, setHapticsEnabled] = useState<boolean>(true);
   const [aimLookAhead, setAimLookAhead] = useState<boolean>(true);
   const [cameraMode, setCameraMode] = useState<CameraMode>('isometric');
+  const [mountedIsometric, setMountedIsometric] = useState(false);
 
   const activeMenu: Menu | null =
     menu ?? (hud?.won ? 'won' : hud?.dead ? 'dead' : null);
@@ -349,6 +356,10 @@ function Game() {
   const cachesTotal = hud?.cachesTotal ?? 0;
   const interactKind = hud?.interactKind ?? 0;
   const interactLabel = getInteractLabel(interactKind, floor);
+  const riding = hud?.controlKind === 1;
+  const recovering = ((hud?.ridingFlags ?? 0) & 1) !== 0;
+  const gripWarning = (hud?.gripUse ?? 0) >= 80;
+  const ridingSpeed = Math.round((hud?.speedMphX10 ?? 0) / 10);
   const medkits = hud?.medkits ?? 0;
   const canHeal = !!hud?.canHeal;
   const reloading = !!hud?.reloading;
@@ -430,6 +441,7 @@ function Game() {
         hapticsEnabled={hapticsEnabled}
         aimLookAhead={aimLookAhead}
         cameraMode={cameraMode}
+        mountedIsometric={mountedIsometric}
         onHudChanged={event => setHud(event.nativeEvent)}
         onAtlasTeleport={event => {
           const e = event.nativeEvent;
@@ -479,15 +491,28 @@ function Game() {
               </View>
 
               <View style={styles.weapon}>
-                <Text style={styles.statusLabel}>{activeWeaponTitle}</Text>
-                <Text
-                  style={[
-                    styles.statusValue,
-                    lowAmmo && !reloading && styles.statusValueWarn,
-                    reloading && styles.statusValueAccent,
-                  ]}>
-                  {activeWeaponReadout}
-                </Text>
+                {riding ? (
+                  <>
+                    <Text style={styles.statusLabel}>BIKE {hud?.bikeCondition ?? 0}%</Text>
+                    <Text style={[styles.statusValue, gripWarning && styles.statusValueWarn]}>
+                      {ridingSpeed} MPH{gripWarning ? ' · LOW GRIP' : ''}
+                    </Text>
+                  </>
+                ) : recovering ? (
+                  <Text style={styles.statusLabel}>RECOVERING</Text>
+                ) : (
+                  <>
+                    <Text style={styles.statusLabel}>{activeWeaponTitle}</Text>
+                    <Text
+                      style={[
+                        styles.statusValue,
+                        lowAmmo && !reloading && styles.statusValueWarn,
+                        reloading && styles.statusValueAccent,
+                      ]}>
+                      {activeWeaponReadout}
+                    </Text>
+                  </>
+                )}
               </View>
             </View>
 
@@ -594,7 +619,7 @@ function Game() {
           </View>
 
           {/* Thumb-Adjacent Contextual Interact Button */}
-          {interactLabel !== null && (
+          {!recovering && interactLabel !== null && (
             <View
               pointerEvents="box-none"
               style={[
@@ -627,6 +652,7 @@ function Game() {
             pointerEvents="box-none"
             style={[
               styles.bottom,
+              (riding || recovering) && {display: 'none'},
               {bottom: insets.bottom + (compact ? 6 : 12)},
             ]}>
             <View style={styles.hotbarRow}>
@@ -909,7 +935,7 @@ function Game() {
 
             <ScrollView style={styles.settingsScroll} contentContainerStyle={styles.settingsContent}>
             <View style={styles.settingGroup}>
-              <Text style={styles.settingLabel}>CAMERA</Text>
+              <Text style={styles.settingLabel}>ON-FOOT CAMERA</Text>
               <View style={styles.segmentRow}>
                 {CAMERA_OPTIONS.map(opt => (
                   <Pressable key={opt.id} accessibilityRole="button"
@@ -921,6 +947,26 @@ function Game() {
                     <Text style={[styles.segmentText, cameraMode === opt.id && styles.segmentTextSelected]}>{opt.label}</Text>
                   </Pressable>
                 ))}
+              </View>
+            </View>
+            <View style={styles.settingGroup}>
+              <Text style={styles.settingLabel}>MOTORCYCLE CAMERA</Text>
+              <View style={styles.segmentRow}>
+                {[false, true].map(fixed => {
+                  const selected = mountedIsometric === fixed;
+                  const label = fixed ? 'ISOMETRIC' : 'CHASE';
+                  return (
+                    <Pressable key={label} accessibilityRole="button"
+                      accessibilityLabel={`Motorcycle camera ${label}`}
+                      accessibilityState={{selected}}
+                      onPress={() => { playClick(); setMountedIsometric(fixed); }}
+                      style={({pressed}) => [styles.segmentButton,
+                        selected && styles.segmentButtonSelected,
+                        pressed && styles.controlPressed]}>
+                      <Text style={[styles.segmentText, selected && styles.segmentTextSelected]}>{label}</Text>
+                    </Pressable>
+                  );
+                })}
               </View>
             </View>
             {/* Control Scheme */}

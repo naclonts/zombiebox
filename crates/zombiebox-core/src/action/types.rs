@@ -3,6 +3,8 @@
 pub use crate::spatial::{BodyState, SpatialWorld, Vec2, Vec3};
 use crate::{District, Position};
 
+use super::vehicles::{MotorcycleCrashKind, MountedHud, RideInput, VehicleId};
+
 pub const ACTION_TICKS_PER_SECOND: u32 = 60;
 pub const DT: f32 = 1.0 / ACTION_TICKS_PER_SECOND as f32;
 pub const BLOCK_WIDTH: usize = 36;
@@ -316,6 +318,7 @@ pub enum DamageKind {
     RocketSplash,
     MonsterMelee,
     CausticBurst,
+    VehicleImpact,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -448,6 +451,9 @@ pub enum InteractPrompt {
     DropWindow = 5,
     StairsUp = 6,
     StairsDown = 7,
+    Mount = 8,
+    Dismount = 9,
+    RightBike = 10,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -586,6 +592,8 @@ pub struct ActionInput {
     pub reload: bool,
     pub use_medkit: bool,
     pub quiet_walk: bool,
+    /// Vehicle controls. Accepted only when the tick starts in the matching mode.
+    pub ride: Option<RideInput>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -604,6 +612,23 @@ pub enum FloorTransition {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ActionEvent {
+    VehicleCrash {
+        id: VehicleId,
+        at: Vec3,
+        kind: MotorcycleCrashKind,
+    },
+    VehicleSkidStarted {
+        id: VehicleId,
+        at: Vec3,
+        velocity: Vec3,
+    },
+    VehicleImpact {
+        id: VehicleId,
+        at: Vec3,
+        target: Option<MonsterId>,
+        speed: f32,
+        damage: u8,
+    },
     // Weapons & projectiles
     UnarmedShove {
         from: Vec3,
@@ -813,6 +838,8 @@ pub struct ActionHud {
     pub outcome: ActionOutcome,
     pub player_pos: Position,
     pub district: District,
+    /// Mounted-vehicle HUD values (`None` while on foot).
+    pub mounted: Option<MountedHud>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
