@@ -84,6 +84,11 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
     var out: VertexOutput;
     out.clip_position = camera.view_proj * world_p;
+    if ((v_meta.x >> 16u) & 16u) != 0u {
+        // Reserve a thin depth slice for held meshes, preserving near clipping
+        // and depth between the weapon, hands, and arms.
+        out.clip_position.z *= 0.0001;
+    }
     out.color = tint_color;
     out.normal = world_n;
     out.world_pos = world_p.xyz;

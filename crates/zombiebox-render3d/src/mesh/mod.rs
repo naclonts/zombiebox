@@ -2,15 +2,16 @@
 
 pub mod actors;
 pub mod buildings;
+pub(crate) mod doors;
 pub mod motorcycle;
 pub mod primitives;
 pub mod props;
-pub mod terrain;
 #[allow(clippy::excessive_precision)] // generated authored mesh tables
 pub mod survivor;
+pub mod terrain;
+pub mod vehicles;
 #[allow(clippy::excessive_precision)] // generated authored mesh tables
 pub mod weapons;
-pub mod vehicles;
 #[allow(clippy::excessive_precision)] // generated f32 literal table
 pub mod zombie;
 
@@ -79,6 +80,8 @@ impl MaterialFlags {
     pub const INDOOR_AMBIENT: Self = Self(1 << 2);
     /// Exempts geometry from upper-wall/roof cutaway dissolve even when attached to a building.
     pub const CUTAWAY_EXEMPT: Self = Self(1 << 3);
+    /// Keeps first-person held meshes in front of scene geometry while retaining their own depth.
+    pub const FIRST_PERSON_HELD: Self = Self(1 << 4);
 
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {

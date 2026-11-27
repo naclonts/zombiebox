@@ -290,6 +290,21 @@ fn footprint(s: &ChunkSnapshot, p: Position, f: u8, id: u32) -> (f32, f32, f32, 
 /// Generate building geometry only for owned tiles; the halo supplies neighbors at chunk seams.
 #[must_use]
 pub fn build_chunk_buildings_mesh(s: &ChunkSnapshot) -> MeshBuffer {
+    let mut mesh = build_chunk_building_shell(s);
+    let mut leaf_mesh = super::doors::door_leaf_mesh();
+    let original_colors: Vec<_> = leaf_mesh.vertices.iter().map(|v| v.color).collect();
+    for leaf in super::doors::door_leaves(s) {
+        for (vertex, color) in leaf_mesh.vertices.iter_mut().zip(&original_colors) {
+            vertex.meta = leaf.meta.pack();
+            vertex.color = std::array::from_fn(|i| color[i] * leaf.tint()[i]);
+        }
+        mesh.append_transformed(&leaf_mesh, leaf.model(if leaf.opened { 1.0 } else { 0.0 }));
+    }
+    mesh
+}
+
+/// Building geometry for a presentation that draws the hinged leaves as instances.
+pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
     let mut out = MeshBuilder::new();
     for ly in 0..CHUNK_SIZE {
         for lx in 0..CHUNK_SIZE {
@@ -500,7 +515,7 @@ pub fn build_chunk_buildings_mesh(s: &ChunkSnapshot) -> MeshBuffer {
                             }
                         }
                     }
-                    TileKind::Door { open, .. } => {
+                    TileKind::Door { .. } => {
                         part(
                             -0.5,
                             0.5,
@@ -509,19 +524,8 @@ pub fn build_chunk_buildings_mesh(s: &ChunkSnapshot) -> MeshBuffer {
                             palette.trim.to_array(),
                             wallmeta,
                         );
-                        if open {
-                            for (a, b) in [(-0.5, -0.45), (0.45, 0.5)] {
-                                part(a, b, z, z + DOOR_OPENING_HEIGHT, color, wallmeta)
-                            }
-                        } else {
-                            part(
-                                -0.5,
-                                0.5,
-                                z,
-                                z + DOOR_OPENING_HEIGHT,
-                                [0.36, 0.24, 0.16, 1.0],
-                                openingmeta,
-                            )
+                        for (a, b) in [(-0.5, -0.45), (0.45, 0.5)] {
+                            part(a, b, z, z + DOOR_OPENING_HEIGHT, color, wallmeta)
                         }
                     }
                     TileKind::Window | TileKind::BrokenWindow => {

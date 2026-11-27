@@ -1,15 +1,22 @@
 //! Procedural rigid-part actor poses. Only currently visible monsters are emitted.
+use crate::camera::{CameraFrame, CameraMode};
+use crate::coords::sim_to_render_point;
+use crate::interaction::{DoorReach, WindowVault};
+use crate::mesh::doors::DOOR_REACH_SECONDS;
 use crate::mesh::motorcycle::{MotorcycleLocator, motorcycle_locator};
 use crate::mesh::vehicles::MotorcycleTransforms;
 use crate::mesh::{
     GeometryTag, MaterialFlags, VertexMeta, actors::ActorPart, survivor::SurvivorNode,
 };
-use crate::player_rig::{RiderContacts, draw_survivor};
+use crate::player_rig::{
+    CombatPose, InteractionPose, RiderContacts, draw_first_person, draw_survivor, stride_distance,
+};
 use crate::scene::DynamicSceneState;
 use glam::{Mat4, Quat, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use zombiebox_core::{
-    ActionEvent, MonsterId, MonsterKind, Vec2 as SimVec2, Vec3 as SimVec3, VehicleView, Weapon,
+    ActionEvent, MonsterId, MonsterKind, Tile3D, Vec2 as SimVec2, Vec3 as SimVec3, VehicleView,
+    WallOrientation, Weapon,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,27 +43,81 @@ struct Corpse {
 enum PlayerAction {
     Swing,
     Shove,
-    Recoil,
-    DoorReach,
+    Recoil(Weapon),
+}
+
+struct PlayerLocomotion {
+    sample: Option<(u64, SimVec2)>,
+    phase: f32,
+    speed: f32,
+    target_speed: f32,
+    heading: f32,
+}
+
+impl Default for PlayerLocomotion {
+    fn default() -> Self {
+        Self {
+            sample: None,
+            phase: 0.25,
+            speed: 0.0,
+            target_speed: 0.0,
+            heading: 0.0,
+        }
+    }
+}
+
+impl PlayerLocomotion {
+    fn update(&mut self, tick: u64, position: SimVec2, grounded: bool, dt: f32) {
+        let previous = self.sample.replace((tick, position));
+        if !grounded {
+            self.speed = 0.0;
+            self.target_speed = 0.0;
+            return;
+        }
+
+        // Render frames can share a simulation tick. Advance the stride only on new travel.
+        if let Some((previous_tick, previous_position)) = previous
+            && tick > previous_tick
+        {
+            let delta = position - previous_position;
+            let distance = delta.length();
+            let seconds = (tick - previous_tick) as f32 * zombiebox_core::DT;
+            let speed = distance / seconds;
+            if (0.035..=8.0).contains(&speed) {
+                self.target_speed = speed;
+                self.heading = delta.x.atan2(delta.y);
+                self.phase = (self.phase + distance / stride_distance(speed)).fract();
+            } else {
+                self.target_speed = 0.0;
+            }
+        }
+
+        let speed_step = 46.0 * dt;
+        self.speed += (self.target_speed - self.speed).clamp(-speed_step, speed_step);
+    }
 }
 
 pub struct ActorAnimator {
     phase: f32,
-    player_phase: f32,
+    player_locomotion: PlayerLocomotion,
     draw_player: bool,
+    first_person: Option<CameraFrame>,
     corpses: VecDeque<Corpse>,
     action: Option<(PlayerAction, f32)>,
-    vault: Option<(SimVec3, SimVec3, f32)>,
+    door: Option<DoorReach>,
+    vault: Option<WindowVault>,
     was_mounted: bool,
 }
 impl Default for ActorAnimator {
     fn default() -> Self {
         Self {
             phase: 0.0,
-            player_phase: 0.0,
+            player_locomotion: PlayerLocomotion::default(),
             draw_player: true,
+            first_person: None,
             corpses: VecDeque::new(),
             action: None,
+            door: None,
             vault: None,
             was_mounted: false,
         }
@@ -69,11 +130,17 @@ impl ActorAnimator {
     }
     pub fn set_draw_player(&mut self, draw: bool) {
         self.draw_player = draw;
+        self.first_person = None;
+    }
+    pub fn set_player_camera(&mut self, camera: CameraFrame) {
+        self.first_person = (camera.mode == CameraMode::FirstPerson).then_some(camera);
+        self.draw_player = self.first_person.is_none();
     }
     pub fn notify_teleport(&mut self) {
         self.phase = 0.0;
-        self.player_phase = 0.0;
+        self.player_locomotion = PlayerLocomotion::default();
         self.action = None;
+        self.door = None;
         self.vault = None;
     }
     /// Consume each simulation event once, including events accumulated across catch-up ticks.
@@ -82,12 +149,24 @@ impl ActorAnimator {
             match *event {
                 ActionEvent::AxeSwing { .. } => self.action = Some((PlayerAction::Swing, 0.30)),
                 ActionEvent::UnarmedShove { .. } => self.action = Some((PlayerAction::Shove, 0.25)),
-                ActionEvent::ShotFired { .. } => self.action = Some((PlayerAction::Recoil, 0.18)),
-                ActionEvent::DoorToggled { .. } => {
-                    self.action = Some((PlayerAction::DoorReach, 0.34))
+                ActionEvent::ShotFired { weapon, .. } => {
+                    self.action = Some((PlayerAction::Recoil(weapon), 0.18))
                 }
-                ActionEvent::WindowClimbed { from, to, .. } => self.vault = Some((from, to, 0.56)),
-                ActionEvent::FloorChanged { .. } => self.vault = None,
+                ActionEvent::DoorToggled { at, pos, .. } => {
+                    self.door = Some(DoorReach {
+                        tile: at,
+                        center: sim_to_render_point(pos),
+                        elapsed: 0.0,
+                    });
+                }
+                ActionEvent::WindowClimbed { at, from, to } => {
+                    self.door = None;
+                    self.vault = Some(WindowVault::new(at, from, to));
+                }
+                ActionEvent::FloorChanged { .. } => {
+                    self.door = None;
+                    self.vault = None;
+                }
                 ActionEvent::MonsterDown {
                     id,
                     kind,
@@ -115,41 +194,44 @@ impl ActorAnimator {
     }
     #[must_use]
     pub fn prepare(&mut self, scene: &DynamicSceneState, dt: f32) -> ActorBatches {
-        if dt.is_finite() {
-            self.phase = (self.phase + dt.clamp(0.0, 0.1) * 8.0) % std::f32::consts::TAU;
-        }
-        let mut out = ActorBatches::new();
-        let motion = self.action.map_or(0.0, |(action, remaining)| match action {
-            PlayerAction::Swing => -1.4 * (remaining / 0.30 * std::f32::consts::PI).sin(),
-            PlayerAction::Shove => -1.1 * (remaining / 0.25 * std::f32::consts::PI).sin(),
-            PlayerAction::Recoil => 0.5 * (remaining / 0.18).clamp(0.0, 1.0),
-            PlayerAction::DoorReach => 0.0,
-        });
-        let reach = self.action.map_or(0.0, |(kind, remaining)| {
-            if matches!(kind, PlayerAction::DoorReach) {
-                (remaining / 0.34 * std::f32::consts::PI).sin().max(0.0)
-            } else {
-                0.0
-            }
-        });
-        let vault_pose = self.vault.map_or(0.0, |(_, _, remaining)| {
-            (std::f32::consts::PI * (1.0 - remaining / 0.56).clamp(0.0, 1.0))
-                .sin()
-                .max(0.0)
-        });
-        let p = &scene.player.render;
-        let speed = (p.body.velocity.x.powi(2) + p.body.velocity.y.powi(2)).sqrt();
-        if dt.is_finite() {
-            self.player_phase =
-                (self.player_phase + dt.clamp(0.0, 0.1) * speed * 3.5) % std::f32::consts::TAU;
-        }
-        let angle = p.pose.facing.x.atan2(p.pose.facing.y);
-        let move_angle = if speed > 0.05 {
-            p.body.velocity.x.atan2(p.body.velocity.y) - angle
+        self.prepare_with_openings(scene, dt, |_, _| None, |_| None)
+    }
+
+    pub(crate) fn prepare_with_openings(
+        &mut self,
+        scene: &DynamicSceneState,
+        dt: f32,
+        door_handle: impl FnOnce(Tile3D, Vec3) -> Option<Vec3>,
+        window_opening: impl FnOnce(Tile3D) -> Option<(WallOrientation, f32)>,
+    ) -> ActorBatches {
+        let elapsed = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
         } else {
             0.0
         };
-        let aim = p.aim_dir.x.atan2(p.aim_dir.y) - angle;
+        self.phase = (self.phase + elapsed * 8.0) % std::f32::consts::TAU;
+        let mut out = ActorBatches::new();
+        let equipped = scene.player.render.equipped;
+        let motion = match self.action {
+            Some((PlayerAction::Swing, remaining)) if equipped == Some(Weapon::Axe) => {
+                CombatPose::Swing((1.0 - remaining / 0.30).clamp(0.0, 1.0))
+            }
+            Some((PlayerAction::Shove, remaining)) => {
+                CombatPose::Shove((remaining / 0.25 * std::f32::consts::PI).sin().max(0.0))
+            }
+            Some((PlayerAction::Recoil(weapon), remaining)) if equipped == Some(weapon) => {
+                CombatPose::Recoil((remaining / 0.18).clamp(0.0, 1.0).powi(3))
+            }
+            _ => CombatPose::Ready,
+        };
+        let p = &scene.player.render;
+        let angle = p.pose.facing.x.atan2(p.pose.facing.y);
+        self.player_locomotion.update(
+            scene.sim_tick,
+            p.body.position.xy(),
+            p.body.motion.is_grounded() && scene.mounted_vehicle.is_none(),
+            elapsed,
+        );
         let pitch = p
             .aim_dir
             .z
@@ -157,15 +239,26 @@ impl ActorAnimator {
         let mut render_position =
             Vec3::new(p.body.position.x, p.body.position.z, p.body.position.y);
         let mut render_angle = angle;
-        if let Some((from, to, remaining)) = self.vault {
-            let t = (1.0 - remaining / 0.56).clamp(0.0, 1.0);
-            let horizontal = Vec3::new(to.x - from.x, 0.0, to.y - from.y);
-            if horizontal.length_squared() > 0.49 {
-                render_position += Vec3::new(from.x - to.x, 0.0, from.y - to.y) * (1.0 - t);
-                render_angle = (to.x - from.x).atan2(to.y - from.y);
+        let mut interaction = InteractionPose::default();
+        if let Some(vault) = self.vault {
+            if let Some(pose) = vault.pose(render_position, angle, window_opening(vault.tile)) {
+                (render_position, render_angle, interaction) = pose;
+            } else {
+                self.vault = None;
             }
-            render_position += Vec3::Y * (0.20 * (std::f32::consts::PI * t).sin());
+        } else if let Some(door) = self.door {
+            let handle =
+                door_handle(door.tile, render_position).unwrap_or(door.center + Vec3::Y * 0.59);
+            if p.pose.floor == door.tile.floor && render_position.distance(handle) < 1.38 {
+                (render_position, render_angle, interaction) =
+                    door.pose(render_position, angle, handle);
+            }
         }
+        let move_angle = self.player_locomotion.heading - render_angle;
+        let aim = ((p.aim_dir.x.atan2(p.aim_dir.y) - render_angle + std::f32::consts::PI)
+            .rem_euclid(std::f32::consts::TAU)
+            - std::f32::consts::PI)
+            * (1.0 - interaction.amount);
         let player_root =
             Mat4::from_translation(render_position) * Mat4::from_rotation_y(render_angle);
         let weapon = p.equipped.map(|w| match w {
@@ -183,6 +276,7 @@ impl ActorAnimator {
         });
         if self.was_mounted != mounted.is_some() {
             self.action = None;
+            self.door = None;
             self.vault = None;
             self.was_mounted = mounted.is_some();
         }
@@ -190,19 +284,33 @@ impl ActorAnimator {
             draw_survivor(
                 &mut out,
                 player_root,
-                self.player_phase,
-                speed,
-                p.quiet_walking,
+                self.player_locomotion.phase,
+                self.player_locomotion.speed,
                 aim,
                 pitch,
                 weapon,
                 meta,
                 motion,
                 false,
-                reach,
-                vault_pose,
+                interaction,
                 move_angle,
                 None,
+            );
+        }
+        if let (Some(camera), Some(part), None) = (&self.first_person, weapon, mounted) {
+            let view_meta = VertexMeta::DEFAULT
+                .with_tag(GeometryTag::Actor)
+                .with_floor(p.pose.floor)
+                .with_flags(MaterialFlags::ACTOR_MIN_LIGHT | MaterialFlags::FIRST_PERSON_HELD)
+                .pack();
+            draw_first_person(
+                &mut out,
+                camera,
+                part,
+                motion,
+                self.player_locomotion.phase,
+                self.player_locomotion.speed,
+                view_meta,
             );
         }
         if self.draw_player
@@ -236,15 +344,13 @@ impl ActorAnimator {
                 rider_root,
                 self.phase,
                 0.0,
-                false,
                 0.0,
                 0.0,
                 None,
                 actor_meta(p.pose.floor),
-                0.0,
+                CombatPose::Ready,
                 true,
-                0.0,
-                0.0,
+                InteractionPose::default(),
                 0.0,
                 Some(contacts),
             );
@@ -319,22 +425,22 @@ impl ActorAnimator {
                 false,
             );
         }
-        let elapsed = if dt.is_finite() {
-            dt.clamp(0.0, 0.1)
-        } else {
-            0.0
-        };
         if let Some((_, remaining)) = &mut self.action {
             *remaining -= elapsed;
             if *remaining <= 0.0 {
                 self.action = None;
             }
         }
-        if let Some((_, _, remaining)) = &mut self.vault {
-            *remaining -= elapsed;
-            if *remaining <= 0.0 {
-                self.vault = None;
+        if let Some(door) = &mut self.door {
+            door.elapsed += elapsed;
+            if door.elapsed >= DOOR_REACH_SECONDS {
+                self.door = None;
             }
+        }
+        if let Some(vault) = &mut self.vault
+            && !vault.advance(elapsed)
+        {
+            self.vault = None;
         }
         for corpse in &mut self.corpses {
             corpse.remaining -= elapsed;
@@ -590,24 +696,45 @@ mod tests {
     }
 
     #[test]
-    fn movement_animates_limbs_without_moving_root() {
+    fn gait_follows_travel_and_settles_with_stale_velocity() {
         let game = ActionGame::residential(42);
         let mut scene = SceneManager::new()
             .prepare_at_focus(&game, game.player_tile().pos(), 0.0)
             .dynamic;
         scene.monsters.clear();
-        scene.player.render.body.velocity.x = 1.0;
+        scene.player.render.body.velocity.x = 3.0;
         let mut animator = ActorAnimator::new();
-        let before = animator.prepare(&scene, 0.0);
-        let after = animator.prepare(&scene, 0.1);
-        assert_eq!(
-            before[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model[3],
-            after[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model[3]
-        );
-        assert_ne!(
-            before[&ActorPart::Survivor(SurvivorNode::ThighL)],
-            after[&ActorPart::Survivor(SurvivorNode::ThighL)]
-        );
+        let left_boot = ActorPart::Survivor(SurvivorNode::FootL);
+        let right_boot = ActorPart::Survivor(SurvivorNode::FootR);
+        let idle = animator.prepare(&scene, 0.0);
+        let idle_height = idle[&left_boot][0].model[3][1];
+        assert!((idle_height - idle[&right_boot][0].model[3][1]).abs() < 1e-5);
+
+        let dt = zombiebox_core::DT;
+        let mut lifted = [false; 2];
+        for _ in 0..30 {
+            scene.sim_tick += 1;
+            scene.player.render.body.position.x += 3.0 * dt;
+            let moving = animator.prepare(&scene, dt);
+            for (boot, lifted) in [left_boot, right_boot].into_iter().zip(&mut lifted) {
+                *lifted |= moving[&boot][0].model[3][1] > idle_height + 0.05;
+            }
+        }
+        assert_eq!(lifted, [true; 2]);
+
+        let phase_at_stop = animator.player_locomotion.phase;
+        for _ in 0..10 {
+            scene.sim_tick += 1;
+            let _ = animator.prepare(&scene, dt);
+        }
+        assert_eq!(animator.player_locomotion.phase, phase_at_stop);
+        let stopped = animator.prepare(&scene, dt);
+        assert!((stopped[&left_boot][0].model[3][1] - idle_height).abs() < 1e-5);
+        assert!((stopped[&right_boot][0].model[3][1] - idle_height).abs() < 1e-5);
+        scene.sim_tick += 1;
+        let later = animator.prepare(&scene, dt);
+        assert_eq!(stopped[&left_boot], later[&left_boot]);
+        assert_eq!(stopped[&right_boot], later[&right_boot]);
     }
 
     #[test]
@@ -691,11 +818,12 @@ mod tests {
             .dynamic;
         scene.monsters.clear();
         let from = scene.player.render.body.position;
-        let to = SimVec3::new(from.x + 2.0, from.y + 1.0, from.z);
+        let to = SimVec3::new(from.x + 2.0, from.y, from.z);
+        let window = Tile3D::new(game.player_tile().x + 1, game.player_tile().y, 0);
         scene.player.render.body.position = to;
         let mut animator = ActorAnimator::new();
         animator.observe_events(&[ActionEvent::WindowClimbed {
-            at: game.player_tile(),
+            at: window,
             from,
             to,
         }]);

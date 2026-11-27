@@ -1,6 +1,6 @@
-use glam::{Mat4, UVec2};
+use glam::{Mat4, UVec2, Vec3};
 use std::time::Instant;
-use zombiebox_core::{ActionGame, SpatialWorld};
+use zombiebox_core::{ActionEvent, ActionGame, FLOOR_H, SpatialWorld, TileKind};
 
 use crate::animation::ActorAnimator;
 use crate::coords::render_to_sim_point;
@@ -10,14 +10,15 @@ use crate::gpu::{
     RenderPipelineConfig, SceneLightingUniforms, SurfaceFrameOutcome,
 };
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
-use crate::mesh::buildings::build_chunk_buildings_mesh;
+use crate::mesh::buildings::build_chunk_building_shell;
+use crate::mesh::doors::{AnimatedDoor, door_leaf_mesh, door_leaves};
 use crate::mesh::motorcycle::{MotorcyclePart, motorcycle_part_mesh};
 use crate::mesh::props::{build_chunk_props_mesh, cache_instances, cache_mesh};
 use crate::mesh::vehicles::{MotorcycleTransforms, default_motorcycle_paint};
 use crate::telemetry::{FramePercentiles, FrameTelemetry, FrameTiming};
 use crate::{
-    CameraFrame, CameraMode, CameraRig, CameraTarget, FrameSnapshot, RgbaImage, SceneConfig,
-    SceneManager, build_chunk_terrain_mesh, weapon_look_ahead_distance,
+    CameraFrame, CameraMode, CameraRig, CameraTarget, ChunkCoord, FrameSnapshot, RgbaImage,
+    SceneConfig, SceneManager, build_chunk_terrain_mesh, weapon_look_ahead_distance,
 };
 use std::collections::BTreeMap;
 use zombiebox_core::{MotorcyclePhase, VehicleView};
@@ -31,6 +32,8 @@ pub struct Presentation {
     actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
     cache_prototypes: [PrototypeMeshId; 2],
     motorcycle_prototypes: [PrototypeMeshId; 4],
+    door_prototype: PrototypeMeshId,
+    doors: BTreeMap<ChunkCoord, Vec<AnimatedDoor>>,
     motorcycle_wheel_phase: BTreeMap<zombiebox_core::VehicleId, f32>,
     mounted_camera_preference_isometric: bool,
     effects: Effects,
@@ -40,7 +43,8 @@ pub struct Presentation {
 
 const CACHE_BATCH_COUNT: usize = 2;
 const MOTORCYCLE_BATCH_COUNT: usize = 4;
-const BATCH_COUNT: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
+const DOOR_BATCH: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
+const BATCH_COUNT: usize = DOOR_BATCH + 1;
 
 impl Presentation {
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
@@ -55,6 +59,7 @@ impl Presentation {
             renderer.register_prototype(ctx, "closed_cache", cache_mesh(false)),
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
         ];
+        let door_prototype = renderer.register_prototype(ctx, "door_leaf", &door_leaf_mesh());
         let motorcycle_prototypes = [
             MotorcyclePart::Body,
             MotorcyclePart::Steering,
@@ -87,6 +92,8 @@ impl Presentation {
             actor_prototypes,
             cache_prototypes,
             motorcycle_prototypes,
+            door_prototype,
+            doors: BTreeMap::new(),
             motorcycle_wheel_phase: BTreeMap::new(),
             mounted_camera_preference_isometric: false,
             effects: Effects::new(),
@@ -114,6 +121,7 @@ impl Presentation {
 
     pub fn reset(&mut self) {
         self.motorcycle_wheel_phase.clear();
+        self.doors.clear();
         self.scene.reset();
         self.renderer.chunks_mut().clear();
         self.actors = ActorAnimator::new();
@@ -200,15 +208,28 @@ impl Presentation {
             }
         }
         let frame = self.scene.prepare(game, &camera, dt);
-        self.renderer.chunks_mut().retain_chunks(|coord, _| {
+        let is_active = |coord: ChunkCoord| {
             frame
                 .active_chunks
                 .binary_search_by_key(&(coord.cy, coord.cx), |c| (c.cy, c.cx))
                 .is_ok()
-        });
+        };
+        self.renderer
+            .chunks_mut()
+            .retain_chunks(|coord, _| is_active(coord));
+        self.doors.retain(|coord, _| is_active(*coord));
         for delta in &frame.dirty_chunks {
+            let doors = self.doors.entry(delta.coord).or_default();
+            let previous = std::mem::take(doors);
+            doors.extend(door_leaves(&delta.snapshot).map(|leaf| {
+                let matching = previous.iter().find(|door| door.leaf.tile == leaf.tile);
+                let toggled = frame.events.iter().any(
+                    |event| matches!(event, ActionEvent::DoorToggled { at, .. } if *at == leaf.tile),
+                );
+                AnimatedDoor::new(leaf, matching, toggled)
+            }));
             let mut mesh = build_chunk_terrain_mesh(&delta.snapshot);
-            mesh.append(&build_chunk_buildings_mesh(&delta.snapshot));
+            mesh.append(&build_chunk_building_shell(&delta.snapshot));
             mesh.append(&build_chunk_props_mesh(&delta.snapshot));
             let bounds = mesh
                 .compute_aabb()
@@ -218,11 +239,32 @@ impl Presentation {
         }
         self.renderer.update_visibility(ctx, &frame.dynamic);
         let lighting = SceneLightingUniforms::for_scene(&frame.dynamic, &camera);
-        self.actors
-            .set_draw_player(camera.mode != CameraMode::FirstPerson);
+        self.actors.set_player_camera(camera);
         self.actors.observe_events(&frame.events);
         let mut instances: [Vec<InstanceRaw>; BATCH_COUNT] = std::array::from_fn(|_| Vec::new());
-        for (part, part_instances) in self.actors.prepare(&frame.dynamic, dt) {
+        let actors = self.actors.prepare_with_openings(
+            &frame.dynamic,
+            dt,
+            |tile, player: Vec3| {
+                self.doors
+                    .get(&ChunkCoord::from_pos(tile.pos()))?
+                    .iter()
+                    .find(|door| door.leaf.tile == tile)
+                    .map(|door| door.leaf.handle(door.openness(), player))
+            },
+            |tile| {
+                let info = game.tile_render_info(tile.pos(), tile.floor)?;
+                if info.kind != TileKind::BrokenWindow {
+                    return None;
+                }
+                let building = game.buildings().iter().find(|b| b.id == info.building_id)?;
+                Some((
+                    info.orientation,
+                    building.foundation_z + f32::from(tile.floor) * FLOOR_H,
+                ))
+            },
+        );
+        for (part, part_instances) in actors {
             instances[part.mesh_index()].extend(part_instances.into_iter().map(|actor| {
                 let mut instance =
                     InstanceRaw::from_transform(Mat4::from_cols_array_2d(&actor.model))
@@ -240,6 +282,19 @@ impl Presentation {
                 InstanceRaw::from_transform(Mat4::from_translation(cache.position))
                     .with_tint(cache.tint),
             );
+        }
+        let door_dt = if dt.is_finite() {
+            dt.clamp(0.0, 0.1)
+        } else {
+            0.0
+        };
+        for door in self.doors.values_mut().flatten() {
+            instances[DOOR_BATCH].push(
+                InstanceRaw::from_transform(door.leaf.model(door.openness()))
+                    .with_tint(door.leaf.tint())
+                    .with_meta_override(door.leaf.meta),
+            );
+            door.advance(door_dt);
         }
         self.motorcycle_wheel_phase.retain(|id, _| {
             frame
@@ -281,6 +336,7 @@ impl Presentation {
         actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
         cache_prototypes: [PrototypeMeshId; 2],
         motorcycle_prototypes: [PrototypeMeshId; 4],
+        door_prototype: PrototypeMeshId,
         instances: &'a [Vec<InstanceRaw>; BATCH_COUNT],
     ) -> Vec<InstanceBatch<'a>> {
         let mut batches = Vec::with_capacity(BATCH_COUNT);
@@ -302,6 +358,10 @@ impl Presentation {
                 instances: &instances[ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + index],
             });
         }
+        batches.push(InstanceBatch {
+            mesh: door_prototype,
+            instances: &instances[DOOR_BATCH],
+        });
         batches
     }
 
@@ -318,6 +378,7 @@ impl Presentation {
             self.actor_prototypes,
             self.cache_prototypes,
             self.motorcycle_prototypes,
+            self.door_prototype,
             &instances,
         );
         let prepare_time = started.elapsed();
@@ -370,6 +431,7 @@ impl Presentation {
             self.actor_prototypes,
             self.cache_prototypes,
             self.motorcycle_prototypes,
+            self.door_prototype,
             &instances,
         );
         let prepare_time = started.elapsed();

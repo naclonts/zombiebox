@@ -10,9 +10,10 @@ pub mod coords;
 pub mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
+mod interaction;
 pub mod materials;
-mod player_rig;
 pub mod mesh;
+mod player_rig;
 #[cfg(feature = "gpu")]
 mod presentation;
 pub mod scene;

@@ -47,6 +47,8 @@ You can also transfer `apps/mobile/build/zombiebox-android.apk` to the phone, op
 
 - **Build stamp and Makefile (2026-11-26).** `make build` assembled the release APK offline-incrementally (`BUILD SUCCESSFUL`, 3m 6s on this host) and wrote `apps/mobile/build/zombiebox-android.apk` (SHA-256 `5084e503f2a333666697f53e2372bc301ea63db28986cae887a4c5940ce0d97e`). The Hermes bundle inside that APK contains the `BUILD e8b4db0-dirty` stamp, and `npm run typecheck` passes with the generated `gitInfo.ts`. `make run` served `http://127.0.0.1:8765/` (HTTP 200). The settings-menu placement of the stamp still needs a visual check on a device or emulator.
 
+- **Survivor animation (2026-11-27).** Host captures covered quiet and brisk gait, stopping, door opening and closing, window vaulting, a breach, stairs, and camera changes in Birch Street. Seed 42 host play crossed a chunk edge and exercised the long weapons. Headless Chrome verified the first-person axe pickup and swing, door interaction, camera switching, and county movement. Android device and emulator checks are pending for this change.
+
 For 3D verification, see the [progress ledger](../../docs/render3d-progress.md#3d-cutover-verification). In an Android development session, `adb logcat -s Zombiebox3D` can show frame interval percentiles, CPU preparation and submission times, culling, and the active resolution tier.
 
 ### County field atlas
