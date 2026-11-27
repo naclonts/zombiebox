@@ -1046,7 +1046,16 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
         .expect("run checked above");
     session.frame_version = frame_version;
     session.ensure_renderer(&gpu_context, u32::from(w), u32::from(h));
-    let player_heading = session.game.player_body().heading;
+    let mounted_id = session.game.mounted_vehicle();
+    let mounted_view = mounted_id.and_then(|id| {
+        session
+            .game
+            .vehicle_views()
+            .find_map(|(candidate, view)| (candidate == id).then_some(view))
+    });
+    let heading = mounted_view.map_or(session.game.player_body().heading, |v| match v {
+        zombiebox_core::VehicleView::Motorcycle(m) => m.body.heading,
+    });
     if let Some(renderer) = &mut session.renderer {
         renderer.set_mounted_camera_preference(mounted_isometric);
         renderer
@@ -1054,9 +1063,11 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
             .set_look_ahead((flags & ZB_INPUT_LOOK_AHEAD) != 0);
         if let Some(mode) = camera.and_then(|mode| CameraMode::from_index(mode as usize)) {
             let camera = renderer.camera_mut();
-            camera.set_mode(mode);
-            if matches!(mode, CameraMode::Chase | CameraMode::FirstPerson) {
-                camera.initialize_view_from_heading(player_heading);
+            if camera.mode() != mode {
+                camera.set_mode(mode);
+                if matches!(mode, CameraMode::Chase | CameraMode::FirstPerson) {
+                    camera.initialize_view_from_heading(heading);
+                }
             }
         }
     }
@@ -1800,6 +1811,82 @@ mod tests {
         let (_, legacy_body) = split_http_response(&legacy);
         assert_eq!(&legacy_body[0..4], b"ZBF2");
         assert_eq!(legacy_body.len(), 64 + 320 * 180 * 4);
+    }
+
+    #[test]
+    fn action_county_gpu_protocol_mounted_respects_all_camera_modes() {
+        let mut state = HostState {
+            next_id: 1,
+            ..HostState::default()
+        };
+        let mut starter = game_at_starter_motorcycle();
+        starter.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert_eq!(starter.control_mode(), zombiebox_core::ControlMode::Motorcycle);
+        state.action_sessions.insert(1, ActionSession::new(starter));
+
+        // First frame initializes GPU renderer and establishes baseline frame time
+        let init_req = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1000000000&mx=0&my=0&ax=0&ay=0&flags=0&weapon=-1&advance=0&frame_version=3&control_kind=1&steer=0&throttle=0&brake=0&lean=0&camera=0",
+            &mut state,
+        );
+        let (_, init_body) = split_http_response(&init_req);
+        assert_eq!(&init_body[0..4], b"ZBF3");
+        assert_eq!(init_body[64], 1, "session starts mounted on motorcycle");
+
+        // Verify each camera mode can be selected and is respected while riding
+        for mode_idx in 0..CameraMode::COUNT {
+            let body_str = format!(
+                "w=320&h=180&t_ns=1000000000&mx=0&my=0&ax=0&ay=0&flags=0&weapon=-1&advance=0&frame_version=3&control_kind=1&steer=0&throttle=0&brake=0&lean=0&camera={mode_idx}"
+            );
+            let resp = route("POST", "/api/action/1/frame", body_str.as_bytes(), &mut state);
+            let (head, body) = split_http_response(&resp);
+            assert!(head.starts_with("HTTP/1.1 200 OK"));
+            assert_eq!(&body[0..4], b"ZBF3");
+            assert_eq!(body[64], 1, "still mounted");
+            let expected_mode = CameraMode::from_index(mode_idx).unwrap();
+            assert_eq!(
+                state.action_sessions[&1]
+                    .renderer
+                    .as_ref()
+                    .unwrap()
+                    .camera()
+                    .mode(),
+                expected_mode,
+                "renderer camera mode must match selected camera mode while mounted"
+            );
+        }
+
+        // Advance clock baseline then send a tick with interact (flags=4) to dismount at rest
+        let _ = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1000000000&mx=0&my=0&ax=0&ay=0&flags=0&weapon=-1&advance=1&frame_version=3&control_kind=1&steer=0&throttle=0&brake=0&lean=0",
+            &mut state,
+        );
+        let dismount_req = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&flags=4&weapon=-1&advance=1&frame_version=3&control_kind=1&steer=0&throttle=0&brake=0&lean=0",
+            &mut state,
+        );
+        let (_, dismount_body) = split_http_response(&dismount_req);
+        assert_eq!(&dismount_body[0..4], b"ZBF3");
+        assert_eq!(dismount_body[64], 0, "now dismounted");
+        assert_eq!(
+            state.action_sessions[&1]
+                .renderer
+                .as_ref()
+                .unwrap()
+                .camera()
+                .mode(),
+            CameraMode::FirstPerson,
+            "camera mode preserved after dismount"
+        );
     }
 
     #[test]
