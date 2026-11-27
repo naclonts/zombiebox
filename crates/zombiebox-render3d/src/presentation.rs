@@ -124,6 +124,7 @@ impl Presentation {
 
     pub fn notify_teleport(&mut self) {
         self.scene.notify_teleport();
+        self.actors.notify_teleport();
         self.effects = Effects::new();
         self.camera.notify_teleport();
     }

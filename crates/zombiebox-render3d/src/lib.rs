@@ -11,6 +11,7 @@ pub mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod materials;
+mod player_rig;
 pub mod mesh;
 #[cfg(feature = "gpu")]
 mod presentation;

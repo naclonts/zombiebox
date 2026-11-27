@@ -1,10 +1,12 @@
 //! Procedural rigid-part actor poses. Only currently visible monsters are emitted.
-use crate::coords::heading_to_render_quat;
 use crate::mesh::motorcycle::{MotorcycleLocator, motorcycle_locator};
 use crate::mesh::vehicles::MotorcycleTransforms;
-use crate::mesh::{GeometryTag, MaterialFlags, VertexMeta, actors::ActorPart};
+use crate::mesh::{
+    GeometryTag, MaterialFlags, VertexMeta, actors::ActorPart, survivor::SurvivorNode,
+};
+use crate::player_rig::{RiderContacts, draw_survivor};
 use crate::scene::DynamicSceneState;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 use std::collections::{BTreeMap, VecDeque};
 use zombiebox_core::{
     ActionEvent, MonsterId, MonsterKind, Vec2 as SimVec2, Vec3 as SimVec3, VehicleView, Weapon,
@@ -35,21 +37,28 @@ enum PlayerAction {
     Swing,
     Shove,
     Recoil,
+    DoorReach,
 }
 
 pub struct ActorAnimator {
     phase: f32,
+    player_phase: f32,
     draw_player: bool,
     corpses: VecDeque<Corpse>,
     action: Option<(PlayerAction, f32)>,
+    vault: Option<(SimVec3, SimVec3, f32)>,
+    was_mounted: bool,
 }
 impl Default for ActorAnimator {
     fn default() -> Self {
         Self {
             phase: 0.0,
+            player_phase: 0.0,
             draw_player: true,
             corpses: VecDeque::new(),
             action: None,
+            vault: None,
+            was_mounted: false,
         }
     }
 }
@@ -61,6 +70,12 @@ impl ActorAnimator {
     pub fn set_draw_player(&mut self, draw: bool) {
         self.draw_player = draw;
     }
+    pub fn notify_teleport(&mut self) {
+        self.phase = 0.0;
+        self.player_phase = 0.0;
+        self.action = None;
+        self.vault = None;
+    }
     /// Consume each simulation event once, including events accumulated across catch-up ticks.
     pub fn observe_events(&mut self, events: &[ActionEvent]) {
         for event in events {
@@ -68,6 +83,11 @@ impl ActorAnimator {
                 ActionEvent::AxeSwing { .. } => self.action = Some((PlayerAction::Swing, 0.30)),
                 ActionEvent::UnarmedShove { .. } => self.action = Some((PlayerAction::Shove, 0.25)),
                 ActionEvent::ShotFired { .. } => self.action = Some((PlayerAction::Recoil, 0.18)),
+                ActionEvent::DoorToggled { .. } => {
+                    self.action = Some((PlayerAction::DoorReach, 0.34))
+                }
+                ActionEvent::WindowClimbed { from, to, .. } => self.vault = Some((from, to, 0.56)),
+                ActionEvent::FloorChanged { .. } => self.vault = None,
                 ActionEvent::MonsterDown {
                     id,
                     kind,
@@ -103,20 +123,51 @@ impl ActorAnimator {
             PlayerAction::Swing => -1.4 * (remaining / 0.30 * std::f32::consts::PI).sin(),
             PlayerAction::Shove => -1.1 * (remaining / 0.25 * std::f32::consts::PI).sin(),
             PlayerAction::Recoil => 0.5 * (remaining / 0.18).clamp(0.0, 1.0),
+            PlayerAction::DoorReach => 0.0,
+        });
+        let reach = self.action.map_or(0.0, |(kind, remaining)| {
+            if matches!(kind, PlayerAction::DoorReach) {
+                (remaining / 0.34 * std::f32::consts::PI).sin().max(0.0)
+            } else {
+                0.0
+            }
+        });
+        let vault_pose = self.vault.map_or(0.0, |(_, _, remaining)| {
+            (std::f32::consts::PI * (1.0 - remaining / 0.56).clamp(0.0, 1.0))
+                .sin()
+                .max(0.0)
         });
         let p = &scene.player.render;
         let speed = (p.body.velocity.x.powi(2) + p.body.velocity.y.powi(2)).sqrt();
+        if dt.is_finite() {
+            self.player_phase =
+                (self.player_phase + dt.clamp(0.0, 0.1) * speed * 3.5) % std::f32::consts::TAU;
+        }
         let angle = p.pose.facing.x.atan2(p.pose.facing.y);
+        let move_angle = if speed > 0.05 {
+            p.body.velocity.x.atan2(p.body.velocity.y) - angle
+        } else {
+            0.0
+        };
         let aim = p.aim_dir.x.atan2(p.aim_dir.y) - angle;
         let pitch = p
             .aim_dir
             .z
             .atan2((p.aim_dir.x * p.aim_dir.x + p.aim_dir.y * p.aim_dir.y).sqrt());
-        let player_root = Mat4::from_translation(Vec3::new(
-            p.body.position.x,
-            p.body.position.z,
-            p.body.position.y,
-        )) * Mat4::from_rotation_y(angle);
+        let mut render_position =
+            Vec3::new(p.body.position.x, p.body.position.z, p.body.position.y);
+        let mut render_angle = angle;
+        if let Some((from, to, remaining)) = self.vault {
+            let t = (1.0 - remaining / 0.56).clamp(0.0, 1.0);
+            let horizontal = Vec3::new(to.x - from.x, 0.0, to.y - from.y);
+            if horizontal.length_squared() > 0.49 {
+                render_position += Vec3::new(from.x - to.x, 0.0, from.y - to.y) * (1.0 - t);
+                render_angle = (to.x - from.x).atan2(to.y - from.y);
+            }
+            render_position += Vec3::Y * (0.20 * (std::f32::consts::PI * t).sin());
+        }
+        let player_root =
+            Mat4::from_translation(render_position) * Mat4::from_rotation_y(render_angle);
         let weapon = p.equipped.map(|w| match w {
             Weapon::Axe => ActorPart::Axe,
             Weapon::Pistol => ActorPart::Pistol,
@@ -130,26 +181,28 @@ impl ActorAnimator {
                 .iter()
                 .find_map(|(vehicle_id, v)| (*vehicle_id == id).then_some(*v))
         });
+        if self.was_mounted != mounted.is_some() {
+            self.action = None;
+            self.vault = None;
+            self.was_mounted = mounted.is_some();
+        }
         if self.draw_player && mounted.is_none() {
-            draw_actor(
+            draw_survivor(
                 &mut out,
                 player_root,
-                1.05,
-                0.23,
-                [0.48, 0.58, 0.64, 1.0],
-                self.phase,
+                self.player_phase,
                 speed,
                 p.quiet_walking,
-                false,
-                false,
-                false,
-                0.0,
                 aim,
                 pitch,
                 weapon,
                 meta,
                 motion,
                 false,
+                reach,
+                vault_pose,
+                move_angle,
+                None,
             );
         }
         if self.draw_player
@@ -158,29 +211,42 @@ impl ActorAnimator {
             let transforms = MotorcycleTransforms::from_view(moto, 0.0);
             let (parent, local) = motorcycle_locator(MotorcycleLocator::Seat);
             let seat = transforms.part_transform(parent).transform_point3(local);
-            let orientation = heading_to_render_quat(moto.body.heading)
-                * glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
-            let rider_root =
-                Mat4::from_translation(seat + Vec3::Y * 0.20) * Mat4::from_quat(orientation);
-            draw_actor(
+            let (_, bike_orientation, _) = transforms.body.to_scale_rotation_translation();
+            let seat_local = Vec3::from_array(SurvivorNode::Pelvis.bind_translation())
+                + Quat::from_rotation_x(-0.25)
+                    * Vec3::from_array(SurvivorNode::SocketSeat.bind_translation());
+            let rider_root = Mat4::from_translation(seat - bike_orientation * seat_local)
+                * Mat4::from_quat(bike_orientation);
+            let locator = |point| {
+                let (parent, local) = motorcycle_locator(point);
+                transforms.part_transform(parent).transform_point3(local)
+            };
+            let contacts = RiderContacts {
+                hands: [
+                    locator(MotorcycleLocator::GripLeft),
+                    locator(MotorcycleLocator::GripRight),
+                ],
+                feet: [
+                    locator(MotorcycleLocator::FootboardLeft),
+                    locator(MotorcycleLocator::FootboardRight),
+                ],
+            };
+            draw_survivor(
                 &mut out,
                 rider_root,
-                0.72,
-                0.18,
-                [0.48, 0.58, 0.64, 1.0],
                 self.phase,
                 0.0,
                 false,
-                false,
-                false,
-                false,
-                0.0,
                 0.0,
                 0.0,
                 None,
                 actor_meta(p.pose.floor),
                 0.0,
                 true,
+                0.0,
+                0.0,
+                0.0,
+                Some(contacts),
             );
         }
         for m in &scene.monsters {
@@ -264,6 +330,12 @@ impl ActorAnimator {
                 self.action = None;
             }
         }
+        if let Some((_, _, remaining)) = &mut self.vault {
+            *remaining -= elapsed;
+            if *remaining <= 0.0 {
+                self.vault = None;
+            }
+        }
         for corpse in &mut self.corpses {
             corpse.remaining -= elapsed;
         }
@@ -271,6 +343,7 @@ impl ActorAnimator {
         out
     }
 }
+
 fn monster_shape(kind: MonsterKind) -> (f32, f32, [f32; 4]) {
     match kind {
         MonsterKind::Shambler => (0.98, 0.24, [0.43, 0.52, 0.39, 1.0]),
@@ -455,11 +528,15 @@ mod tests {
     use zombiebox_core::{ActionGame, TileVisibility};
 
     fn body_count(batches: &ActorBatches) -> usize {
-        [ActorPart::Body, ActorPart::ZombieBody]
-            .into_iter()
-            .filter_map(|part| batches.get(&part))
-            .map(Vec::len)
-            .sum()
+        [
+            ActorPart::Body,
+            ActorPart::ZombieBody,
+            ActorPart::Survivor(SurvivorNode::Pelvis),
+        ]
+        .into_iter()
+        .filter_map(|part| batches.get(&part))
+        .map(Vec::len)
+        .sum()
     }
 
     #[test]
@@ -482,7 +559,8 @@ mod tests {
             .iter()
             .filter(|monster| monster.kind != MonsterKind::Shambler)
             .count();
-        assert_eq!(batches[&ActorPart::Body].len(), 1 + non_shamblers);
+        assert_eq!(batches[&ActorPart::Survivor(SurvivorNode::Pelvis)].len(), 1);
+        assert_eq!(batches[&ActorPart::Body].len(), non_shamblers);
     }
 
     #[test]
@@ -522,8 +600,14 @@ mod tests {
         let mut animator = ActorAnimator::new();
         let before = animator.prepare(&scene, 0.0);
         let after = animator.prepare(&scene, 0.1);
-        assert_eq!(before[&ActorPart::Body], after[&ActorPart::Body]);
-        assert_ne!(before[&ActorPart::Limb], after[&ActorPart::Limb]);
+        assert_eq!(
+            before[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model[3],
+            after[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model[3]
+        );
+        assert_ne!(
+            before[&ActorPart::Survivor(SurvivorNode::ThighL)],
+            after[&ActorPart::Survivor(SurvivorNode::ThighL)]
+        );
     }
 
     #[test]
@@ -586,13 +670,54 @@ mod tests {
         }]);
         let _ = animator.prepare(&scene, 0.1);
         let active = animator.prepare(&scene, 0.0);
-        assert_ne!(idle[&ActorPart::Limb], active[&ActorPart::Limb]);
+        assert_ne!(
+            idle[&ActorPart::Survivor(SurvivorNode::UpperArmR)],
+            active[&ActorPart::Survivor(SurvivorNode::UpperArmR)]
+        );
         for _ in 0..4 {
             let _ = animator.prepare(&scene, 0.1);
         }
         assert_eq!(
-            idle[&ActorPart::Limb],
-            animator.prepare(&scene, 0.0)[&ActorPart::Limb]
+            idle[&ActorPart::Survivor(SurvivorNode::UpperArmR)],
+            animator.prepare(&scene, 0.0)[&ActorPart::Survivor(SurvivorNode::UpperArmR)]
         );
+    }
+
+    #[test]
+    fn window_climb_blends_between_explicit_endpoints_and_expires() {
+        let game = ActionGame::residential(42);
+        let mut scene = SceneManager::new()
+            .prepare_at_focus(&game, game.player_tile().pos(), 0.0)
+            .dynamic;
+        scene.monsters.clear();
+        let from = scene.player.render.body.position;
+        let to = SimVec3::new(from.x + 2.0, from.y + 1.0, from.z);
+        scene.player.render.body.position = to;
+        let mut animator = ActorAnimator::new();
+        animator.observe_events(&[ActionEvent::WindowClimbed {
+            at: game.player_tile(),
+            from,
+            to,
+        }]);
+        let start =
+            animator.prepare(&scene, 0.0)[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model[3];
+        assert!((start[0] - from.x).abs() < 1e-4);
+        assert!((start[2] - from.y).abs() < 1e-4);
+        for _ in 0..3 {
+            let _ = animator.prepare(&scene, 0.1);
+        }
+        let mid =
+            animator.prepare(&scene, 0.0)[&ActorPart::Survivor(SurvivorNode::Pelvis)][0].model[3];
+        assert!(
+            (from.x + 0.8..=from.x + 1.2).contains(&mid[0]),
+            "mid x {} from {}",
+            mid[0],
+            from.x
+        );
+        assert!(mid[1] > from.z);
+        for _ in 0..3 {
+            let _ = animator.prepare(&scene, 0.1);
+        }
+        assert!(animator.vault.is_none());
     }
 }
