@@ -319,3 +319,93 @@ fn sharp_steer_at_road_speed_ejects_rider_and_keeps_skidding_bike() {
     let (VehicleView::Motorcycle(a), VehicleView::Motorcycle(b)) = (before, after);
     assert_ne!(a.body.position, b.body.position);
 }
+
+#[test]
+fn lean_is_primary_steering_mechanism_at_high_speed_without_crashing() {
+    let mut game = ActionGame::county(42);
+    let (_, bike_pos) = starter_bike(&game);
+    assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    // Accelerate past high-speed threshold (~15+ mph)
+    for _ in 0..120 {
+        game.step(ride(0.9, 0.0, 0.0, 0.0));
+    }
+    assert!(
+        game.hud().mounted.unwrap().speed_mph_x10 >= 180,
+        "must exceed high speed threshold"
+    );
+    let heading_before = game.player_body().heading;
+    for _ in 0..40 {
+        game.step(ride(0.6, 0.0, 0.0, 0.8));
+    }
+    let heading_after = game.player_body().heading;
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+    assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
+    assert!(
+        (heading_after - heading_before).abs() > 0.15,
+        "lean alone must steer the motorcycle at high speed: {heading_before} -> {heading_after}"
+    );
+}
+
+#[test]
+fn full_handlebar_steer_at_low_speed_turns_cleanly_without_crashing() {
+    let mut game = ActionGame::county(42);
+    let (_, bike_pos) = starter_bike(&game);
+    assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    // Accelerate to ~5 mph (speed_mph_x10 around 50)
+    for _ in 0..35 {
+        game.step(ride(0.65, 0.0, 0.0, 0.0));
+    }
+    let speed = game.hud().mounted.unwrap().speed_mph_x10;
+    assert!(speed >= 30 && speed <= 75, "speed in low regime: {speed}");
+    let heading_before = game.player_body().heading;
+    for _ in 0..25 {
+        game.step(ride(0.35, 0.0, 1.0, 0.0));
+    }
+    let heading_after = game.player_body().heading;
+    assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+    assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
+    assert!(
+        (heading_after - heading_before).abs() > 0.3,
+        "handlebar steering must turn the bike sharply at low speed"
+    );
+}
+
+#[test]
+fn hard_lean_at_two_mph_tips_over() {
+    let mut game = ActionGame::county(42);
+    let (_, bike_pos) = starter_bike(&game);
+    assert!(game.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    // Reach ~2 mph (speed_mph_x10 around 20)
+    for _ in 0..20 {
+        game.step(ride(0.4, 0.0, 0.0, 0.0));
+    }
+    let speed = game.hud().mounted.unwrap().speed_mph_x10;
+    assert!(speed >= 15 && speed <= 30, "speed around 2 mph: {speed}");
+    let mut saw_tip = false;
+    for _ in 0..25 {
+        game.step(ride(0.1, 0.0, 0.0, 1.0));
+        saw_tip |= game.events().iter().any(|e| {
+            matches!(
+                e,
+                zombiebox_core::ActionEvent::VehicleCrash {
+                    kind: zombiebox_core::MotorcycleCrashKind::LowSpeedTip,
+                    ..
+                }
+            )
+        });
+    }
+    assert!(saw_tip, "hard lean at ~2 mph must tip the bike over");
+    assert_eq!(game.control_mode(), ControlMode::OnFoot);
+}

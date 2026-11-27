@@ -286,10 +286,23 @@ pub(crate) fn step_motorcycle(
         velocity = Vec2::ZERO;
     }
 
-    // Yaw follows forward motion. The handlebar angle shrinks with speed so a
-    // full input is a tight parking turn at walking pace and a gentle arc at road speed.
+    // Yaw follows forward motion.
+    // Low-speed regime (~0-8 mph): Handlebars drive yaw rate via standard bicycle kinematics.
+    // High-speed regime (~15+ mph): Lean angle is primary steering driver (psi_dot = g * tan(theta) / v).
+    // Transition: Smoothstep blend factor between low- and high-speed thresholds.
+    const GRAVITY: f32 = 9.81;
+    const LOW_SPEED_MPH: f32 = 8.0;
+    const HIGH_SPEED_MPH: f32 = 15.0;
+
+    let speed_mph = current_speed * MPH_PER_UNIT_PER_SECOND;
     let yaw_rate = if current_speed > 0.02 {
-        current_speed * bike.steer_angle.tan() / tuning.wheelbase
+        let yaw_rate_steer = current_speed * bike.steer_angle.tan() / tuning.wheelbase;
+        let v_safe = current_speed.max(0.1);
+        let yaw_rate_lean = (GRAVITY * bike.rider_lean.tan() / v_safe).clamp(-1.8, 1.8);
+
+        let t = ((speed_mph - LOW_SPEED_MPH) / (HIGH_SPEED_MPH - LOW_SPEED_MPH)).clamp(0.0, 1.0);
+        let blend = t * t * (3.0 - 2.0 * t);
+        (1.0 - blend) * yaw_rate_steer + blend * yaw_rate_lean
     } else {
         0.0
     };
@@ -314,14 +327,29 @@ pub(crate) fn step_motorcycle(
         }
     }
     let raw_steer = input.steer;
-    let abrupt = (raw_steer - bike.last_raw_steer).abs() > 0.95 && current_speed >= 15.0;
+    let steer_yank = (raw_steer - bike.last_raw_steer).abs() > 0.85 && speed_mph >= 15.0;
     bike.last_raw_steer = raw_steer;
-    if abrupt && bike.is_operable() && bike.recovery_ticks == 0 {
+
+    // Speed-scaled maximum safe steer threshold:
+    // Below 8 mph, full steering lock is safe without crashing.
+    // Above 8 mph, safe handlebar deflection scales inversely with speed squared (tire lateral friction limit).
+    let max_safe_steer = if speed_mph <= LOW_SPEED_MPH {
+        tuning.low_speed_steer + 0.1
+    } else {
+        (7.8 / (current_speed * current_speed)).min(tuning.low_speed_steer)
+    };
+
+    let high_speed_crash = (bike.steer_angle.abs() > max_safe_steer || steer_yank)
+        && speed_mph > LOW_SPEED_MPH
+        && bike.is_operable()
+        && bike.recovery_ticks == 0;
+
+    if high_speed_crash {
         bike.phase = MotorcyclePhase::Skidding;
         bike.condition = bike.condition.saturating_sub(22);
         bike.pending_crash_damage = 2;
         bike.recovery_ticks = 110;
-        bike.body.roll = -bike.rider_lean;
+        bike.body.roll = bike.rider_lean;
         bike.last_throttle = 0.0;
         return MotorcycleStep {
             contact_target: None,
@@ -332,7 +360,21 @@ pub(crate) fn step_motorcycle(
             impact: false,
         };
     }
-    if current_speed < 1.2 && input.lean.abs() > 0.86 && bike.is_operable() {
+
+    // Low-speed regime (~0-8 mph): Track speed-dependent maximum safe lean angle.
+    // At near-zero speed, any significant sustained lean causes a tip.
+    // At ~2 mph, safe lean is small; by ~8 mph centripetal force balances full max lean.
+    let max_safe_lean = if speed_mph >= LOW_SPEED_MPH {
+        tuning.max_lean + 0.1
+    } else {
+        let t_lean = (speed_mph / LOW_SPEED_MPH).clamp(0.0, 1.0);
+        0.15 + (tuning.max_lean - 0.15) * t_lean
+    };
+
+    let unsafe_lean = (bike.rider_lean.abs() > max_safe_lean || (speed_mph < 2.5 && input.lean.abs() > 0.6))
+        && bike.is_operable();
+
+    if unsafe_lean {
         bike.tip_ticks = bike.tip_ticks.saturating_add(1);
     } else {
         bike.tip_ticks = bike.tip_ticks.saturating_sub(1);
@@ -348,6 +390,11 @@ pub(crate) fn step_motorcycle(
         bike.recovery_ticks = 45;
         bike.pending_crash_damage = 1;
         bike.body.velocity = velocity.extend(0.0);
+        bike.body.roll = if bike.rider_lean.abs() > 0.05 {
+            bike.rider_lean.signum() * 1.2
+        } else {
+            1.2
+        };
         return MotorcycleStep {
             contact_target: None,
             contact_point: bike.body.position,
@@ -358,7 +405,7 @@ pub(crate) fn step_motorcycle(
         };
     }
     bike.body.velocity = velocity.extend(0.0);
-    bike.body.roll = -bike.rider_lean;
+    bike.body.roll = bike.rider_lean;
     bike.body.pitch = 0.0;
     if current_speed <= 0.02 {
         bike.traction_use = 0.0;

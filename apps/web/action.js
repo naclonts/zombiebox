@@ -120,6 +120,8 @@
     spaceHold: false,
     mouseAimX: 0,
     mouseAimY: 0,
+    mouseClientX: 0,
+    mouseClientY: 0,
     hasMouseAim: false,
     mouseLookYaw: 0,
     mouseLookPitch: 0,
@@ -883,12 +885,40 @@
       ay = vec.ay;
       if (state.controlMode === 1) {
         const keyboardLean = (input.keysDown.has("l") ? 1 : 0) - (input.keysDown.has("j") ? 1 : 0);
-        ax = input.touchAim.id !== null ? input.touchAim.lookX : keyboardLean;
+        if (input.touchAim.id !== null) {
+          ax = input.touchAim.lookX;
+        } else if (keyboardLean !== 0) {
+          ax = keyboardLean;
+        } else if (input.hasMouseAim) {
+          const rect = canvas.getBoundingClientRect();
+          if (rect.width > 0) {
+            const cx = rect.left + rect.width / 2;
+            const dx = input.mouseClientX - cx;
+            const deadZone = rect.width * 0.03;
+            if (Math.abs(dx) <= deadZone) {
+              ax = 0;
+            } else {
+              const maxDist = rect.width * 0.35;
+              const sign = Math.sign(dx);
+              const mag = Math.min(1, (Math.abs(dx) - deadZone) / (maxDist - deadZone));
+              ax = sign * mag;
+            }
+          } else {
+            ax = input.mouseAimX;
+          }
+        } else {
+          ax = 0;
+        }
         ay = 0;
       }
       if (isLookCamera()) {
-        lookYaw = input.mouseLookYaw;
-        lookPitch = input.mouseLookPitch;
+        if (state.controlMode === 1) {
+          lookYaw = 0;
+          lookPitch = 0;
+        } else {
+          lookYaw = input.mouseLookYaw;
+          lookPitch = input.mouseLookPitch;
+        }
       }
       input.mouseLookYaw = 0;
       input.mouseLookPitch = 0;
@@ -1172,6 +1202,8 @@
   }
 
   function updateMouseAim(clientX, clientY) {
+    input.mouseClientX = clientX;
+    input.mouseClientY = clientY;
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     const cx = rect.left + rect.width / 2;

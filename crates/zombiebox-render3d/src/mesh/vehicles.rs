@@ -24,12 +24,18 @@ impl MotorcycleTransforms {
         let upright =
             heading_to_render_quat(b.heading) * Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
         let lean = match view.phase {
-            MotorcyclePhase::Tipped => 1.2,
+            MotorcyclePhase::Tipped => {
+                if view.rider_lean.abs() > 0.01 {
+                    view.rider_lean.signum() * 1.2
+                } else {
+                    1.2
+                }
+            }
             MotorcyclePhase::Skidding => view.rider_lean.clamp(-0.65, 0.65),
             _ => view.rider_lean.clamp(-0.5, 0.5),
         };
         let root = Mat4::from_translation(pos)
-            * Mat4::from_quat(upright * Quat::from_rotation_z(-lean))
+            * Mat4::from_quat(upright * Quat::from_rotation_z(lean))
             * Mat4::from_scale(Vec3::splat(MOTORCYCLE_SCALE));
         let s = motorcycle_part_pivot(MotorcyclePart::Steering);
         let f = motorcycle_part_pivot(MotorcyclePart::FrontWheel);
