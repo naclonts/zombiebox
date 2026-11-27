@@ -846,6 +846,8 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
     let mut my: f32 = 0.0;
     let mut ax: f32 = 0.0;
     let mut ay: f32 = 0.0;
+    let mut look_yaw: f32 = 0.0;
+    let mut look_pitch: f32 = 0.0;
     let mut flags: u32 = 0;
     let mut weapon: i32 = ZB_WEAPON_UNCHANGED;
     let mut advance: u8 = 0;
@@ -894,6 +896,18 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
                     return response_conn(400, "text/plain", b"invalid ay\n", keep_alive);
                 };
                 ay = parsed;
+            }
+            "lyaw" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid lyaw\n", keep_alive);
+                };
+                look_yaw = parsed;
+            }
+            "lpitch" => {
+                let Ok(parsed) = v.parse::<f32>() else {
+                    return response_conn(400, "text/plain", b"invalid lpitch\n", keep_alive);
+                };
+                look_pitch = parsed;
             }
             "flags" => {
                 let Ok(parsed) = v.parse::<u32>() else {
@@ -975,6 +989,10 @@ fn handle_action_frame(id: u64, body: &[u8], state: &mut HostState, keep_alive: 
             .camera_mut();
         let (movement, aim) = match camera.mode() {
             CameraMode::Chase | CameraMode::FirstPerson => {
+                // Browser mouse-look arrives as a direct angular delta so a flick
+                // turns by the same amount regardless of frame pacing and stops
+                // immediately when the pointer stops. Touch keeps the stick-rate path.
+                camera.adjust_first_person_look(look_yaw, look_pitch);
                 camera.apply_look_input(Vec2::new(ax, ay), look_dt);
                 let frame = camera.current_frame();
                 let movement = stick(mx, my, &frame);
@@ -1485,6 +1503,38 @@ mod tests {
                 .camera()
                 .mode(),
             CameraMode::Overhead
+        );
+
+        // Browser mouse-look uses direct angular deltas in Chase/First Person.
+        let f3 = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&lyaw=0&lpitch=0&flags=32&weapon=-1&advance=1&camera=4",
+            &mut state,
+        );
+        let (f3_head, f3_body) = split_http_response(&f3);
+        assert!(f3_head.starts_with("HTTP/1.1 200 OK"));
+        let f4 = route(
+            "POST",
+            "/api/action/1/frame",
+            b"w=320&h=180&t_ns=1050000000&mx=0&my=0&ax=0&ay=0&lyaw=0.35&lpitch=0.1&flags=32&weapon=-1&advance=1&camera=4",
+            &mut state,
+        );
+        let (f4_head, f4_body) = split_http_response(&f4);
+        assert!(f4_head.starts_with("HTTP/1.1 200 OK"));
+        assert_ne!(
+            &f3_body[64..],
+            &f4_body[64..],
+            "mouse look delta must change the rendered view"
+        );
+        assert_eq!(
+            state.action_sessions[&1]
+                .renderer
+                .as_ref()
+                .unwrap()
+                .camera()
+                .mode(),
+            CameraMode::FirstPerson
         );
     }
 

@@ -14,7 +14,7 @@ From the repository root, start the dev server with stable Rust 1.87 or newer. T
 cargo run --locked -p zombiebox-web
 ```
 
-Open `http://127.0.0.1:8765` and choose **Enter the county**. Move with **WASD** or the **arrow keys**, hold **Shift** to walk quietly, aim with the mouse, and click or press **Space** to fire. Use **E** to interact, **1–4** to equip a weapon, **R** to reload, **Q** or **H** to heal, **M** for the atlas, **C** to switch cameras, and **Escape** to pause. Touch devices have on-screen controls.
+Open `http://127.0.0.1:8765` and choose **Enter the county**. Move with **WASD** or the **arrow keys**, hold **Shift** to walk quietly, aim with the mouse, and click or press **Space** to fire. **C** cycles the camera: **Chase** and **First Person** use the mouse to look around relative to mouse movement and fire follows the view, while **Iso**, **Top**, and **Orbit** keep screen-relative aiming. Use **E** to interact, **1–4** to equip a weapon, **R** to reload, **Q** or **H** to heal, **M** for the atlas, and **Escape** to pause. Touch devices have on-screen controls.
 
 The original tile-command playtest is available at `http://127.0.0.1:8765/legacy`. Stand on the marked crate and press **L** to scavenge. **Fire** highlights when the pistol has a clear shot, and **Space** fires.
 

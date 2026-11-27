@@ -11,6 +11,15 @@
   const FLAG_HEAL = 1 << 4;
   const FLAG_LOOK_AHEAD = 1 << 5;
 
+  // Camera modes that integrate the right stick/mouse as a look control.
+  const CAMERA_CHASE = 3;
+  const CAMERA_FIRST_PERSON = 4;
+  const STICK_RADIUS = 56;
+  const TOUCH_LOOK_DEADZONE = 0.08;
+  // Direct mouse-look sensitivity (radians of view rotation per CSS pixel).
+  const MOUSE_LOOK_RADIANS_PER_PX = 0.0025;
+  const MOUSE_LOOK_MAX_RADIANS = 1.2;
+
   const STATUS_WON = 1 << 0;
   const STATUS_DEAD = 1 << 1;
   const STATUS_RELOADING = 1 << 2;
@@ -106,6 +115,11 @@
     mouseAimX: 0,
     mouseAimY: 0,
     hasMouseAim: false,
+    mouseLookYaw: 0,
+    mouseLookPitch: 0,
+    mouseTracking: false,
+    mouseLastClientX: 0,
+    mouseLastClientY: 0,
     pendingFlags: 0,
     pendingWeapon: -1,
     touchMove: {
@@ -122,11 +136,14 @@
       ax: 0,
       ay: 0,
       hasAim: false,
+      lookX: 0,
+      lookY: 0,
       fireHold: false,
       downAt: 0,
       maxDist: 0,
     },
   };
+
 
   // --- Audio Synthesis ---
   let audioCtx = null;
@@ -364,6 +381,11 @@
     input.touchMove.my = 0;
     input.touchAim.id = null;
     input.touchAim.fireHold = false;
+    input.touchAim.lookX = 0;
+    input.touchAim.lookY = 0;
+    input.mouseLookYaw = 0;
+    input.mouseLookPitch = 0;
+    input.mouseTracking = false;
     updateStickVisuals();
   }
 
@@ -664,7 +686,19 @@
 
     let ax = 0;
     let ay = 0;
-    if (input.touchAim.id !== null && input.touchAim.hasAim) {
+    if (isLookCamera()) {
+      // Chase/First Person touch input is a rate. Mouse-look is sent separately as
+      // a direct angular delta below so it stops as soon as the mouse stops.
+      if (input.touchAim.id !== null) {
+        ax = input.touchAim.lookX;
+        ay = input.touchAim.lookY;
+        const lookLen = Math.hypot(ax, ay);
+        if (lookLen > 1) {
+          ax /= lookLen;
+          ay /= lookLen;
+        }
+      }
+    } else if (input.touchAim.id !== null && input.touchAim.hasAim) {
       ax = input.touchAim.ax;
       ay = input.touchAim.ay;
     } else if (input.hasMouseAim) {
@@ -749,6 +783,8 @@
     let my = 0;
     let ax = 0;
     let ay = 0;
+    let lookYaw = 0;
+    let lookPitch = 0;
     let flags = state.lookAhead ? FLAG_LOOK_AHEAD : 0;
     let selectWeapon = -1;
 
@@ -758,6 +794,12 @@
       my = vec.my;
       ax = vec.ax;
       ay = vec.ay;
+      if (isLookCamera()) {
+        lookYaw = input.mouseLookYaw;
+        lookPitch = input.mouseLookPitch;
+      }
+      input.mouseLookYaw = 0;
+      input.mouseLookPitch = 0;
 
       flags |= input.pendingFlags;
       input.pendingFlags = 0;
@@ -772,6 +814,7 @@
       `w=${w}&h=${h}&t_ns=${tNs}` +
       `&mx=${mx.toFixed(4)}&my=${my.toFixed(4)}` +
       `&ax=${ax.toFixed(4)}&ay=${ay.toFixed(4)}` +
+      `&lyaw=${lookYaw.toFixed(5)}&lpitch=${lookPitch.toFixed(5)}` +
       `&flags=${flags}&weapon=${selectWeapon}&advance=${advance ? 1 : 0}` +
       `&camera=${state.cameraMode}`;
 
@@ -996,6 +1039,38 @@
   }
 
   // --- Input Event Wiring ---
+  function isLookCamera(mode = state.cameraMode) {
+    return mode === CAMERA_CHASE || mode === CAMERA_FIRST_PERSON;
+  }
+
+  function accumulateMouseLook(clientX, clientY) {
+    if (!input.mouseTracking) {
+      input.mouseTracking = true;
+      input.mouseLastClientX = clientX;
+      input.mouseLastClientY = clientY;
+      return;
+    }
+    const dx = clientX - input.mouseLastClientX;
+    const dy = clientY - input.mouseLastClientY;
+    input.mouseLastClientX = clientX;
+    input.mouseLastClientY = clientY;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    input.mouseLookYaw = Math.max(
+      -MOUSE_LOOK_MAX_RADIANS,
+      Math.min(
+        MOUSE_LOOK_MAX_RADIANS,
+        input.mouseLookYaw + dx * MOUSE_LOOK_RADIANS_PER_PX,
+      ),
+    );
+    input.mouseLookPitch = Math.max(
+      -MOUSE_LOOK_MAX_RADIANS,
+      Math.min(
+        MOUSE_LOOK_MAX_RADIANS,
+        input.mouseLookPitch + dy * MOUSE_LOOK_RADIANS_PER_PX,
+      ),
+    );
+  }
+
   function updateMouseAim(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -1036,6 +1111,8 @@
         input.touchAim.ox = e.clientX - rect.left;
         input.touchAim.oy = e.clientY - rect.top;
         input.touchAim.fireHold = false;
+        input.touchAim.lookX = 0;
+        input.touchAim.lookY = 0;
         input.touchAim.downAt = performance.now();
         input.touchAim.maxDist = 0;
         updateStickVisuals();
@@ -1045,6 +1122,11 @@
 
     if (e.button === 0) {
       updateMouseAim(e.clientX, e.clientY);
+      if (isLookCamera()) {
+        input.mouseTracking = true;
+        input.mouseLastClientX = e.clientX;
+        input.mouseLastClientY = e.clientY;
+      }
       input.mouseHold = true;
       input.pendingFlags |= FLAG_FIRE_PULSE;
     }
@@ -1053,7 +1135,7 @@
   canvas.addEventListener("pointermove", (e) => {
     if (e.pointerType === "touch") {
       const rect = canvas.getBoundingClientRect();
-      const maxRadius = 56;
+      const maxRadius = STICK_RADIUS;
       if (e.pointerId === input.touchMove.id) {
         const dx = e.clientX - rect.left - input.touchMove.ox;
         const dy = e.clientY - rect.top - input.touchMove.oy;
@@ -1072,10 +1154,19 @@
         const dy = e.clientY - rect.top - input.touchAim.oy;
         const dist = Math.hypot(dx, dy);
         input.touchAim.maxDist = Math.max(input.touchAim.maxDist, dist);
-        if (dist > 8) {
-          input.touchAim.ax = dx / dist;
-          input.touchAim.ay = dy / dist;
+        const deadZone = maxRadius * TOUCH_LOOK_DEADZONE;
+        if (dist > deadZone) {
+          const analog = Math.min(1, (dist - deadZone) / (maxRadius - deadZone));
+          const nx = dx / dist;
+          const ny = dy / dist;
+          input.touchAim.ax = nx;
+          input.touchAim.ay = ny;
+          input.touchAim.lookX = nx * analog;
+          input.touchAim.lookY = ny * analog;
           input.touchAim.hasAim = true;
+        } else {
+          input.touchAim.lookX = 0;
+          input.touchAim.lookY = 0;
         }
         input.touchAim.fireHold = dist >= maxRadius * 0.78;
         updateStickVisuals();
@@ -1083,6 +1174,17 @@
       return;
     }
     updateMouseAim(e.clientX, e.clientY);
+    if (isLookCamera() && state.playing) {
+      accumulateMouseLook(e.clientX, e.clientY);
+    } else {
+      input.mouseTracking = false;
+    }
+  });
+
+  canvas.addEventListener("pointerleave", () => {
+    input.mouseTracking = false;
+    input.mouseLookYaw = 0;
+    input.mouseLookPitch = 0;
   });
 
   function releasePointer(e) {
@@ -1099,6 +1201,8 @@
         }
         input.touchAim.id = null;
         input.touchAim.fireHold = false;
+        input.touchAim.lookX = 0;
+        input.touchAim.lookY = 0;
         updateStickVisuals();
       }
       return;
@@ -1233,6 +1337,11 @@
 
   function cycleCamera() {
     state.cameraMode = (state.cameraMode + 1) % 5;
+    input.mouseLookYaw = 0;
+    input.mouseLookPitch = 0;
+    input.mouseTracking = false;
+    input.touchAim.lookX = 0;
+    input.touchAim.lookY = 0;
     const labels = ["ISO", "TOP", "ORBIT", "CHASE", "1ST"];
     btnCamera.textContent = `${labels[state.cameraMode]} [C]`;
     btnCamera.setAttribute("aria-label", `Camera view: ${["Isometric", "Overhead", "Orbit", "Chase", "First person"][state.cameraMode]}`);
