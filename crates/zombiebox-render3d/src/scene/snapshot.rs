@@ -1,16 +1,16 @@
 use zombiebox_core::{
     ActionEvent, ActionGame, ActionMode, ActionOutcome, BuildingId, BuildingInfo, BuildingStyle,
     CHUNK_SIZE, CHUNK_VERTICES, CHUNKS_PER_SIDE, CacheView, District, FLOOR_H, Feature, Floor,
-    Ground, LightSourceView, Material, MonsterView, NUM_FLOORS, Position, ProjectileView, PropKind,
-    Surface, Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2 as SimVec2, VehicleId,
-    VehicleView, WORLD_SIZE, WallOrientation, World,
+    Ground, LightSourceView, Material, MonsterView, Position, ProjectileView, PropKind, Surface,
+    Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2 as SimVec2, VehicleId, VehicleView,
+    WORLD_SIZE, WallOrientation, World,
 };
 
 use crate::coords::{ChunkCoord, RenderAabb, SimVec3};
 
 pub const CHUNK_HALO_SIDE: usize = CHUNK_SIZE as usize + 2; // 18
 pub const CHUNK_HALO_LEN: usize = CHUNK_HALO_SIDE * CHUNK_HALO_SIDE; // 324
-pub const MAX_SNAPSHOT_FLOORS: usize = 3; // matches COUNTY_FLOORS
+pub const MAX_SNAPSHOT_FLOORS: usize = zombiebox_core::MAX_COUNTY_FLOORS;
 pub const DEFAULT_VISIBILITY_HALF_EXTENT: i32 = 24; // 48x48 grid matching LightGrid
 
 /// Per-(tile, floor) static + dynamic metadata sampled from `ActionGame`.
@@ -643,6 +643,8 @@ fn hash_tile_column(h: &mut Fnv1a64, tile: &TileSnapshot) {
 #[inline]
 fn hash_building(h: &mut Fnv1a64, b: &BuildingSnapshot) {
     h.write_u16(b.info.id);
+    h.write_u32(b.info.uid.0 as u32);
+    h.write_u32((b.info.uid.0 >> 32) as u32);
     h.write_i32(b.info.x);
     h.write_i32(b.info.y);
     h.write_i32(b.info.width);
@@ -653,6 +655,14 @@ fn hash_building(h: &mut Fnv1a64, b: &BuildingSnapshot) {
     h.write_i32(b.info.front_door.y);
     h.write_f32(b.info.foundation_z);
     h.write_bool(b.has_pitched_roof);
+    h.write_u8(b.info.wing_count);
+    for w in &b.info.wings {
+        h.write_i32(w.min_x);
+        h.write_i32(w.min_y);
+        h.write_i32(w.max_x);
+        h.write_i32(w.max_y);
+        h.write_u8(w.floors);
+    }
 }
 
 #[inline]
@@ -817,11 +827,7 @@ pub fn compute_chunk_fingerprint_from_game(game: &ActionGame, coord: ChunkCoord)
         }
     }
 
-    let max_floors = if game.is_county() {
-        MAX_SNAPSHOT_FLOORS as u8
-    } else {
-        NUM_FLOORS as u8
-    };
+    let max_floors = game.window_max_floors().min(MAX_SNAPSHOT_FLOORS as u8);
 
     for ly in -1..=CHUNK_SIZE {
         for lx in -1..=CHUNK_SIZE {
@@ -870,11 +876,7 @@ pub fn build_chunk_snapshot(game: &ActionGame, coord: ChunkCoord, revision: u64)
     let world = game.world();
     let terrain = ChunkTerrainSnapshot::sample_from_world(world, coord);
     let c_min = coord.min_tile();
-    let max_floors = if game.is_county() {
-        MAX_SNAPSHOT_FLOORS as u8
-    } else {
-        NUM_FLOORS as u8
-    };
+    let max_floors = game.window_max_floors().min(MAX_SNAPSHOT_FLOORS as u8);
 
     let mut tiles = Vec::with_capacity(CHUNK_HALO_LEN);
     let mut has_renderable_content = terrain.has_terrain;

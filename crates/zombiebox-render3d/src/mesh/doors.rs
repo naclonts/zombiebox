@@ -121,7 +121,7 @@ pub(crate) fn door_leaves(chunk: &ChunkSnapshot) -> impl Iterator<Item = DoorLea
                         .with_tag(GeometryTag::DoorOrWindow)
                         .with_floor(floor)
                         .with_flags(MaterialFlags::INDOOR_AMBIENT)
-                        .with_building(c.building_id, 0),
+                        .with_building(info.cutaway_slot_at(tile.pos, floor), 0),
                     tint: match c.damage_tier() {
                         1 => 0.85,
                         2 => 0.68,

@@ -10,12 +10,126 @@ pub const DT: f32 = 1.0 / ACTION_TICKS_PER_SECOND as f32;
 pub const BLOCK_WIDTH: usize = 36;
 pub const BLOCK_HEIGHT: usize = 32;
 pub const NUM_FLOORS: usize = 2; // Birch Street
-pub const COUNTY_FLOORS: usize = 3; // Procedural County (0=1F, 1=2F, 2=3F)
+pub const MAX_COUNTY_FLOORS: usize = 8;
+pub const COUNTY_FLOORS: usize = MAX_COUNTY_FLOORS; // Procedural County (0=1F .. 7=8F)
 pub const PLAYER_MAX_HEALTH: u8 = 6;
 
 pub type Floor = u8; // 0 = ground (1F), 1 = 2F, 2 = 3F
 pub type BuildingId = u16;
-pub type CacheId = u16;
+pub type CacheId = u64;
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BuildingUid(pub u64);
+
+impl BuildingUid {
+    /// Packs signed 24-bit world tile coords `(wx, wy)` and 15-bit `sub_slot` into a non-zero `u64`.
+    #[inline]
+    pub const fn from_coords(wx: i32, wy: i32, sub_slot: u16) -> Self {
+        assert!(sub_slot < (1 << 15), "building slot is out of range");
+        let ux = biased_coord(wx);
+        let uy = biased_coord(wy);
+        Self((ux << 40) | (uy << 16) | ((sub_slot as u64) << 1) | 1)
+    }
+}
+
+const fn biased_coord(coord: i32) -> u64 {
+    const BIAS: i32 = 1 << 23;
+    assert!(coord >= -BIAS && coord < BIAS, "coordinate is out of range");
+    (coord + BIAS) as u64
+}
+
+/// Packs signed 24-bit chunk coordinates and a 15-bit local slot into the low 63 bits.
+/// Bit 63 (`1 << 63`) is reserved for runtime/dynamic spawns.
+#[inline]
+pub const fn pack_chunk_slot_id(cx: i32, cy: i32, slot: u16) -> u64 {
+    assert!(slot < (1 << 15), "chunk slot is out of range");
+    (biased_coord(cx) << 39) | (biased_coord(cy) << 15) | slot as u64
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Ord, PartialOrd)]
+pub struct MonsterId(pub u64);
+
+impl MonsterId {
+    #[inline]
+    pub const fn from_chunk_slot(cx: i32, cy: i32, slot: u16) -> Self {
+        Self(pack_chunk_slot_id(cx, cy, slot))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum DoorAxis {
+    #[default]
+    AlongX,
+    AlongY,
+}
+
+impl DoorAxis {
+    pub const fn to_wall_orientation(self) -> WallOrientation {
+        match self {
+            Self::AlongX => WallOrientation::AlongX,
+            Self::AlongY => WallOrientation::AlongY,
+        }
+    }
+    pub const fn tangent(self) -> (i32, i32) {
+        match self {
+            Self::AlongX => (1, 0),
+            Self::AlongY => (0, 1),
+        }
+    }
+    pub const fn normal(self) -> (i32, i32) {
+        match self {
+            Self::AlongX => (0, 1),
+            Self::AlongY => (1, 0),
+        }
+    }
+}
+
+pub const MAX_BUILDING_WINGS: usize = 8;
+const SECONDARY_WING_SLOT_START: u16 = ((u16::MAX as usize + 1) / MAX_BUILDING_WINGS) as u16;
+pub(super) const MAX_COMPACT_BUILDING_ID: BuildingId = SECONDARY_WING_SLOT_START - 1;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WingRect {
+    pub min_x: i32,
+    pub min_y: i32,
+    pub max_x: i32,
+    pub max_y: i32,
+    pub floors: u8,
+}
+
+impl WingRect {
+    pub const fn new(min_x: i32, min_y: i32, max_x: i32, max_y: i32, floors: u8) -> Self {
+        Self {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            floors,
+        }
+    }
+    pub const fn contains_xy(self, pos: Position) -> bool {
+        pos.x >= self.min_x && pos.x <= self.max_x && pos.y >= self.min_y && pos.y <= self.max_y
+    }
+    pub fn contains_point_margin(self, xy: Vec2, margin: f32) -> bool {
+        xy.x >= self.min_x as f32 - margin
+            && xy.x <= self.max_x as f32 + margin
+            && xy.y >= self.min_y as f32 - margin
+            && xy.y <= self.max_y as f32 + margin
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CustomCellSpec {
+    pub pos: Position,
+    pub floor: Floor,
+    pub surface: Surface,
+    pub kind: TileKind,
+    pub material: Material,
+    pub indoor: bool,
+    pub load_bearing: bool,
+    pub door_axis: Option<DoorAxis>,
+    pub stair_dir: (i8, i8),
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(u8)]
@@ -203,6 +317,7 @@ impl BuildingStyle {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BuildingInfo {
     pub id: BuildingId,
+    pub uid: BuildingUid,
     pub name: &'static str,
     pub x: i32,
     pub y: i32,
@@ -212,6 +327,99 @@ pub struct BuildingInfo {
     pub style: BuildingStyle,
     pub front_door: Position,
     pub foundation_z: f32,
+    pub wings: [WingRect; MAX_BUILDING_WINGS],
+    pub wing_count: u8,
+}
+
+impl BuildingInfo {
+    pub const fn single_wing_array(
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        floors: u8,
+    ) -> ([WingRect; MAX_BUILDING_WINGS], u8) {
+        let mut wings = [WingRect {
+            min_x: 0,
+            min_y: 0,
+            max_x: 0,
+            max_y: 0,
+            floors: 0,
+        }; MAX_BUILDING_WINGS];
+        wings[0] = WingRect::new(x, y, x + width - 1, y + height - 1, floors);
+        (wings, 1)
+    }
+
+    pub fn from_wings_slice(
+        slice: &[WingRect],
+        fallback: WingRect,
+    ) -> ([WingRect; MAX_BUILDING_WINGS], u8) {
+        let mut wings = [WingRect {
+            min_x: 0,
+            min_y: 0,
+            max_x: 0,
+            max_y: 0,
+            floors: 0,
+        }; MAX_BUILDING_WINGS];
+        let count = slice.len().min(MAX_BUILDING_WINGS);
+        if count == 0 {
+            wings[0] = fallback;
+            (wings, 1)
+        } else {
+            let mut i = 0;
+            while i < count {
+                wings[i] = slice[i];
+                i += 1;
+            }
+            (wings, count as u8)
+        }
+    }
+
+    pub fn effective_wing_count(&self) -> usize {
+        if self.wing_count == 0 {
+            1
+        } else {
+            (self.wing_count as usize).min(MAX_BUILDING_WINGS)
+        }
+    }
+
+    pub fn wing_at(&self, index: usize) -> WingRect {
+        if self.wing_count == 0 {
+            WingRect::new(
+                self.x,
+                self.y,
+                self.x + self.width - 1,
+                self.y + self.height - 1,
+                self.floors,
+            )
+        } else {
+            self.wings[index.min(MAX_BUILDING_WINGS - 1)]
+        }
+    }
+
+    pub fn wing_index_at(&self, pos: Position, floor: Floor) -> usize {
+        (0..self.effective_wing_count())
+            .find(|&i| {
+                let wing = self.wing_at(i);
+                wing.contains_xy(pos) && floor < wing.floors
+            })
+            .unwrap_or(0)
+    }
+
+    pub const fn cutaway_slot(&self, wing_index: usize) -> u16 {
+        if self.id == 0 || wing_index == 0 {
+            self.id
+        } else {
+            assert!(self.id <= MAX_COMPACT_BUILDING_ID && wing_index < MAX_BUILDING_WINGS);
+            SECONDARY_WING_SLOT_START
+                + (self.id - 1) * (MAX_BUILDING_WINGS - 1) as u16
+                + (wing_index - 1) as u16
+        }
+    }
+
+    pub fn cutaway_slot_at(&self, pos: Position, floor: Floor) -> u16 {
+        self.cutaway_slot(self.wing_index_at(pos, floor))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -500,9 +708,6 @@ pub struct ProjectileView {
     /// genuinely unseen volumes (for example rooms hidden behind solid walls) secret.
     pub visible_to_player: bool,
 }
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
-pub struct MonsterId(pub u32);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

@@ -348,9 +348,14 @@ pub fn build_chunk_props_mesh(chunk: &ChunkSnapshot) -> MeshBuffer {
                     };
                 let mut meta = META;
                 if cell.building_id != 0 {
-                    meta = meta
-                        .with_floor(floor as u8)
-                        .with_building(cell.building_id, 0);
+                    meta = meta.with_floor(floor as u8).with_building(
+                        chunk
+                            .building(cell.building_id)
+                            .map_or(cell.building_id, |b| {
+                                b.info.cutaway_slot_at(tile.pos, floor as u8)
+                            }),
+                        0,
+                    );
                     if cell.indoor {
                         meta = meta.with_flags(MaterialFlags::INDOOR_AMBIENT);
                     }

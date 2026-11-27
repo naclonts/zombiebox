@@ -65,7 +65,7 @@ Rather than hardcoding every district and building into core Rust enums, generat
 
 ## 4. Phased implementation roadmap
 
-We are **not implementing yet** — once we align on this plan, work splits cleanly into six incremental, testable slices:
+Work splits cleanly into six incremental, testable slices:
 
 | Phase | Scope | Key verification check |
 | --- | --- | --- |
@@ -75,6 +75,10 @@ We are **not implementing yet** — once we align on this plan, work splits clea
 | **Phase 4: Civic landmarks, keycards/breaching & elevators (Police + Hospital)** | Security-zoned **Police Station** (lobby, booking barrier, bullpen, interrogation, barred cells, armory, sallyport); `4–6F` **Hospital** (podium + tower, ambulance bay, ER, pharmacy, wards, ORs); keycard drops + tiered door breaching; `ElevatorCar` physics + **HUD floor button strip (`1F..NF`)** + arrival bell noise magnet. | High-security doors enforce keycard/breach rules; hospital generates 4–6 traversable floors via stairs and button-strip elevators; arrival bell attracts floor threats. |
 | **Phase 5: Distinct zombie rigs, outfits & room ecology** | Indexed `generate_zombie_mesh.py` export for `Bloater`, `Armored`, and firearm `Shooter` poses; `MaterialFlags::TINT_EXEMPT` single-batch uniform dyeing; `ZombieSocket` headgear/props; `Screamer`/`Crawler`/`Spitter` behaviors + room-level spawn tables. | Police zombies wear caps/navy or riot gear, hospital zombies wear gowns/scrubs/masks, bloaters/shooters have unmistakable silhouettes at 2:1 isometric zoom, and instance batch count stays bounded on Android. |
 | **Phase 6 (Follow-up): Compound showcase decision (e.g. Traveling Circus)** | Revisit compound showcase once the core 4 building families are complete: wire `AreaArchetypeDef` + `CompoundPlanner` + animated `SetpieceInstance`s for a **Traveling Circus** (Big Top, midway stalls, Ferris wheel, clown zombies) + handset 60 Hz validation. | Adding a multi-building compound with custom setpieces works through declarative archetype definitions + pluggable mesh/roof hooks without touching `CountyStage` chunk plumbing. |
+
+Doorway clearance verification is complete in the live CountyStage. The command `cargo test -p zombiebox-core --lib generated_doors_and_gates_pass_runtime_bilateral_capsule_sweep -- --nocapture` passed every generated door and compound gate across seeds `0..63`. It swept a `0.23m` capsule from both normals and checked closed blocking and open passage through materialized walls, props, and chunk-window boundaries. Runtime materialization consumes the recorded `DoorAxis`. The original ArmyBase case was seed `1`, F0 `(102,351)`, with a redundant frontage gate at `(102,350)`. The generator now leaves the frontage open and retains the building-entry gate. The audit also covered the hospital T-junction at seed `5`, F1 `(358,233)`.
+
+Phase 1 host evidence includes the 6-floor and 8F renderer, cutaway, roof, and collision checks. The 3D checker ran on Vulkan llvmpipe and covered Birch outside and inside, a breach, seed 42 residential, downtown, hospital, cabin, and bridge scenes, a hospital revisit, and 180 movement frames across a chunk seam. An offline `zombiebox-ffi` Android-target check also passed. Baseline terrain-seam output with 8 magenta pixels and downhill-aim output with `z=0` versus negative remain recorded. Physical handset and browser movement verification remain open.
 
 ---
 

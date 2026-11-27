@@ -388,7 +388,7 @@ impl ActorAnimator {
                 height,
                 radius,
                 color,
-                self.phase + (m.id.0 as f32 * 0.37),
+                self.phase + ((m.id.0 % 65521) as f32 * 0.37),
                 speed,
                 false,
                 m.kind == MonsterKind::Bloater,
