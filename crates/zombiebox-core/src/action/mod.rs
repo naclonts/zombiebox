@@ -111,6 +111,38 @@ impl Stage {
         matches!(self, Self::County(_))
     }
 
+    pub const fn window_max_floors(&self) -> u8 {
+        match self {
+            Self::Residential(_) => NUM_FLOORS as u8,
+            Self::County(c) => c.window_max_floors(),
+        }
+    }
+
+    pub fn county_chunk_allocated_floors(&self, cx: i32, cy: i32) -> Option<usize> {
+        match self {
+            Self::Residential(_) => None,
+            Self::County(c) => c.chunk_allocated_floors(cx, cy),
+        }
+    }
+
+    pub fn stamp_custom_building(
+        &mut self,
+        world: &World,
+        info: BuildingInfo,
+        cells: &[CustomCellSpec],
+        viewer_pos: Vec2,
+        viewer_floor: Floor,
+    ) -> BuildingId {
+        match self {
+            Self::Residential(_) => {
+                panic!("stamp_custom_building is not supported in Residential mode")
+            }
+            Self::County(c) => {
+                c.stamp_custom_building(world, info, cells, viewer_pos, viewer_floor)
+            }
+        }
+    }
+
     fn residential(&self) -> Option<&ResidentialBlock> {
         match self {
             Self::Residential(b) => Some(b),
@@ -249,10 +281,12 @@ impl Stage {
         }
     }
 
-    const fn max_floors(&self) -> Floor {
+    fn floors_at(&self, pos: Position) -> Floor {
         match self {
             Self::Residential(_) => NUM_FLOORS as Floor,
-            Self::County(_) => COUNTY_FLOORS as Floor,
+            Self::County(county) => {
+                crate::spatial::action_adapter::SpatialStageSource::floors_at(county.as_ref(), pos)
+            }
         }
     }
 }
@@ -428,7 +462,7 @@ pub struct ActionGame {
     inventory: Inventory,
     monsters: Vec<Monster>,
     zombies_total: usize,
-    next_monster_id: u32,
+    next_monster_id: u64,
     projectiles: Vec<Projectile>,
     next_proj_id: u32,
     active_blasts: Vec<ActiveBlast>,
@@ -505,7 +539,7 @@ impl ActionGame {
             inventory: Inventory::new(),
             monsters,
             zombies_total,
-            next_monster_id: 1,
+            next_monster_id: 1u64 << 63,
             projectiles: Vec::new(),
             next_proj_id: 1,
             active_blasts: Vec::new(),
@@ -530,7 +564,7 @@ impl ActionGame {
         let (pz, psup, _) = resolve_tile_support(&block, spawn);
         let player_body = BodyState::from_pose_2d(player.position, player.facing, pz, psup);
 
-        let mut next_monster_id = 1u32;
+        let mut next_monster_id = 1u64;
         let monsters: Vec<Monster> = block
             .monster_spawns()
             .iter()
@@ -581,6 +615,28 @@ impl ActionGame {
 
     pub fn mode(&self) -> ActionMode {
         self.stage.mode()
+    }
+
+    pub const fn window_max_floors(&self) -> u8 {
+        self.stage.window_max_floors()
+    }
+
+    pub fn county_chunk_allocated_floors(&self, cx: i32, cy: i32) -> Option<usize> {
+        self.stage.county_chunk_allocated_floors(cx, cy)
+    }
+
+    pub fn stamp_custom_building(
+        &mut self,
+        info: BuildingInfo,
+        cells: &[CustomCellSpec],
+    ) -> BuildingId {
+        self.stage.stamp_custom_building(
+            &self.world,
+            info,
+            cells,
+            self.player.position,
+            self.player.floor,
+        )
     }
 
     pub fn is_county(&self) -> bool {
@@ -1347,7 +1403,10 @@ impl ActionGame {
         // Hill slope effect on walking: climbing uphill slightly reduces walking speed,
         // descending downhill slightly increases walking speed.
         if mag > 0.0 && self.player_body.motion.is_grounded() && self.player.floor == 0 {
-            let normal = self.stage.terrain_at(self.player.position).map_or(Vec3::Z, |t| t.normal);
+            let normal = self
+                .stage
+                .terrain_at(self.player.position)
+                .map_or(Vec3::Z, |t| t.normal);
             let slope_grade = -dir.dot(Vec2::new(normal.x, normal.y)) / normal.z.max(0.1);
             let slope_mult = if slope_grade > 0.0 {
                 1.0 - (slope_grade * 0.65).clamp(0.0, 0.25)
@@ -2113,8 +2172,8 @@ impl ActionGame {
         self.stage.playable_bounds()
     }
 
-    pub(crate) const fn max_floors(&self) -> Floor {
-        self.stage.max_floors()
+    pub(crate) fn floors_at(&self, pos: Position) -> Floor {
+        self.stage.floors_at(pos)
     }
 
     pub fn block(&self) -> Option<&ResidentialBlock> {

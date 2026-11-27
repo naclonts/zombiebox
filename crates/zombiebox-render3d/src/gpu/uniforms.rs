@@ -175,6 +175,21 @@ impl SceneLightingUniforms {
         result
     }
 
+    /// Translate spatial inputs into the same snapped frame as the GPU camera.
+    #[must_use]
+    pub fn relative_to(&self, origin: Vec3) -> Self {
+        let mut result = *self;
+        result.player_position[0] -= origin.x;
+        result.player_position[2] -= origin.z;
+        result.visibility_grid[0] -= origin.x as i32;
+        result.visibility_grid[1] -= origin.z as i32;
+        for light in &mut result.point_lights {
+            light.pos_and_radius[0] -= origin.x;
+            light.pos_and_radius[2] -= origin.z;
+        }
+        result
+    }
+
     pub fn set_point_lights(&mut self, lights: &[PointLightGpu]) {
         let count = lights.len().min(MAX_POINT_LIGHTS);
         self.point_lights[..count].copy_from_slice(&lights[..count]);

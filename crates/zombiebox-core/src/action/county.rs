@@ -23,17 +23,19 @@ use super::block::{
     is_los_opaque_kind, is_room_barrier, light_cell_factor_kind, move_body_world, trace_grid_dda,
 };
 use super::types::{
-    BuildingId, BuildingInfo, BuildingStyle, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot,
-    CacheView, CombatWorld, DamageKind, DynamicFlashView, Floor, LightKind, LightSourceView,
-    Material, PropKind, SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction,
-    TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, mix64,
+    BuildingId, BuildingInfo, BuildingStyle, BuildingUid, COUNTY_FLOORS, CacheId, CacheKind,
+    CacheLoot, CacheView, CombatWorld, CustomCellSpec, DamageKind, DoorAxis, DynamicFlashView,
+    Floor, LightKind, LightSourceView, MAX_COMPACT_BUILDING_ID, MAX_COUNTY_FLOORS, Material,
+    PropKind, SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction,
+    TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, WingRect, mix64,
+    pack_chunk_slot_id,
 };
 
 pub const ACTIVE_CHUNK_RADIUS: i32 = 3;
 pub const CHUNKS_PER_WINDOW: usize = (ACTIVE_CHUNK_RADIUS * 2 + 1) as usize; // 7
 pub const WINDOW_SIZE: i32 = CHUNK_SIZE * CHUNKS_PER_WINDOW as i32; // 112
 const NUM_CHUNKS: usize = (CHUNKS_PER_SIDE * CHUNKS_PER_SIDE) as usize; // 1024
-const WINDOW_CELLS: usize = (WINDOW_SIZE as usize) * (WINDOW_SIZE as usize) * COUNTY_FLOORS;
+const WINDOW_LAYER_CELLS: usize = (WINDOW_SIZE as usize) * (WINDOW_SIZE as usize);
 const PLAYER_COLLISION_RADIUS: f32 = 0.23;
 
 #[derive(Clone, Copy, Debug)]
@@ -47,9 +49,37 @@ struct CountyLight {
     kind: LightKind,
 }
 
+type ChunkLayer = [[Cell; CHUNK_SIZE as usize]; CHUNK_SIZE as usize];
+const AIR_CELL: Cell = Cell::air();
+
 struct CountyChunk {
-    cells: [[[Cell; CHUNK_SIZE as usize]; CHUNK_SIZE as usize]; COUNTY_FLOORS],
+    floors: Vec<Box<ChunkLayer>>,
     lights: Vec<CountyLight>,
+}
+
+impl CountyChunk {
+    fn with_floors(num_floors: usize) -> Self {
+        let n = num_floors.clamp(1, MAX_COUNTY_FLOORS);
+        let mut floors = Vec::with_capacity(n);
+        for _ in 0..n {
+            floors.push(Box::new(
+                [[Cell::air(); CHUNK_SIZE as usize]; CHUNK_SIZE as usize],
+            ));
+        }
+        Self {
+            floors,
+            lights: Vec::new(),
+        }
+    }
+
+    fn ensure_floors(&mut self, num_floors: usize) {
+        let n = num_floors.clamp(1, MAX_COUNTY_FLOORS);
+        while self.floors.len() < n {
+            self.floors.push(Box::new(
+                [[Cell::air(); CHUNK_SIZE as usize]; CHUNK_SIZE as usize],
+            ));
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +112,9 @@ pub struct CountyStage {
     window_cy: i32,
     window_origin: Position,
     all_buildings: Vec<BuildingInfo>,
-    registered_buildings: HashMap<(i32, i32, i32, i32), BuildingReg>,
+    registered_buildings: HashMap<BuildingUid, BuildingReg>,
+    cache_index_by_id: HashMap<CacheId, usize>,
+    window_max_floors: u8,
     window_buildings: Vec<BuildingInfo>,
     caches: Vec<SupplyCache>,
     flashes: Vec<DynamicFlash>,
@@ -93,7 +125,7 @@ pub struct CountyStage {
     terrain_version: u64,
     pending_collapses: Vec<Tile3D>,
     starter_open_door: Option<Position>,
-    next_monster_id: u32,
+    next_monster_id: u64,
     total_monsters_spawned: usize,
 }
 
@@ -118,21 +150,23 @@ impl CountyStage {
             window_origin,
             all_buildings: Vec::new(),
             registered_buildings: HashMap::new(),
+            cache_index_by_id: HashMap::new(),
+            window_max_floors: 1,
             window_buildings: Vec::new(),
             caches: Vec::new(),
             flashes: Vec::new(),
             light_cache: RefCell::new(WindowLightCache {
                 version: u64::MAX,
-                levels: vec![0; WINDOW_CELLS],
+                levels: Vec::new(),
             }),
-            window_rooms: vec![0; WINDOW_CELLS],
+            window_rooms: Vec::new(),
             rooms_version: u64::MAX,
             currently_visible: Vec::with_capacity(512),
             terrain_version: 1,
             pending_collapses: Vec::new(),
             starter_open_door: None,
             // Generated infected use the low ID range; reserve the high range for runtime spawns.
-            next_monster_id: 1 << 31,
+            next_monster_id: 1u64 << 63,
             total_monsters_spawned: 0,
         };
 
@@ -220,7 +254,9 @@ impl CountyStage {
     fn window_cell_idx(&self, wx: i32, wy: i32, fl: usize) -> Option<usize> {
         let lx = wx - self.window_origin.x;
         let ly = wy - self.window_origin.y;
-        if !(0..WINDOW_SIZE).contains(&lx) || !(0..WINDOW_SIZE).contains(&ly) || fl >= COUNTY_FLOORS
+        if !(0..WINDOW_SIZE).contains(&lx)
+            || !(0..WINDOW_SIZE).contains(&ly)
+            || fl >= usize::from(self.window_max_floors)
         {
             return None;
         }
@@ -229,30 +265,35 @@ impl CountyStage {
 
     #[inline]
     fn cell_at_world(&self, tile: Tile3D) -> Option<&Cell> {
-        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= COUNTY_FLOORS {
+        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= MAX_COUNTY_FLOORS {
             return None;
         }
         let cx = tile.x >> 4;
         let cy = tile.y >> 4;
         let lx = (tile.x & 15) as usize;
         let ly = (tile.y & 15) as usize;
-        self.chunks[Self::chunk_idx(cx, cy)]
-            .as_ref()
-            .map(|c| &c.cells[tile.floor as usize][ly][lx])
+        let chunk = self.chunks[Self::chunk_idx(cx, cy)].as_ref()?;
+        if (tile.floor as usize) < chunk.floors.len() {
+            Some(&chunk.floors[tile.floor as usize][ly][lx])
+        } else {
+            Some(&AIR_CELL)
+        }
     }
 
     #[inline]
     fn cell_mut_world(&mut self, tile: Tile3D) -> Option<&mut Cell> {
-        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= COUNTY_FLOORS {
+        if !Self::in_world(tile.pos()) || (tile.floor as usize) >= MAX_COUNTY_FLOORS {
             return None;
         }
         let cx = tile.x >> 4;
         let cy = tile.y >> 4;
         let lx = (tile.x & 15) as usize;
         let ly = (tile.y & 15) as usize;
-        self.chunks[Self::chunk_idx(cx, cy)]
-            .as_mut()
-            .map(|c| &mut c.cells[tile.floor as usize][ly][lx])
+        let chunk = self.chunks[Self::chunk_idx(cx, cy)].as_mut()?;
+        chunk
+            .floors
+            .get_mut(tile.floor as usize)
+            .map(|layer| &mut layer[ly][lx])
     }
 
     pub fn sync_active_window(
@@ -274,6 +315,28 @@ impl CountyStage {
         self.activate_window_monsters(active_monsters);
         self.rebuild_window_buildings();
         self.terrain_version += 1;
+    }
+
+    fn next_building_id(&self) -> BuildingId {
+        let id = self.all_buildings.len() + 1;
+        assert!(
+            id <= usize::from(MAX_COMPACT_BUILDING_ID),
+            "county building slots exhausted"
+        );
+        id as BuildingId
+    }
+
+    pub const fn window_max_floors(&self) -> u8 {
+        self.window_max_floors
+    }
+
+    pub fn chunk_allocated_floors(&self, cx: i32, cy: i32) -> Option<usize> {
+        if !(0..CHUNKS_PER_SIDE).contains(&cx) || !(0..CHUNKS_PER_SIDE).contains(&cy) {
+            return None;
+        }
+        self.chunks[Self::chunk_idx(cx, cy)]
+            .as_ref()
+            .map(|c| c.floors.len())
     }
 
     pub fn alloc_monster_id(&mut self) -> MonsterId {
@@ -344,11 +407,25 @@ impl CountyStage {
                 self.window_buildings.push(*b);
             }
         }
+        let mut max_fl = 1u8;
+        for cy in (self.window_cy - ACTIVE_CHUNK_RADIUS)..=(self.window_cy + ACTIVE_CHUNK_RADIUS) {
+            for cx in
+                (self.window_cx - ACTIVE_CHUNK_RADIUS)..=(self.window_cx + ACTIVE_CHUNK_RADIUS)
+            {
+                if (0..CHUNKS_PER_SIDE).contains(&cx)
+                    && (0..CHUNKS_PER_SIDE).contains(&cy)
+                    && let Some(c) = &self.chunks[Self::chunk_idx(cx, cy)]
+                {
+                    max_fl = max_fl.max(c.floors.len() as u8);
+                }
+            }
+        }
+        self.window_max_floors = max_fl.min(MAX_COUNTY_FLOORS as u8);
     }
 
     fn register_building(&mut self, b: &Building) -> BuildingReg {
-        let key = (b.min.x, b.min.y, b.max.x, b.max.y);
-        if let Some(&reg) = self.registered_buildings.get(&key) {
+        let uid_key = BuildingUid::from_coords(b.min.x, b.min.y, 0);
+        if let Some(&reg) = self.registered_buildings.get(&uid_key) {
             return reg;
         }
 
@@ -363,7 +440,15 @@ impl CountyStage {
                 let sub_min = Position::new(room.min.x - 1, room.min.y - 1);
                 let sub_max = Position::new(room.max.x + 1, room.max.y + 1);
                 let door = find_subbox_door(b, sub_min, sub_max);
-                let id = (self.all_buildings.len() + 1) as BuildingId;
+                let id = self.next_building_id();
+                let uid = BuildingUid::from_coords(sub_min.x, sub_min.y, idx as u16 + 1);
+                let (wings, wing_count) = BuildingInfo::single_wing_array(
+                    sub_min.x,
+                    sub_min.y,
+                    sub_max.x - sub_min.x + 1,
+                    sub_max.y - sub_min.y + 1,
+                    1,
+                );
                 let name = match room.kind {
                     RoomKind::Barracks => "Army Barracks",
                     RoomKind::Armory => "Army Armory",
@@ -372,6 +457,7 @@ impl CountyStage {
                 };
                 self.all_buildings.push(BuildingInfo {
                     id,
+                    uid,
                     name,
                     x: sub_min.x,
                     y: sub_min.y,
@@ -381,6 +467,8 @@ impl CountyStage {
                     style: BuildingStyle::ArmyBarracks,
                     front_door: door,
                     foundation_z: b.foundation_z,
+                    wings,
+                    wing_count,
                 });
                 boxes[idx] = ArmySubBox {
                     id,
@@ -391,24 +479,33 @@ impl CountyStage {
             }
             BuildingReg::ArmySub(boxes)
         } else {
-            let id = (self.all_buildings.len() + 1) as BuildingId;
+            let id = self.next_building_id();
+            let uid = uid_key;
+            let floors = b.floors.min(MAX_COUNTY_FLOORS as u8);
+            let (wings, wing_count) = BuildingInfo::from_wings_slice(
+                &b.wings,
+                WingRect::new(b.min.x, b.min.y, b.max.x, b.max.y, floors),
+            );
             let (style, name) = building_style_and_name(b, self.seed);
             self.all_buildings.push(BuildingInfo {
                 id,
+                uid,
                 name,
                 x: b.min.x,
                 y: b.min.y,
                 width: b.max.x - b.min.x + 1,
                 height: b.max.y - b.min.y + 1,
-                floors: b.floors.min(COUNTY_FLOORS as u8),
+                floors,
                 style,
                 front_door: b.entry,
                 foundation_z: b.foundation_z,
+                wings,
+                wing_count,
             });
             BuildingReg::Single(id)
         };
 
-        self.registered_buildings.insert(key, reg);
+        self.registered_buildings.insert(uid_key, reg);
         reg
     }
 
@@ -429,10 +526,7 @@ impl CountyStage {
             regs.push((*b, self.register_building(b)));
         }
 
-        let mut chunk = Box::new(CountyChunk {
-            cells: [[[Cell::air(); CHUNK_SIZE as usize]; CHUNK_SIZE as usize]; COUNTY_FLOORS],
-            lights: Vec::new(),
-        });
+        let mut chunk = Box::new(CountyChunk::with_floors(1));
 
         let base_x = cx * CHUNK_SIZE;
         let base_y = cy * CHUNK_SIZE;
@@ -577,7 +671,7 @@ impl CountyStage {
                     _ => TileKind::Empty,
                 };
 
-                let cell = &mut chunk.cells[0][ly][lx];
+                let cell = &mut chunk.floors[0][ly][lx];
                 cell.surface = surface;
                 cell.set_kind(kind, Material::None);
             }
@@ -605,7 +699,7 @@ impl CountyStage {
                                 let on_y = p.y == sub.min.y || p.y == sub.max.y;
                                 let on_perimeter = on_x || on_y;
                                 let is_corner = on_x && on_y;
-                                let (kind, wall_mat) = match feat {
+                                let (kind, wall_mat, door_axis) = match feat {
                                     Feature::Wall(_) => (
                                         if is_corner {
                                             TileKind::Pillar
@@ -615,6 +709,7 @@ impl CountyStage {
                                             TileKind::InteriorWall
                                         },
                                         b.material,
+                                        None,
                                     ),
                                     Feature::Window => (
                                         if is_corner {
@@ -623,6 +718,7 @@ impl CountyStage {
                                             TileKind::Window
                                         },
                                         b.material,
+                                        None,
                                     ),
                                     Feature::Door => {
                                         if on_perimeter {
@@ -642,19 +738,26 @@ impl CountyStage {
                                                 exterior: on_perimeter,
                                             },
                                             Material::WoodDoor,
+                                            b.door_axis_at(p, 0).or(Some(if on_y {
+                                                DoorAxis::AlongX
+                                            } else {
+                                                DoorAxis::AlongY
+                                            })),
                                         )
                                     }
                                     Feature::Furniture => (
                                         TileKind::Prop(prop_for_room(Some(sub.room_kind), p)),
                                         Material::None,
+                                        None,
                                     ),
-                                    _ => (TileKind::Empty, Material::None),
+                                    _ => (TileKind::Empty, Material::None, None),
                                 };
-                                let cell = &mut chunk.cells[0][ly][lx];
+                                let cell = &mut chunk.floors[0][ly][lx];
                                 cell.building_id = sub.id;
                                 cell.indoor = !on_perimeter;
                                 cell.surface = Surface::Driveway;
                                 cell.set_kind(kind, wall_mat);
+                                cell.door_axis = door_axis;
                                 cell.load_bearing = false;
                             } else {
                                 // Open ArmyBase compound yard.
@@ -668,7 +771,7 @@ impl CountyStage {
                                             .infected
                                             .iter()
                                             .any(|s| s.floor == 0 && s.position == p);
-                                let cell = &mut chunk.cells[0][ly][lx];
+                                let cell = &mut chunk.floors[0][ly][lx];
                                 cell.building_id = 0;
                                 cell.indoor = false;
                                 if p == b.entry || feat == Feature::Gate {
@@ -680,6 +783,13 @@ impl CountyStage {
                                         },
                                         Material::WoodDoor,
                                     );
+                                    cell.door_axis = b.door_axis_at(p, 0).or(Some(
+                                        if wy == b.min.y || wy == b.max.y {
+                                            DoorAxis::AlongX
+                                        } else {
+                                            DoorAxis::AlongY
+                                        },
+                                    ));
                                     chunk.lights.push(CountyLight {
                                         wx,
                                         wy,
@@ -705,33 +815,36 @@ impl CountyStage {
                     }
                 }
                 BuildingReg::Single(bid) => {
-                    let max_fl = b.floors.min(COUNTY_FLOORS as u8);
+                    let max_fl = (b.floors as usize).clamp(1, MAX_COUNTY_FLOORS);
                     for floor in 0..max_fl {
-                        let fl_idx = floor as usize;
                         for wy in y0..=y1 {
                             let ly = (wy - base_y) as usize;
                             for wx in x0..=x1 {
                                 let lx = (wx - base_x) as usize;
                                 let p = Position::new(wx, wy);
-                                let feat = b.feature_at(p, floor).unwrap_or(Feature::Empty);
+                                let feat =
+                                    b.feature_at(p, floor as Floor).unwrap_or(Feature::Empty);
                                 if feat == Feature::Empty {
                                     continue;
                                 }
+                                if floor >= chunk.floors.len() {
+                                    chunk.ensure_floors(floor + 1);
+                                }
 
                                 let w_out = b
-                                    .feature_at(Position::new(wx - 1, wy), floor)
+                                    .feature_at(Position::new(wx - 1, wy), floor as Floor)
                                     .unwrap_or(Feature::Empty)
                                     == Feature::Empty;
                                 let e_out = b
-                                    .feature_at(Position::new(wx + 1, wy), floor)
+                                    .feature_at(Position::new(wx + 1, wy), floor as Floor)
                                     .unwrap_or(Feature::Empty)
                                     == Feature::Empty;
                                 let n_out = b
-                                    .feature_at(Position::new(wx, wy - 1), floor)
+                                    .feature_at(Position::new(wx, wy - 1), floor as Floor)
                                     .unwrap_or(Feature::Empty)
                                     == Feature::Empty;
                                 let s_out = b
-                                    .feature_at(Position::new(wx, wy + 1), floor)
+                                    .feature_at(Position::new(wx, wy + 1), floor as Floor)
                                     .unwrap_or(Feature::Empty)
                                     == Feature::Empty;
                                 let on_x = w_out || e_out;
@@ -739,9 +852,11 @@ impl CountyStage {
                                 let on_perimeter = on_x || on_y;
                                 let is_corner = on_x && on_y;
 
-                                let room = room_at_building(b, p, floor);
+                                let room = room_at_building(b, p, floor as Floor);
                                 let surface = surface_for_room(room);
-                                let supports_above = floor + 1 < b.floors;
+                                let supports_above = b
+                                    .feature_at(p, floor as Floor + 1)
+                                    .is_some_and(|above| above != Feature::Empty);
 
                                 let (kind, wall_mat, load_bearing, stair_dir) = match feat {
                                     Feature::Wall(mat) => {
@@ -796,12 +911,12 @@ impl CountyStage {
                                         )
                                     }
                                     Feature::Stairs => {
-                                        let st_kind = match (floor, b.floors) {
+                                        let st_kind = match (floor, max_fl) {
                                             (0, _) => TileKind::StairsUp,
-                                            (1, f) if f >= 3 => TileKind::StairsBoth,
+                                            (f, mf) if f > 0 && f + 1 < mf => TileKind::StairsBoth,
                                             _ => TileKind::StairsDown,
                                         };
-                                        let dir = compute_stair_dir(b, p, floor);
+                                        let dir = compute_stair_dir(b, p, floor as Floor);
                                         (st_kind, Material::None, false, dir)
                                     }
                                     Feature::Furniture => (
@@ -813,13 +928,14 @@ impl CountyStage {
                                     _ => (TileKind::Empty, Material::None, false, (0, 0)),
                                 };
 
-                                let cell = &mut chunk.cells[fl_idx][ly][lx];
+                                let cell = &mut chunk.floors[floor][ly][lx];
                                 cell.surface = surface;
                                 cell.set_kind(kind, wall_mat);
                                 cell.building_id = bid;
                                 cell.indoor = !on_perimeter;
                                 cell.load_bearing = load_bearing;
                                 cell.stair_dir = stair_dir;
+                                cell.door_axis = b.door_axis_at(p, floor as Floor);
                             }
                         }
                     }
@@ -830,13 +946,14 @@ impl CountyStage {
         self.chunks[cidx] = Some(chunk);
 
         // 3. Materialize chunk-owned loot caches.
-        for site in sites.loot {
+        for (cache_slot, site) in sites.loot.into_iter().enumerate() {
             let district = world
                 .tile_at(site.position)
                 .map_or(District::Farm, |t| t.district);
             let (kind, loot) =
                 roll_cache_loot(self.seed, site.position, site.floor, site.kind, district);
-            let id = self.caches.len() as CacheId;
+            let id = pack_chunk_slot_id(cx, cy, cache_slot as u16);
+            self.cache_index_by_id.insert(id, self.caches.len());
             self.caches.push(SupplyCache {
                 id,
                 pos: Tile3D::from_pos(site.position, site.floor),
@@ -853,12 +970,10 @@ impl CountyStage {
             if pos_vec.distance(wake_vec) < 4.5 {
                 continue;
             }
-            // Chunk and spawn index are stable regardless of the route taken through the county.
-            // A chunk contains at most 3 * 16 * 16 spawn sites, well within this slot.
-            let id = MonsterId(1 + (cidx as u32) * 1024 + spawn_index as u32);
+            let id = MonsterId::from_chunk_slot(cx, cy, spawn_index as u16);
             let h = mix64(
                 self.seed
-                    ^ (id.0 as u64)
+                    ^ id.0
                     ^ ((site.position.x as u64 as u32 as u64) << 16)
                     ^ (site.position.y as u64 as u32 as u64),
             );
@@ -882,7 +997,7 @@ impl CountyStage {
                     && c.pos.y >= starter_b.min.y
                     && c.pos.y <= starter_b.max.y
             })
-            .min_by_key(|(_, c)| (c.pos.floor, c.id))
+            .min_by_key(|(_, c)| (c.pos.floor, c.pos.y >> 4, c.id))
             .map(|(i, _)| i);
 
         if let Some(idx) = best_idx {
@@ -906,7 +1021,9 @@ impl CountyStage {
         }
 
         if let Some(axe_pos) = self.find_starter_axe_tile(starter_b, wake) {
-            let id = self.caches.len() as CacheId;
+            // This cache is added by the run, outside the generated chunk slot space.
+            let id = 1 << 63;
+            self.cache_index_by_id.insert(id, self.caches.len());
             self.caches.push(SupplyCache {
                 id,
                 pos: Tile3D::from_pos(axe_pos, 0),
@@ -1225,8 +1342,8 @@ impl CountyStage {
     }
 
     pub fn take_cache(&mut self, id: CacheId) -> Option<CacheLoot> {
-        let cache = self.caches.get_mut(id as usize)?;
-        if cache.id != id || cache.opened {
+        let cache = &mut self.caches[*self.cache_index_by_id.get(&id)?];
+        if cache.opened {
             return None;
         }
         cache.opened = true;
@@ -1427,6 +1544,11 @@ impl CountyStage {
         let Some(cell) = self.cell_at_world(Tile3D::new(wx, wy, fl)) else {
             return WallOrientation::AlongX;
         };
+        if matches!(cell.kind, TileKind::Door { .. })
+            && let Some(axis) = cell.door_axis
+        {
+            return axis.to_wall_orientation();
+        }
         match cell.kind {
             TileKind::Pillar => WallOrientation::Corner,
             TileKind::ExteriorWall
@@ -1470,12 +1592,12 @@ impl CountyStage {
         if cache.version == self.terrain_version {
             return;
         }
-        let mut accum = vec![0.0_f32; WINDOW_CELLS];
+        let mut accum = vec![0.0_f32; WINDOW_LAYER_CELLS * usize::from(self.window_max_floors)];
         let ox = self.window_origin.x;
         let oy = self.window_origin.y;
         let w = WINDOW_SIZE as usize;
 
-        for fl in 0..COUNTY_FLOORS {
+        for fl in 0..usize::from(self.window_max_floors) {
             for ly in 0..w {
                 let wy = oy + ly as i32;
                 for lx in 0..w {
@@ -1541,6 +1663,7 @@ impl CountyStage {
 
                             if light.kind == LightKind::Streetlight
                                 && fl == 0
+                                && self.window_max_floors > 1
                                 && let Some(f1_cell) = self.cell_at_world(Tile3D::new(wx, wy, 1))
                             {
                                 let eligible = matches!(
@@ -1567,6 +1690,7 @@ impl CountyStage {
             }
         }
 
+        cache.levels.resize(accum.len(), 0);
         for (out, val) in cache.levels.iter_mut().zip(accum) {
             *out = val.round().clamp(0.0, 255.0) as u8;
         }
@@ -1655,7 +1779,9 @@ impl CountyStage {
         if self.rooms_version == self.terrain_version {
             return;
         }
-        self.window_rooms.fill(0);
+        self.window_rooms.clear();
+        self.window_rooms
+            .resize(WINDOW_LAYER_CELLS * usize::from(self.window_max_floors), 0);
         let ox = self.window_origin.x;
         let oy = self.window_origin.y;
         let w = WINDOW_SIZE as usize;
@@ -1663,7 +1789,7 @@ impl CountyStage {
         let mut queue = VecDeque::new();
         const DIRS: [(i32, i32); 4] = [(0, -1), (1, 0), (0, 1), (-1, 0)];
 
-        for fl in 0..COUNTY_FLOORS {
+        for fl in 0..usize::from(self.window_max_floors) {
             for ly in 0..w {
                 let wy = oy + ly as i32;
                 for lx in 0..w {
@@ -1716,7 +1842,7 @@ impl CountyStage {
     }
 
     pub fn update_visibility(&mut self, viewer: Vec2, floor: Floor) {
-        if (floor as usize) >= COUNTY_FLOORS {
+        if floor >= self.window_max_floors {
             return;
         }
         self.ensure_window_rooms();
@@ -1933,9 +2059,7 @@ impl CountyStage {
         count
     }
 
-    /// 3-floor structural collapse:
-    /// breaching F0 load_bearing collapses unsupported F1 cells (and any F2 cells above them) onto F0;
-    /// breaching F1 load_bearing collapses unsupported F2 cells onto F1.
+    /// A breach drops unsupported floor cells and the occupied layers above them onto the damaged floor.
     fn resolve_structural_collapse(
         &mut self,
         breached_wx: i32,
@@ -2021,15 +2145,78 @@ impl CountyStage {
 
     fn collapse_stack_from(&mut self, wx: i32, wy: i32, from_fl: Floor, landing_fl: Floor) {
         self.clear_collapsed_cell(wx, wy, from_fl, landing_fl, true);
-        if from_fl == 1 {
-            let f2 = Tile3D::new(wx, wy, 2);
-            if self.cell_at_world(f2).is_some_and(|c| {
+        for upper_fl in (from_fl + 1)..self.window_max_floors {
+            let upper = Tile3D::new(wx, wy, upper_fl);
+            if self.cell_at_world(upper).is_some_and(|c| {
                 c.surface != Surface::Air
                     && !matches!(c.kind, TileKind::StairsDown | TileKind::StairsBoth)
             }) {
-                self.clear_collapsed_cell(wx, wy, 2, 0, false);
+                self.clear_collapsed_cell(wx, wy, upper_fl, landing_fl, false);
             }
         }
+    }
+
+    pub fn stamp_custom_building(
+        &mut self,
+        world: &World,
+        mut info: BuildingInfo,
+        cells: &[CustomCellSpec],
+        viewer_pos: Vec2,
+        viewer_floor: Floor,
+    ) -> BuildingId {
+        assert!((1..=MAX_COUNTY_FLOORS).contains(&usize::from(info.floors)));
+        assert!(cells.iter().all(|spec| {
+            Self::in_world(spec.pos)
+                && spec.floor < info.floors
+                && (info.x..info.x + info.width).contains(&spec.pos.x)
+                && (info.y..info.y + info.height).contains(&spec.pos.y)
+        }));
+        for spec in cells {
+            self.materialize_chunk(world, spec.pos.x >> 4, spec.pos.y >> 4);
+        }
+
+        let id = self.next_building_id();
+        info.id = id;
+        if info.uid.0 == 0 {
+            info.uid = BuildingUid::from_coords(info.x, info.y, (1 << 15) - 1);
+        }
+        assert!(self.all_buildings.iter().all(|b| b.uid != info.uid));
+        if info.wing_count == 0 {
+            let (wings, wing_count) = BuildingInfo::single_wing_array(
+                info.x,
+                info.y,
+                info.width,
+                info.height,
+                info.floors,
+            );
+            info.wings = wings;
+            info.wing_count = wing_count;
+        }
+        self.all_buildings.push(info);
+
+        for spec in cells {
+            let cx = spec.pos.x >> 4;
+            let cy = spec.pos.y >> 4;
+            let lx = (spec.pos.x & 15) as usize;
+            let ly = (spec.pos.y & 15) as usize;
+            if let Some(chunk) = self.chunks[Self::chunk_idx(cx, cy)].as_mut() {
+                chunk.ensure_floors(usize::from(spec.floor) + 1);
+                let mut cell = Cell::air();
+                cell.surface = spec.surface;
+                cell.set_kind(spec.kind, spec.material);
+                cell.indoor = spec.indoor;
+                cell.load_bearing = spec.load_bearing;
+                cell.building_id = id;
+                cell.door_axis = spec.door_axis;
+                cell.stair_dir = spec.stair_dir;
+                chunk.floors[usize::from(spec.floor)][ly][lx] = cell;
+            }
+        }
+
+        self.rebuild_window_buildings();
+        self.terrain_version += 1;
+        self.update_visibility(viewer_pos, viewer_floor);
+        id
     }
 
     fn clear_collapsed_cell(
@@ -2084,8 +2271,9 @@ impl SpatialStageSource for CountyStage {
         true
     }
 
-    fn max_floors(&self) -> Floor {
-        COUNTY_FLOORS as Floor
+    fn floors_at(&self, pos: Position) -> Floor {
+        self.chunk_allocated_floors(pos.x >> 4, pos.y >> 4)
+            .unwrap_or(1) as Floor
     }
 
     fn playable_bounds(&self) -> (Position, Position) {
@@ -2729,6 +2917,278 @@ fn roll_cache_loot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spatial::{Aabb3, ColliderKind, FLOOR_H, Vec3};
+
+    #[test]
+    fn generated_doors_and_gates_pass_runtime_bilateral_capsule_sweep() {
+        use crate::spatial::SpatialWorld;
+        use crate::spatial::collision::sweep_circle_rect_2d;
+        let mut failures = Vec::new();
+        for seed in 0..64 {
+            let world = World::new(seed);
+            let (mut stage, _, _) = CountyStage::new(&world, seed);
+            for building in &world.sites().unwrap().buildings {
+                for floor in 0..building.floors {
+                    for y in building.min.y..=building.max.y {
+                        for x in building.min.x..=building.max.x {
+                            let pos = Position::new(x, y);
+                            if !matches!(
+                                building.feature_at(pos, floor),
+                                Some(Feature::Door | Feature::Gate)
+                            ) {
+                                continue;
+                            }
+                            let axis = building
+                                .door_axis_at(pos, floor)
+                                .expect("generated door axis");
+                            for cy in ((y - 2) >> 4)..=((y + 2) >> 4) {
+                                for cx in ((x - 2) >> 4)..=((x + 2) >> 4) {
+                                    if (0..CHUNKS_PER_SIDE).contains(&cx)
+                                        && (0..CHUNKS_PER_SIDE).contains(&cy)
+                                    {
+                                        stage.materialize_chunk(&world, cx, cy);
+                                    }
+                                }
+                            }
+                            let tangent = axis.tangent();
+                            for sign in [-1, 1] {
+                                let anchor_pos =
+                                    Position::new(x + sign * tangent.0, y + sign * tangent.1);
+                                let anchor = building.feature_at(anchor_pos, floor);
+                                if !matches!(anchor, Some(Feature::Wall(_)) | Some(Feature::Fence))
+                                    && failures.len() < 30
+                                {
+                                    failures.push(format!("seed {seed} {:?} {pos:?} F{floor} {axis:?}: missing jamb anchor {anchor_pos:?}: {anchor:?}", building.kind));
+                                }
+                            }
+                            let tile = Tile3D::from_pos(pos, floor);
+                            let cell = stage.cell_at_world(tile).expect("door cell");
+                            let TileKind::Door { exterior, .. } = cell.kind else {
+                                panic!(
+                                    "seed {seed} {:?} {tile:?}: generated door became {:?}",
+                                    building.kind, cell.kind
+                                );
+                            };
+                            assert_eq!(
+                                cell.door_axis,
+                                Some(axis),
+                                "seed {seed} {:?} {tile:?}",
+                                building.kind
+                            );
+                            let base = stage.building_by_id(cell.building_id).map_or_else(
+                                || world.elevation_at(tile.center()).unwrap_or(0.0),
+                                |info| info.foundation_z + floor as f32 * FLOOR_H,
+                            );
+                            let normal = axis.normal();
+                            let direction = Vec2::new(normal.0 as f32, normal.1 as f32);
+                            let center = tile.center();
+                            for open in [true, false] {
+                                stage.cell_mut_world(tile).unwrap().set_kind(
+                                    TileKind::Door { open, exterior },
+                                    Material::WoodDoor,
+                                );
+                                let query = Aabb3::new(
+                                    center.extend(base) - Vec3::new(1.5, 1.5, 0.01),
+                                    center.extend(base + super::super::PLAYER_HEIGHT)
+                                        + Vec3::new(1.5, 1.5, 0.01),
+                                );
+                                let mut colliders = Vec::new();
+                                stage.colliders_in(query, &mut colliders);
+                                for sign in [-1.0, 1.0] {
+                                    let start = center - direction * (sign * 0.8);
+                                    let delta = direction * (sign * 1.6);
+                                    let hit = colliders.iter().find(|c| {
+                                        c.bounds.max.z > base + 0.001
+                                            && c.bounds.min.z
+                                                < base + super::super::PLAYER_HEIGHT - 0.001
+                                            && sweep_circle_rect_2d(
+                                                start,
+                                                delta,
+                                                super::super::PLAYER_RADIUS,
+                                                c.bounds.min.xy(),
+                                                c.bounds.max.xy(),
+                                            )
+                                            .is_some()
+                                    });
+                                    let valid = if open {
+                                        hit.is_none()
+                                    } else {
+                                        hit.is_some_and(|c| matches!(c.kind, ColliderKind::ClosedDoor { tile: t } if t == tile))
+                                    };
+                                    if !valid && failures.len() < 30 {
+                                        failures.push(format!("seed {seed} {:?} {tile:?} {axis:?} open={open} direction {sign}: {hit:?}", building.kind));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "runtime doorway failures (first 30):\n{}",
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn six_floor_structure_allocates_sparse_wings_and_collapses_through_the_tower() {
+        let world = World::new(42);
+        let (mut stage, _, _) = CountyStage::new(&world, 42);
+        let (cx, cy) = (stage.window_cx, stage.window_cy);
+        let adjacent = cx + 1;
+        let tower = Position::new(adjacent * CHUNK_SIZE - 2, cy * CHUNK_SIZE + 4);
+        let podium = Position::new(adjacent * CHUNK_SIZE, tower.y);
+        assert_eq!(stage.chunk_allocated_floors(cx, cy), Some(1));
+        assert_eq!(stage.chunk_allocated_floors(adjacent, cy), Some(1));
+        let (wings, wing_count) = BuildingInfo::from_wings_slice(
+            &[
+                WingRect::new(tower.x, tower.y, tower.x + 1, tower.y, 6),
+                WingRect::new(podium.x, podium.y, podium.x, podium.y, 2),
+            ],
+            WingRect::default(),
+        );
+        let info = BuildingInfo {
+            id: 0,
+            uid: BuildingUid::default(),
+            name: "Stepped tower",
+            x: tower.x,
+            y: tower.y,
+            width: 3,
+            height: 1,
+            floors: 6,
+            style: BuildingStyle::HospitalClinical,
+            front_door: tower,
+            foundation_z: 0.0,
+            wings,
+            wing_count,
+        };
+        let mut cells = Vec::new();
+        for (pos, height) in [
+            (tower, 6),
+            (Position::new(tower.x + 1, tower.y), 6),
+            (podium, 2),
+        ] {
+            for floor in 0..height {
+                let support = pos == tower && floor == 0;
+                cells.push(CustomCellSpec {
+                    pos,
+                    floor,
+                    surface: Surface::WoodFloor,
+                    kind: if support {
+                        TileKind::InteriorWall
+                    } else {
+                        TileKind::Empty
+                    },
+                    material: if support {
+                        Material::Drywall
+                    } else {
+                        Material::None
+                    },
+                    indoor: true,
+                    load_bearing: support,
+                    stair_dir: (0, 0),
+                    door_axis: None,
+                });
+            }
+        }
+        let id = stage.stamp_custom_building(
+            &world,
+            info,
+            &cells,
+            Tile3D::from_pos(tower, 0).center(),
+            0,
+        );
+        assert_eq!(stage.window_max_floors(), 6);
+        assert_eq!(stage.chunk_allocated_floors(cx, cy), Some(6));
+        assert_eq!(stage.chunk_allocated_floors(adjacent, cy), Some(2));
+        assert_eq!(
+            stage.tile_render_info(podium, 2).unwrap().surface,
+            Surface::Air
+        );
+
+        let roofs_at = |stage: &CountyStage, pos| {
+            let xy = Tile3D::from_pos(pos, 0).center();
+            let mut colliders = Vec::new();
+            stage.colliders_in(
+                Aabb3::new(
+                    xy.extend(0.0) - Vec3::new(0.1, 0.1, 0.0),
+                    xy.extend(8.0 * FLOOR_H) + Vec3::new(0.1, 0.1, 0.0),
+                ),
+                &mut colliders,
+            );
+            colliders
+                .into_iter()
+                .filter_map(|c| match c.kind {
+                    ColliderKind::BuildingSlab {
+                        building_id,
+                        floor,
+                        is_roof: true,
+                    } if building_id == id => Some((floor, c.bounds.max.z)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(roofs_at(&stage, tower), vec![(6, 6.0 * FLOOR_H)]);
+        assert_eq!(roofs_at(&stage, podium), vec![(2, 2.0 * FLOOR_H)]);
+
+        let base = Tile3D::from_pos(tower, 0);
+        let damage = stage.damage_tile(base, DamageKind::RocketBlast).unwrap();
+        assert!(damage.destroyed);
+        assert!(damage.collapsed_cells > 0);
+        for floor in 1..6 {
+            let cell = stage.cell_at_world(Tile3D::from_pos(tower, floor)).unwrap();
+            assert!(cell.collapsed);
+            assert_eq!(cell.surface, Surface::Air);
+        }
+        assert!(roofs_at(&stage, tower).is_empty());
+        assert_eq!(roofs_at(&stage, podium), vec![(2, 2.0 * FLOOR_H)]);
+    }
+
+    #[test]
+    fn building_uid_and_cache_id_are_independent_of_chunk_visit_order() {
+        let world = World::new(42);
+        let (mut first, _, _) = CountyStage::new(&world, 42);
+        let (mut second, _, _) = CountyStage::new(&world, 42);
+        let chunks: Vec<_> = (0..CHUNKS_PER_SIDE)
+            .flat_map(|cy| (0..CHUNKS_PER_SIDE).map(move |cx| (cx, cy)))
+            .filter(|&(cx, cy)| {
+                first.chunks[CountyStage::chunk_idx(cx, cy)].is_none()
+                    && world
+                        .chunk_sites(cx, cy)
+                        .is_some_and(|sites| !sites.buildings.is_empty() && !sites.loot.is_empty())
+            })
+            .take(2)
+            .collect();
+        assert_eq!(chunks.len(), 2);
+        for &(cx, cy) in &chunks {
+            first.materialize_chunk(&world, cx, cy);
+        }
+        for &(cx, cy) in chunks.iter().rev() {
+            second.materialize_chunk(&world, cx, cy);
+        }
+        let buildings = |stage: &CountyStage| {
+            let mut buildings: Vec<_> = stage
+                .all_buildings
+                .iter()
+                .map(|b| (b.uid, b.x, b.y))
+                .collect();
+            buildings.sort_unstable();
+            buildings
+        };
+        let caches = |stage: &CountyStage| {
+            let mut caches: Vec<_> = stage.caches.iter().map(|c| (c.id, c.pos)).collect();
+            caches.sort_unstable_by_key(|&(id, _)| id);
+            caches
+        };
+        assert_eq!(buildings(&first), buildings(&second));
+        assert_eq!(caches(&first), caches(&second));
+        for cache in first.caches.clone() {
+            assert_eq!(first.take_cache(cache.id), Some(cache.loot));
+            assert_eq!(first.take_cache(cache.id), None);
+        }
+    }
 
     #[test]
     fn infected_identity_is_independent_of_chunk_visit_order() {

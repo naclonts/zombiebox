@@ -49,14 +49,32 @@ const fn building_wall_material(style: BuildingStyle) -> Material {
     }
 }
 
-fn roof_rise_at(b: &BuildingInfo, tx: i32, ty: i32) -> f32 {
+fn same_building_above<S: SpatialStageSource + ?Sized>(
+    src: &S,
+    p: Position,
+    fl: Floor,
+    bid: BuildingId,
+    max_floors: Floor,
+) -> Option<SpatialCell> {
+    if fl + 1 >= max_floors {
+        return None;
+    }
+    // Collapsed floors retain their building ID so the storey below stays open.
+    src.spatial_cell(Tile3D::from_pos(p, fl + 1))
+        .filter(|above| above.building_id == bid)
+}
+
+fn roof_rise_at(b: &BuildingInfo, tx: i32, ty: i32, fl: Floor) -> f32 {
     if !b.style.has_pitched_roof() {
         return 0.0;
     }
-    let dx = (tx - b.x).min(b.x + b.width - 1 - tx).max(0) as f32;
-    let dy = (ty - b.y).min(b.y + b.height - 1 - ty).max(0) as f32;
-    let max_dx = ((b.width - 1) as f32 * 0.5).max(1.0);
-    let max_dy = ((b.height - 1) as f32 * 0.5).max(1.0);
+    let w = b.wing_at(b.wing_index_at(Position::new(tx, ty), fl));
+    let bw = (w.max_x - w.min_x + 1).max(1);
+    let bh = (w.max_y - w.min_y + 1).max(1);
+    let dx = (tx - w.min_x).min(w.max_x - tx).max(0) as f32;
+    let dy = (ty - w.min_y).min(w.max_y - ty).max(0) as f32;
+    let max_dx = ((bw - 1) as f32 * 0.5).max(1.0);
+    let max_dy = ((bh - 1) as f32 * 0.5).max(1.0);
     let t = (dx / max_dx).min(dy / max_dy).clamp(0.0, 1.0);
     PITCHED_ROOF_RISE * t
 }
@@ -290,12 +308,11 @@ impl SpatialWorld for WorldSpatialView<'_> {
     }
 }
 
-/// Shared read-only stage abstraction implemented by `ResidentialBlock`, `CountyStage`, `Stage`,
-/// and `ActionGame` so all `SpatialWorld` queries share a single implementation.
+/// Shared read-only stage abstraction for the live `SpatialWorld` queries.
 pub(crate) trait SpatialStageSource {
     fn world(&self) -> &World;
     fn is_county(&self) -> bool;
-    fn max_floors(&self) -> Floor;
+    fn floors_at(&self, pos: Position) -> Floor;
     fn playable_bounds(&self) -> (Position, Position);
     fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell>;
     fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo>;
@@ -439,8 +456,8 @@ impl SpatialStageSource for ActionGame {
         self.is_county()
     }
 
-    fn max_floors(&self) -> Floor {
-        self.max_floors()
+    fn floors_at(&self, pos: Position) -> Floor {
+        self.floors_at(pos)
     }
 
     fn playable_bounds(&self) -> (Position, Position) {
@@ -635,16 +652,12 @@ fn emit_tile_floor_colliders<S: SpatialStageSource + ?Sized>(
     let fy = tile.y as f32;
 
     let has_slab_above = b_info.is_some_and(|b| {
-        let next_fl = tile.floor + 1;
-        if next_fl < b.floors {
-            src.spatial_cell(Tile3D::new(tile.x, tile.y, next_fl))
-                .is_some_and(|u| {
-                    u.surface != Surface::Air
-                        && !matches!(u.kind, TileKind::StairsDown | TileKind::StairsBoth)
-                })
-        } else {
-            next_fl == b.floors && cell.surface != Surface::Air
-        }
+        same_building_above(src, tile.pos(), tile.floor, cell.building_id, b.floors).is_none_or(
+            |above| {
+                above.surface != Surface::Air
+                    && !matches!(above.kind, TileKind::StairsDown | TileKind::StairsBoth)
+            },
+        )
     });
     let z_wall_top = z_base + if has_slab_above { WALL_HEIGHT } else { FLOOR_H };
 
@@ -1055,6 +1068,7 @@ pub(crate) fn stage_supports_at<S: SpatialStageSource + ?Sized>(
         return;
     };
     let p = terrain.tile;
+    let max_floors = src.floors_at(p);
     let f0 = src.spatial_cell(Tile3D::from_pos(p, 0));
     let f0_surface = f0.map_or(Surface::Grass, |c| c.surface);
 
@@ -1065,7 +1079,7 @@ pub(crate) fn stage_supports_at<S: SpatialStageSource + ?Sized>(
         let foundation_z = src
             .building_by_id(c0.building_id)
             .map_or(0.0, |b| b.foundation_z);
-        if matches!(c0.kind, TileKind::StairsUp | TileKind::StairsBoth) && src.max_floors() > 1 {
+        if matches!(c0.kind, TileKind::StairsUp | TileKind::StairsBoth) && max_floors > 1 {
             let stair_tile = Tile3D::from_pos(p, 0);
             let geom = build_stair_geometry(src, stair_tile, foundation_z, c0);
             let (z, normal) = geom.sample(xy);
@@ -1133,7 +1147,6 @@ pub(crate) fn stage_supports_at<S: SpatialStageSource + ?Sized>(
         });
     }
 
-    let max_floors = src.max_floors();
     for fl in 1..max_floors {
         let Some(cell) = src.spatial_cell(Tile3D::from_pos(p, fl)) else {
             continue;
@@ -1185,7 +1198,6 @@ pub(crate) fn stage_colliders_in<S: SpatialStageSource + ?Sized>(
     out.clear();
     let (play_min, play_max) = src.playable_bounds();
     let (min_tile, max_tile) = bounds.tile_bounds();
-    let max_floors = src.max_floors();
     let world = src.world();
 
     for ty in min_tile.y..=max_tile.y {
@@ -1211,7 +1223,7 @@ pub(crate) fn stage_colliders_in<S: SpatialStageSource + ?Sized>(
                 .terrain_quad(p)
                 .map_or(0.0, |q| (q[0] + q[1] + q[2] + q[3]) * 0.25);
 
-            for fl in 0..max_floors {
+            for fl in 0..src.floors_at(p) {
                 let tile = Tile3D::from_pos(p, fl);
                 let Some(cell) = src.spatial_cell(tile) else {
                     continue;
@@ -1269,9 +1281,9 @@ pub(crate) fn stage_colliders_in<S: SpatialStageSource + ?Sized>(
                         emit_stairwell_railings(src, tile, cell, z_base, bounds, out);
                     }
 
-                    if fl + 1 == b.floors {
-                        let z_eave = floor_elevation(b.foundation_z, b.floors);
-                        let z_roof_top = z_eave + roof_rise_at(b, tx, ty);
+                    if same_building_above(src, p, fl, cell.building_id, b.floors).is_none() {
+                        let z_eave = floor_elevation(b.foundation_z, fl + 1);
+                        let z_roof_top = z_eave + roof_rise_at(b, tx, ty, fl);
                         let (rx0, rx1, ry0, ry1) = clipped_footprint(src, p, fl, cell.building_id);
                         push_if_intersects(
                             out,
@@ -1283,7 +1295,7 @@ pub(crate) fn stage_colliders_in<S: SpatialStageSource + ?Sized>(
                                 ),
                                 kind: ColliderKind::BuildingSlab {
                                     building_id: cell.building_id,
-                                    floor: b.floors,
+                                    floor: fl + 1,
                                     is_roof: true,
                                 },
                                 material: building_wall_material(b.style),
@@ -1304,7 +1316,6 @@ pub(crate) fn stage_surface_quads_in<S: SpatialStageSource + ?Sized>(
 ) {
     out.clear();
     let world = src.world();
-    let max_floors = src.max_floors();
 
     for ty in min_tile.y..=max_tile.y {
         for tx in min_tile.x..=max_tile.x {
@@ -1339,10 +1350,7 @@ pub(crate) fn stage_surface_quads_in<S: SpatialStageSource + ?Sized>(
                 });
             }
 
-            for fl in 0..max_floors {
-                if fl + 1 >= max_floors {
-                    continue;
-                }
+            for fl in 0..src.floors_at(p).saturating_sub(1) {
                 let tile = Tile3D::from_pos(p, fl);
                 let Some(cell) = src.spatial_cell(tile) else {
                     continue;

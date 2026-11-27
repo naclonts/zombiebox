@@ -167,11 +167,7 @@ impl SceneManager {
         let half = self.config.visibility_half_extent;
         let side = (half * 2 + 1) as usize;
         let origin = Position::new(focus_pos.x - half, focus_pos.y - half);
-        let floor_count = if game.is_county() {
-            MAX_SNAPSHOT_FLOORS as u8
-        } else {
-            zombiebox_core::NUM_FLOORS as u8
-        };
+        let floor_count = game.window_max_floors().min(MAX_SNAPSHOT_FLOORS as u8);
 
         let mut visibility_cells = Vec::with_capacity(side * side * floor_count as usize);
         for fl in 0..floor_count {
@@ -206,8 +202,11 @@ impl SceneManager {
         // Cutaways
         let active_buildings = game.buildings();
         if self.cutaways.len() > 128 {
-            self.cutaways
-                .retain(|id, _| active_buildings.iter().any(|b| b.id == *id));
+            self.cutaways.retain(|id, _| {
+                active_buildings
+                    .iter()
+                    .any(|b| (0..b.effective_wing_count()).any(|i| b.cutaway_slot(i) == *id))
+            });
         }
 
         let mut building_cutaways = Vec::with_capacity(active_buildings.len());
@@ -222,40 +221,55 @@ impl SceneManager {
                         TileKind::Window | TileKind::BrokenWindow | TileKind::Door { .. }
                     )
                 {
-                    nearby_openings.push(tile.building_id);
+                    nearby_openings.push((
+                        tile.building_id,
+                        Position::new(player_tile.x + dx, player_tile.y + dy),
+                    ));
                 }
             }
         }
         for b in active_buildings {
-            let inside = player_building_id == b.id;
-            let wants = building_wants_cutaway(b, player_pos, player_building_id, &nearby_openings);
-            let target_openness = if wants { 1.0 } else { 0.0 };
-            let current = self.cutaways.entry(b.id).or_insert(target_openness);
-            if self.snap_cutaways_next_frame {
-                *current = target_openness;
-            } else if *current != target_openness {
-                let step = dt_clamped / CUTAWAY_FADE_S;
-                if target_openness > *current {
-                    *current = (*current + step).min(1.0);
-                } else {
-                    *current = (*current - step).max(0.0);
+            for wing_index in 0..b.effective_wing_count() {
+                let wing = b.wing_at(wing_index);
+                let slot = b.cutaway_slot(wing_index);
+                let inside =
+                    player_building_id == b.id && b.wing_index_at(player_tile, floor) == wing_index;
+                let wants = building_wants_cutaway(
+                    b,
+                    wing_index,
+                    player_pos,
+                    floor,
+                    inside,
+                    &nearby_openings,
+                );
+                let target_openness = if wants { 1.0 } else { 0.0 };
+                let current = self.cutaways.entry(slot).or_insert(target_openness);
+                if self.snap_cutaways_next_frame {
+                    *current = target_openness;
+                } else if *current != target_openness {
+                    let step = dt_clamped / CUTAWAY_FADE_S;
+                    if target_openness > *current {
+                        *current = (*current + step).min(1.0);
+                    } else {
+                        *current = (*current - step).max(0.0);
+                    }
                 }
+
+                let openness = *current;
+                let stipple_step = ((1.0 - openness) * 4.0).round().clamp(0.0, 4.0) as u8;
+                let dither_opacity_u8 = ((1.0 - openness) * 255.0).round().clamp(0.0, 255.0) as u8;
+
+                building_cutaways.push(BuildingCutawayState {
+                    building_id: slot,
+                    floors: wing.floors,
+                    foundation_z: b.foundation_z,
+                    player_inside: inside,
+                    wants_cutaway: wants,
+                    openness,
+                    stipple_step,
+                    dither_opacity_u8,
+                });
             }
-
-            let openness = *current;
-            let stipple_step = ((1.0 - openness) * 4.0).round().clamp(0.0, 4.0) as u8;
-            let dither_opacity_u8 = ((1.0 - openness) * 255.0).round().clamp(0.0, 255.0) as u8;
-
-            building_cutaways.push(BuildingCutawayState {
-                building_id: b.id,
-                floors: b.floors,
-                foundation_z: b.foundation_z,
-                player_inside: inside,
-                wants_cutaway: wants,
-                openness,
-                stipple_step,
-                dither_opacity_u8,
-            });
         }
         building_cutaways.sort_by_key(|c| c.building_id);
 
@@ -359,31 +373,24 @@ impl SceneManager {
 
 fn building_wants_cutaway(
     b: &BuildingInfo,
+    wing_index: usize,
     p: SimVec2,
-    player_bid: BuildingId,
-    nearby_openings: &[BuildingId],
+    floor: u8,
+    inside: bool,
+    nearby_openings: &[(BuildingId, Position)],
 ) -> bool {
-    if player_bid == b.id {
+    let wing = b.wing_at(wing_index);
+    if floor >= wing.floors {
+        return false;
+    }
+    if inside {
         return true;
     }
-    let x0 = b.x as f32;
-    let y0 = b.y as f32;
-    let x1 = (b.x + b.width - 1) as f32;
-    let y1 = (b.y + b.height - 1) as f32;
-
-    if p.x >= x0 - 0.3 && p.x <= x1 + 0.3 && p.y >= y0 - 0.3 && p.y <= y1 + 0.3 {
-        return true;
-    }
-    let behind_ne = p.x >= x0 - 1.5 && p.x <= x1 + 0.5 && p.y >= y0 - 1.5 && p.y < y0;
-    let behind_nw = p.y >= y0 - 1.5 && p.y <= y1 + 0.5 && p.x >= x0 - 1.5 && p.x < x0;
-    if behind_ne || behind_nw {
-        return true;
-    }
-    let front_d = p.distance(SimVec2::new(b.front_door.x as f32, b.front_door.y as f32));
-    if front_d <= 1.3 {
-        return true;
-    }
-    nearby_openings.contains(&b.id)
+    nearby_openings.iter().any(|&(id, pos)| {
+        id == b.id
+            && b.wing_index_at(pos, floor) == wing_index
+            && p.distance(SimVec2::new(pos.x as f32, pos.y as f32)) <= 1.3
+    })
 }
 
 #[cfg(test)]
@@ -392,6 +399,60 @@ mod tests {
     use crate::camera::{CameraMode, CameraRig, CameraTarget};
     use crate::coords::tile_local_in_chunk;
     use zombiebox_core::{ActionInput, DamageKind, Weapon};
+
+    #[test]
+    fn cutaways_follow_occupied_wings_and_floor_height() {
+        let game = ActionGame::residential(42);
+        let mut b = game.buildings()[0];
+        b.x = 0;
+        b.y = 0;
+        b.width = 10;
+        b.height = 10;
+        b.floors = 6;
+        b.wings[0] = zombiebox_core::WingRect::new(0, 0, 2, 9, 6);
+        b.wings[1] = zombiebox_core::WingRect::new(7, 0, 9, 9, 2);
+        b.wing_count = 2;
+        assert!(!building_wants_cutaway(
+            &b,
+            0,
+            SimVec2::new(5.0, 5.0),
+            0,
+            false,
+            &[]
+        ));
+        assert!(!building_wants_cutaway(
+            &b,
+            1,
+            SimVec2::new(5.0, 5.0),
+            0,
+            false,
+            &[]
+        ));
+        assert!(building_wants_cutaway(
+            &b,
+            1,
+            SimVec2::new(8.0, 5.0),
+            1,
+            true,
+            &[]
+        ));
+        assert!(!building_wants_cutaway(
+            &b,
+            1,
+            SimVec2::new(8.0, 5.0),
+            2,
+            false,
+            &[]
+        ));
+        assert!(building_wants_cutaway(
+            &b,
+            0,
+            SimVec2::new(1.0, 5.0),
+            5,
+            true,
+            &[]
+        ));
+    }
 
     #[test]
     fn camera_only_movement_triggers_zero_rebuilds() {

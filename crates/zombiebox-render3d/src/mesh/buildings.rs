@@ -332,10 +332,11 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                 for v in &mut color[..3] {
                     *v *= tint
                 }
-                let wallmeta = meta(GeometryTag::WallLower, f, c.building_id as u32);
-                let floormeta = meta(GeometryTag::InteriorFloor, f, c.building_id as u32);
-                let roofmeta = meta(GeometryTag::Roof, info.floors, c.building_id as u32);
-                let openingmeta = meta(GeometryTag::DoorOrWindow, f, c.building_id as u32);
+                let slot = info.cutaway_slot_at(p, f) as u32;
+                let wallmeta = meta(GeometryTag::WallLower, f, slot);
+                let floormeta = meta(GeometryTag::InteriorFloor, f, slot);
+                let roofmeta = meta(GeometryTag::Roof, f + 1, slot);
+                let openingmeta = meta(GeometryTag::DoorOrWindow, f, slot);
                 let (mut x0, mut x1, mut y0, mut y1) = footprint(s, p, f, c.building_id as u32);
                 if f > 0 && !matches!(c.kind, TileKind::StairsDown | TileKind::StairsBoth) {
                     for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
@@ -381,16 +382,17 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                     let g = StairGeometry::new(Tile3D::from_pos(p, f), z, lo, hi);
                     emit_stairs(&mut out, &g, z, palette.carpet_trim.to_array(), floormeta);
                 }
-                if f + 1 == info.floors {
+                if !cell(s, p, f + 1).is_some_and(|above| above.building_id == c.building_id) {
                     let (rx0, rx1, ry0, ry1) = footprint(s, p, f, c.building_id as u32);
-                    let eave = info.foundation_z + info.floors as f32 * FLOOR_H;
+                    let eave = info.foundation_z + (f + 1) as f32 * FLOOR_H;
+                    let wing = info.wing_at(info.wing_index_at(p, f));
                     if bs.has_pitched_roof {
                         // Shared vertex heights make roof slopes continuous across tiles/chunks.
                         let rise = |vx: f32, vy: f32| {
-                            let left = info.x as f32;
-                            let right = (info.x + info.width - 1) as f32;
-                            let near = info.y as f32;
-                            let far = (info.y + info.height - 1) as f32;
+                            let left = wing.min_x as f32;
+                            let right = wing.max_x as f32;
+                            let near = wing.min_y as f32;
+                            let far = wing.max_y as f32;
                             let dx = ((vx - left).min(right - vx)
                                 / ((right - left) * 0.5).max(1.0))
                             .clamp(0.0, 1.0);
@@ -622,6 +624,63 @@ mod tests {
             .collect();
         assert!(roof.iter().any(|v| v.normal[1] > 0.0));
         assert!(roof.iter().any(|v| v.normal[1] < 0.0));
+    }
+
+    #[test]
+    fn stepped_six_floor_wings_roof_each_exposed_cell_and_keep_collapses_open() {
+        let game = ActionGame::residential(42);
+        let mut snapshot =
+            build_chunk_snapshot(&game, ChunkCoord::from_pos(Position::new(0, 0)), 1);
+        let mut info = game.buildings()[0];
+        info.x = 2;
+        info.y = 2;
+        info.width = 2;
+        info.height = 1;
+        info.floors = 6;
+        info.wings[0] = zombiebox_core::WingRect::new(2, 2, 2, 2, 2);
+        info.wings[1] = zombiebox_core::WingRect::new(3, 2, 3, 2, 6);
+        info.wing_count = 2;
+        snapshot.buildings = vec![crate::scene::BuildingSnapshot {
+            info,
+            has_pitched_roof: false,
+        }];
+        for tile in snapshot.tiles.iter_mut() {
+            tile.floor_count = 8;
+            tile.floors = [FloorCellSnapshot::default(); crate::scene::MAX_SNAPSHOT_FLOORS];
+            let height = match (tile.pos.x, tile.pos.y) {
+                (2, 2) => 2,
+                (3, 2) => 6,
+                _ => 0,
+            };
+            for floor in 0..height {
+                tile.floors[floor].building_id = info.id;
+                tile.floors[floor].surface = Surface::WoodFloor;
+            }
+        }
+        let mesh = build_chunk_buildings_mesh(&snapshot);
+        mesh.validate().unwrap();
+        let roof: Vec<_> = mesh
+            .vertices
+            .iter()
+            .filter(|v| v.unpacked_meta().tag == GeometryTag::Roof)
+            .collect();
+        assert!(roof.iter().any(|v| v.unpacked_meta().floor == 2
+            && v.unpacked_meta().building_id == info.cutaway_slot(0)));
+        assert!(roof.iter().any(|v| v.unpacked_meta().floor == 6
+            && v.unpacked_meta().building_id == info.cutaway_slot(1)));
+        assert!(
+            !roof
+                .iter()
+                .any(|v| (3..6).contains(&v.unpacked_meta().floor))
+        );
+        let tile = snapshot
+            .tiles
+            .iter_mut()
+            .find(|t| t.pos == Position::new(3, 2))
+            .unwrap();
+        tile.floors[5].surface = Surface::Air;
+        let mesh = build_chunk_buildings_mesh(&snapshot);
+        assert!(!mesh.vertices.iter().any(|v| v.unpacked_meta().tag == GeometryTag::Roof && v.unpacked_meta().floor == 5));
     }
 
     #[test]

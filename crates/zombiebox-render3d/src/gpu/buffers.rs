@@ -218,6 +218,7 @@ pub struct ChunkGpuSlot {
     pub revision: u64,
     pub aabb: RenderAabb,
     pub gpu_mesh: Option<GpuMesh>,
+    pub instance_buffer: wgpu::Buffer,
 }
 
 #[derive(Debug, Default)]
@@ -264,7 +265,29 @@ impl ChunkMeshPool {
         if self.has_revision(coord, revision) {
             return false;
         }
-        let gpu_mesh = GpuMesh::upload(device, &format!("chunk_{}_{}", coord.cx, coord.cy), mesh);
+        // Keep resident vertices close to zero; the immutable instance restores the chunk anchor.
+        let anchor = coord.min_tile();
+        let mut local_mesh = mesh.clone();
+        for vertex in &mut local_mesh.vertices {
+            vertex.position[0] -= anchor.x as f32;
+            vertex.position[2] -= anchor.y as f32;
+        }
+        let gpu_mesh = GpuMesh::upload(
+            device,
+            &format!("chunk_{}_{}", coord.cx, coord.cy),
+            &local_mesh,
+        );
+        use wgpu::util::DeviceExt;
+        let instance = InstanceRaw::from_transform(Mat4::from_translation(Vec3::new(
+            anchor.x as f32,
+            0.0,
+            anchor.y as f32,
+        )));
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("chunk_anchor_instance"),
+            contents: bytemuck::bytes_of(&instance),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         self.slots.insert(
             coord,
             ChunkGpuSlot {
@@ -272,6 +295,7 @@ impl ChunkMeshPool {
                 revision,
                 aabb,
                 gpu_mesh,
+                instance_buffer,
             },
         );
         true

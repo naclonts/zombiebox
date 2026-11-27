@@ -484,6 +484,7 @@ pub struct CameraGpuUniforms {
     pub up_dir: [f32; 4],
     pub viewport_and_internal: [f32; 4],
     pub clip_and_scale: [f32; 4],
+    pub render_origin: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -638,13 +639,31 @@ impl CameraFrame {
         }
     }
 
+    /// Horizontal origin snapped to the focus chunk; simulation coordinates remain unchanged.
+    #[must_use]
+    pub fn render_origin(&self) -> Vec3 {
+        let size = zombiebox_core::CHUNK_SIZE as f32;
+        Vec3::new(
+            (self.focus.x / size).floor() * size,
+            0.0,
+            (self.focus.z / size).floor() * size,
+        )
+    }
+
     /// Packs camera matrices and vectors into a 16-byte-aligned `Pod` struct for `wgpu` uniform buffers.
     #[must_use]
     pub fn to_gpu_uniforms(&self) -> CameraGpuUniforms {
+        let origin = self.render_origin();
         CameraGpuUniforms {
-            view_proj: self.view_proj.to_cols_array_2d(),
-            inv_view_proj: self.inv_view_proj.to_cols_array_2d(),
-            eye_pos: [self.eye.x, self.eye.y, self.eye.z, 1.0],
+            view_proj: (self.view_proj * Mat4::from_translation(origin)).to_cols_array_2d(),
+            inv_view_proj: (Mat4::from_translation(-origin) * self.inv_view_proj)
+                .to_cols_array_2d(),
+            eye_pos: [
+                self.eye.x - origin.x,
+                self.eye.y,
+                self.eye.z - origin.z,
+                1.0,
+            ],
             forward_dir: [self.forward.x, self.forward.y, self.forward.z, 0.0],
             right_dir: [self.right.x, self.right.y, self.right.z, 0.0],
             up_dir: [self.up.x, self.up.y, self.up.z, 0.0],
@@ -654,6 +673,7 @@ impl CameraFrame {
                 self.internal_size.x as f32,
                 self.internal_size.y as f32,
             ],
+            render_origin: origin.extend(0.0).to_array(),
             clip_and_scale: [
                 self.near,
                 self.far,
@@ -1591,6 +1611,28 @@ mod tests {
     }
 
     #[test]
+    fn snapped_origin_preserves_projection_across_chunk_boundaries() {
+        let mut rig = CameraRig::new(640, 360);
+        for x in [15.9, 16.1, 512.0] {
+            let frame = rig.update(
+                CameraTarget {
+                    position: SimVec3::new(x, 48.0, 0.0),
+                    ..Default::default()
+                },
+                1.0,
+            );
+            let uniforms = frame.to_gpu_uniforms();
+            let origin = frame.render_origin();
+            let world = Vec3::new(x, 0.0, 48.0);
+            let actual =
+                Mat4::from_cols_array_2d(&uniforms.view_proj) * (world - origin).extend(1.0);
+            let expected = frame.view_proj * world.extend(1.0);
+            assert!((actual - expected).abs().max_element() < 0.0001);
+            assert_eq!(origin.x % zombiebox_core::CHUNK_SIZE as f32, 0.0);
+        }
+    }
+
+    #[test]
     fn frame_rate_independent_damping_teleport_and_display_scaling() {
         let initial = CameraTarget {
             position: SimVec3::new(10.0, 10.0, 0.0),
@@ -1679,9 +1721,9 @@ mod tests {
         assert!((unproj_win.y - step_pos.y).abs() < 1e-3);
 
         // GPU uniform layout check.
-        assert_eq!(std::mem::size_of::<CameraGpuUniforms>(), 224);
+        assert_eq!(std::mem::size_of::<CameraGpuUniforms>(), 240);
         let uniforms = scaled_frame.to_gpu_uniforms();
-        assert_eq!(bytemuck::bytes_of(&uniforms).len(), 224);
+        assert_eq!(bytemuck::bytes_of(&uniforms).len(), 240);
 
         // Orbit, FirstPerson look, obstruction clamp, shake, and sphere frustum helpers.
         assert_eq!(CameraMode::from_index(4), Some(CameraMode::FirstPerson));

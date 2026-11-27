@@ -13,10 +13,10 @@ use crate::spatial::{
 use crate::{CHUNK_SIZE, House, Position, World};
 
 use super::types::{
-    BLOCK_HEIGHT, BLOCK_WIDTH, BuildingId, BuildingInfo, BuildingStyle, CacheId, CacheKind,
-    CacheLoot, CacheView, CombatWorld, DamageKind, DynamicFlashView, Floor, LightKind,
-    LightSourceView, Material, MonsterKind, NUM_FLOORS, PropKind, SpatialCell, Surface, Tile3D,
-    TileDamageResult, TileKind, TileObstruction, TileRenderInfo, TileVisibility, Vec2,
+    BLOCK_HEIGHT, BLOCK_WIDTH, BuildingId, BuildingInfo, BuildingStyle, BuildingUid, CacheId,
+    CacheKind, CacheLoot, CacheView, CombatWorld, DamageKind, DoorAxis, DynamicFlashView, Floor,
+    LightKind, LightSourceView, Material, MonsterKind, NUM_FLOORS, PropKind, SpatialCell, Surface,
+    Tile3D, TileDamageResult, TileKind, TileObstruction, TileRenderInfo, TileVisibility, Vec2,
     WallOrientation, Weapon, mix64,
 };
 
@@ -351,6 +351,7 @@ pub(super) struct Cell {
     pub(super) collapsed: bool,
     pub(super) room_id: u16,
     pub(super) visibility: TileVisibility,
+    pub(super) door_axis: Option<DoorAxis>,
     pub(super) stair_dir: (i8, i8),
 }
 
@@ -368,6 +369,7 @@ impl Cell {
             collapsed: false,
             room_id: 0,
             visibility: TileVisibility::Hidden,
+            door_axis: None,
             stair_dir: (0, 0),
         }
     }
@@ -866,6 +868,11 @@ impl ResidentialBlock {
         for bp in &HOUSE_BLUEPRINTS {
             self.buildings.push(BuildingInfo {
                 id: bp.id,
+                uid: BuildingUid::from_coords(
+                    self.origin.x + bp.x as i32,
+                    self.origin.y + bp.y as i32,
+                    bp.id,
+                ),
                 name: bp.name,
                 x: self.origin.x + bp.x as i32,
                 y: self.origin.y + bp.y as i32,
@@ -878,6 +885,17 @@ impl ResidentialBlock {
                     self.origin.y + bp.front_door.1 as i32,
                 ),
                 foundation_z: 0.0,
+                wings: {
+                    let (arr, _count) = BuildingInfo::single_wing_array(
+                        self.origin.x + bp.x as i32,
+                        self.origin.y + bp.y as i32,
+                        bp.width as i32,
+                        bp.height as i32,
+                        NUM_FLOORS as u8,
+                    );
+                    arr
+                },
+                wing_count: 1,
             });
 
             for (floor, grid) in [bp.f0, bp.f1].iter().enumerate() {
@@ -1712,7 +1730,7 @@ impl SpatialStageSource for ResidentialBlock {
         false
     }
 
-    fn max_floors(&self) -> Floor {
+    fn floors_at(&self, _pos: Position) -> Floor {
         NUM_FLOORS as Floor
     }
 

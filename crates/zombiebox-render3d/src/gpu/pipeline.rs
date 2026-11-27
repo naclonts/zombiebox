@@ -632,10 +632,11 @@ impl GpuRenderer {
             0,
             bytemuck::bytes_of(&cam_uniforms),
         );
+        let local_lighting = lighting.relative_to(camera.render_origin());
         ctx.queue.write_buffer(
             &self.lighting_uniform_buffer,
             0,
-            bytemuck::bytes_of(lighting),
+            bytemuck::bytes_of(&local_lighting),
         );
 
         let target = self.internal_target.as_ref().unwrap();
@@ -707,7 +708,7 @@ impl GpuRenderer {
                     }
                     if let Some(mesh) = &slot.gpu_mesh {
                         pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                        pass.set_vertex_buffer(1, self.identity_instance_buffer.slice(..));
+                        pass.set_vertex_buffer(1, slot.instance_buffer.slice(..));
                         pass.set_index_buffer(
                             mesh.index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
@@ -876,10 +877,11 @@ impl GpuRenderer {
             0,
             bytemuck::bytes_of(&cam_uniforms),
         );
+        let local_lighting = lighting.relative_to(camera.render_origin());
         ctx.queue.write_buffer(
             &self.lighting_uniform_buffer,
             0,
-            bytemuck::bytes_of(lighting),
+            bytemuck::bytes_of(&local_lighting),
         );
 
         let target = self.internal_target.as_ref().unwrap();
@@ -949,7 +951,7 @@ impl GpuRenderer {
                     }
                     if let Some(mesh) = &slot.gpu_mesh {
                         pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                        pass.set_vertex_buffer(1, self.identity_instance_buffer.slice(..));
+                        pass.set_vertex_buffer(1, slot.instance_buffer.slice(..));
                         pass.set_index_buffer(
                             mesh.index_buffer.slice(..),
                             wgpu::IndexFormat::Uint32,
@@ -1153,6 +1155,15 @@ mod tests {
             "Center pixel should be red, got {center_px:?}"
         );
 
+        // Recenter the GPU frame without moving the view. Resident chunks must
+        // stay put across a focus-chunk transition, including their depth.
+        let mut recentered = frame;
+        recentered.focus.x += 32.0;
+        let img_recentered = renderer
+            .render_offscreen_rgba8(&ctx, &recentered, &lighting, &[], None)
+            .unwrap();
+        assert_eq!(img_recentered.pixel(50, 50), center_px);
+
         // Case B: Green in chunk (0,0), Red in chunk (1,0) - Red should still win via Depth32Float LessEqual
         renderer.upload_chunk(
             &ctx,
@@ -1315,6 +1326,104 @@ mod tests {
         assert!(
             ceiling_color[0] > 200 && ceiling_color[1] < 50,
             "visible room ceiling was shrouded: {ceiling_color:?}"
+        );
+    }
+
+    #[test]
+    fn high_floor_roofs_and_eighth_visibility_layer_use_the_active_floor() {
+        use crate::mesh::{GeometryTag, MaterialFlags};
+        use crate::scene::{BuildingCutawayState, SceneManager};
+        use zombiebox_core::{ActionGame, Position, TileVisibility};
+
+        let ctx = GpuContext::new_headless().expect("GPU setup");
+        let mut renderer = GpuRenderer::new(&ctx, RenderPipelineConfig::default());
+        let mut rig = CameraRig::new(100, 100);
+        rig.set_mode(crate::CameraMode::Overhead);
+        let camera = rig.update(crate::CameraTarget::default(), 0.0);
+        let game = ActionGame::residential(42);
+        let mut scene = SceneManager::new()
+            .prepare_at_focus(&game, Position::new(0, 0), 0.0)
+            .dynamic;
+        scene.active_floor = 5;
+        scene.local_visibility.floor_count = 8;
+        let area = scene.local_visibility.side * scene.local_visibility.side;
+        let visible = scene.local_visibility.cells[0];
+        scene.local_visibility.cells.resize(area * 8, visible);
+        for (index, cell) in scene.local_visibility.cells.iter_mut().enumerate() {
+            cell.visibility = if index / area == 7 {
+                TileVisibility::Visible
+            } else {
+                TileVisibility::Hidden
+            };
+        }
+        scene.building_cutaways = vec![BuildingCutawayState {
+            building_id: 1,
+            floors: 6,
+            foundation_z: 0.0,
+            player_inside: true,
+            wants_cutaway: true,
+            openness: 1.0,
+            stipple_step: 0,
+            dither_opacity_u8: 0,
+        }];
+        renderer.update_visibility(&ctx, &scene);
+        let lighting = SceneLightingUniforms::for_scene(&scene, &camera);
+        let render = |renderer: &mut GpuRenderer, tag, floor| {
+            let mut mesh = MeshBuilder::new();
+            for (height, color, meta) in [
+                (
+                    0.0,
+                    [0.1, 1.0, 0.2, 1.0],
+                    VertexMeta::DEFAULT
+                        .with_tag(GeometryTag::Terrain)
+                        .with_flags(MaterialFlags::UNLIT),
+                ),
+                (
+                    1.0,
+                    [1.0, 0.1, 0.2, 1.0],
+                    VertexMeta::DEFAULT
+                        .with_tag(tag)
+                        .with_floor(floor)
+                        .with_building(1, 0)
+                        .with_flags(MaterialFlags::UNLIT),
+                ),
+            ] {
+                mesh.push_quad(
+                    Vec3::new(-2.0, height, -2.0),
+                    Vec3::new(-2.0, height, 2.0),
+                    Vec3::new(2.0, height, 2.0),
+                    Vec3::new(2.0, height, -2.0),
+                    color,
+                    meta,
+                );
+            }
+            renderer
+                .render_offscreen_rgba8(&ctx, &camera, &lighting, &[], Some(&mesh.build()))
+                .unwrap()
+                .pixel(50, 50)
+        };
+        let tower = render(&mut renderer, GeometryTag::Roof, 6);
+        assert!(
+            tower[1] > 200 && tower[0] < 50,
+            "sixth floor roof should dissolve: {tower:?}"
+        );
+        let podium = render(&mut renderer, GeometryTag::Roof, 2);
+        assert!(
+            podium[0] > 130 && podium[1] < 50,
+            "lower podium roof should remain: {podium:?}"
+        );
+        // Disable cutaway to inspect the eighth visibility page directly.
+        scene.building_cutaways[0].dither_opacity_u8 = 255;
+        renderer.update_visibility(&ctx, &scene);
+        let eighth = render(&mut renderer, GeometryTag::InteriorFloor, 7);
+        assert!(
+            eighth[0] > 200 && eighth[1] < 50,
+            "eighth-floor visibility page: {eighth:?}"
+        );
+        let hidden = render(&mut renderer, GeometryTag::InteriorFloor, 6);
+        assert!(
+            hidden[0] < 100 && hidden[1] < 100,
+            "hidden seventh-floor visibility page: {hidden:?}"
         );
     }
 

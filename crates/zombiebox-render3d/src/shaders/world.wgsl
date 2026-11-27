@@ -9,6 +9,7 @@ struct CameraUniforms {
     up_dir: vec4<f32>,
     viewport_and_internal: vec4<f32>,
     clip_and_scale: vec4<f32>,
+    render_origin: vec4<f32>,
 };
 
 struct PointLight {
@@ -61,7 +62,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         in.model_col0,
         in.model_col1,
         in.model_col2,
-        in.model_col3,
+        vec4<f32>(in.model_col3.xyz - camera.render_origin.xyz, in.model_col3.w),
     );
     let world_p = model * vec4<f32>(in.position, 1.0);
     let normal_matrix = mat3x3<f32>(
@@ -125,7 +126,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             let view_side = camera.eye_pos.xz - lighting.player_position.xz;
             let offset = in.world_pos.xz - lighting.player_position.xz;
             let front_wall = tag == 6u && length(offset) < 5.0 && dot(view_side, offset) > 0.0;
-            if tag == 8u || floor_index > active_floor || front_wall {
+            if floor_index > active_floor || front_wall {
                 let table_pos = vec2<i32>(i32(building & 255u), i32(building >> 8u));
                 opacity_u8 = min(opacity_u8, textureLoad(visibility, table_pos, 0).r);
             }

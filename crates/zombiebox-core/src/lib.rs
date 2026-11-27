@@ -9,16 +9,17 @@ mod world;
 pub use action::{
     ACTION_TICKS_PER_SECOND, ActionEvent, ActionGame, ActionHud, ActionInput, ActionMode,
     ActionOutcome, AwarenessIcon, BLOCK_HEIGHT, BLOCK_WIDTH, BlastKind, BlastView, BuildingId,
-    BuildingInfo, BuildingStyle, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot, CacheView,
-    CombatWorld, ControlMode, DT, DamageKind, DynamicFlashView, Floor, FloorTransition,
-    InteractPrompt, Inventory, LightKind, LightSourceView, Material, MaterialCategory, MonsterId,
+    BuildingInfo, BuildingStyle, BuildingUid, COUNTY_FLOORS, CacheId, CacheKind, CacheLoot,
+    CacheView, CombatWorld, ControlMode, CustomCellSpec, DT, DamageKind, DoorAxis,
+    DynamicFlashView, Floor, FloorTransition, InteractPrompt, Inventory, LightKind,
+    LightSourceView, MAX_BUILDING_WINGS, MAX_COUNTY_FLOORS, Material, MaterialCategory, MonsterId,
     MonsterKind, MonsterSpec, MonsterView, MotorcycleCrashKind, MotorcycleInput, MotorcyclePhase,
     MotorcycleView, MountedHud, NUM_FLOORS, NoiseEvent, NoiseKind, ObjectiveKind, PLAYER_HEIGHT,
     PLAYER_MAX_HEALTH, PLAYER_RADIUS, PLAYER_SHAPE, PlayerRenderState, Pose, ProjectileId,
     ProjectileKind, ProjectileView, PropKind, ReloadMode, RideInput, Surface, Tile3D,
     TileDamageResult, TileKind, TileObstruction, TileRenderInfo, TileVisibility, VehicleId,
-    VehicleView, WEAPON_MUZZLE_HEIGHT, WallOrientation, Weapon, WeaponSpec, mix64, monster_spec,
-    weapon_spec,
+    VehicleView, WEAPON_MUZZLE_HEIGHT, WallOrientation, Weapon, WeaponSpec, WingRect, mix64,
+    monster_spec, pack_chunk_slot_id, weapon_spec,
 };
 pub use spatial::{
     Aabb3, ActionSpatialView, AirborneSupportHit, BRIDGE_PARAPET_HEIGHT, BRIDGE_SLAB_THICKNESS,

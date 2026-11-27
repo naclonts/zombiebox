@@ -111,6 +111,8 @@ pub struct Building {
     pub material: Material,
     pub foundation_z: f32,
     pub layout: Vec<Room>,
+    pub wings: Vec<crate::action::WingRect>,
+    pub(crate) door_axes: Vec<(Position, u8, crate::action::DoorAxis)>,
     // Compact, row-major floor maps; ground level is also copied into tiles.
     features: Vec<Vec<Feature>>,
 }
@@ -123,6 +125,15 @@ impl Building {
         self.features
             .get(floor as usize)
             .map(|f| f[(p.y - self.min.y) as usize * width + (p.x - self.min.x) as usize])
+    }
+
+    pub fn door_axis_at(&self, p: Position, floor: u8) -> Option<crate::action::DoorAxis> {
+        for &(pos, fl, axis) in &self.door_axes {
+            if fl == floor && pos == p {
+                return Some(axis);
+            }
+        }
+        None
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -327,6 +338,125 @@ fn connect_floor(map: &mut [Feature], min: Position, max: Position, start: Posit
             break;
         }
     }
+}
+
+fn wall_at(map: &[Feature], min: Position, width: i32, p: Position) -> bool {
+    matches!(
+        map[((p.y - min.y) * width + p.x - min.x) as usize],
+        Feature::Wall(_) | Feature::Window
+    )
+}
+
+fn normalize_doors(
+    map: &mut [Feature],
+    min: Position,
+    max: Position,
+    floor: u8,
+) -> Vec<(Position, u8, crate::action::DoorAxis)> {
+    let width = max.x - min.x + 1;
+    let mut axes = Vec::new();
+    let doors: Vec<_> = (min.y..=max.y)
+        .flat_map(|y| (min.x..=max.x).map(move |x| (x, y)))
+        .filter_map(|(x, y)| {
+            let feature = map[((y - min.y) * width + x - min.x) as usize];
+            matches!(feature, Feature::Door | Feature::Gate).then_some((x, y, feature))
+        })
+        .collect();
+    for (x, y, feature) in doors {
+        let current = map[((y - min.y) * width + x - min.x) as usize];
+        if current != feature {
+            continue;
+        }
+        let x_walls = x > min.x
+            && x < max.x
+            && wall_at(map, min, width, Position::new(x - 1, y))
+            && wall_at(map, min, width, Position::new(x + 1, y));
+        let y_walls = y > min.y
+            && y < max.y
+            && wall_at(map, min, width, Position::new(x, y - 1))
+            && wall_at(map, min, width, Position::new(x, y + 1));
+        let axis = if feature == Feature::Gate && (x == min.x || x == max.x) {
+            crate::action::DoorAxis::AlongY
+        } else if feature == Feature::Gate && (y == min.y || y == max.y) {
+            crate::action::DoorAxis::AlongX
+        } else if x_walls && !y_walls {
+            crate::action::DoorAxis::AlongX
+        } else if y_walls && !x_walls {
+            crate::action::DoorAxis::AlongY
+        } else if x == min.x || x == max.x {
+            crate::action::DoorAxis::AlongY
+        } else {
+            crate::action::DoorAxis::AlongX
+        };
+        let t = axis.tangent();
+        let n = axis.normal();
+        if feature == Feature::Gate {
+            for (dx, dy) in [t, (-t.0, -t.1)] {
+                let q = Position::new(x + dx, y + dy);
+                if q.x >= min.x && q.x <= max.x && q.y >= min.y && q.y <= max.y {
+                    let i = ((q.y - min.y) * width + q.x - min.x) as usize;
+                    if map[i] == Feature::Door {
+                        map[i] = Feature::Floor;
+                    } else if !matches!(map[i], Feature::Window) {
+                        map[i] = Feature::Wall(Material::Drywall);
+                    }
+                }
+            }
+            for (dx, dy) in [n, (-n.0, -n.1)] {
+                let q = Position::new(x + dx, y + dy);
+                if q.x > min.x && q.x < max.x && q.y > min.y && q.y < max.y {
+                    let i = ((q.y - min.y) * width + q.x - min.x) as usize;
+                    if matches!(
+                        map[i],
+                        Feature::Wall(_) | Feature::Window | Feature::Furniture
+                    ) {
+                        map[i] = Feature::Floor;
+                    }
+                }
+            }
+            axes.push((Position::new(x, y), floor, axis));
+            continue;
+        }
+        for (dx, dy) in [t, (-t.0, -t.1)] {
+            let q = Position::new(x + dx, y + dy);
+            if q.x >= min.x && q.x <= max.x && q.y >= min.y && q.y <= max.y {
+                let i = ((q.y - min.y) * width + q.x - min.x) as usize;
+                if map[i] == Feature::Door {
+                    map[i] = Feature::Floor;
+                } else {
+                    map[i] = Feature::Wall(Material::Drywall);
+                }
+            }
+        }
+        for (dx, dy) in [n, (-n.0, -n.1)] {
+            let q = Position::new(x + dx, y + dy);
+            if q.x > min.x && q.x < max.x && q.y > min.y && q.y < max.y {
+                let i = ((q.y - min.y) * width + q.x - min.x) as usize;
+                if matches!(
+                    map[i],
+                    Feature::Wall(_) | Feature::Window | Feature::Furniture
+                ) {
+                    map[i] = Feature::Floor;
+                }
+            }
+        }
+        axes.push((Position::new(x, y), floor, axis));
+    }
+    // Finalize anchors after all adjacent-door removals; this second pass
+    // prevents a later doorway from leaving a surviving jamb as floor.
+    for &(p, _, axis) in &axes {
+        let tangent = axis.tangent();
+        for (dx, dy) in [tangent, (-tangent.0, -tangent.1)] {
+            let q = Position::new(p.x + dx, p.y + dy);
+            if q.x >= min.x && q.x <= max.x && q.y >= min.y && q.y <= max.y {
+                let i = ((q.y - min.y) * width + q.x - min.x) as usize;
+                if map[i] != Feature::Door {
+                    map[i] = Feature::Wall(Material::Drywall);
+                }
+            }
+        }
+    }
+    axes
 }
 
 fn entry_for_footprint(lot: &Lot, min: Position, max: Position) -> Position {
@@ -680,8 +810,41 @@ fn floorplan(
         }
         set(map, min, w, entry, Feature::Gate);
     }
+    let wings = vec![crate::action::WingRect::new(
+        min.x, min.y, max.x, max.y, floors,
+    )];
+    let mut door_axes = Vec::new();
     for (floor, map) in features.iter_mut().enumerate() {
-        connect_floor(map, min, max, if floor == 0 { entry } else { stair });
+        // ArmyBase's three sub-buildings already stamp their own entrances;
+        // running the generic connector through the shared compound yard can
+        // add a second door directly behind a stamped door.
+        if !(k == BuildingKind::ArmyBase && floor == 0) {
+            connect_floor(map, min, max, if floor == 0 { entry } else { stair });
+        }
+        if k == BuildingKind::ArmyBase && floor == 0 {
+            // The stamped sub-building fronts can meet on consecutive tiles;
+            // retain the first opening and turn the duplicate into apron floor
+            // so a closed neighboring leaf can never seal its passage.
+            let width = max.x - min.x + 1;
+            for y in min.y..=max.y {
+                for x in min.x..=max.x {
+                    let i = ((y - min.y) * width + x - min.x) as usize;
+                    if map[i] != Feature::Door {
+                        continue;
+                    }
+                    for (dx, dy) in [(0, 1), (1, 0)] {
+                        let q = Position::new(x + dx, y + dy);
+                        if q.x <= max.x && q.y <= max.y {
+                            let qi = ((q.y - min.y) * width + q.x - min.x) as usize;
+                            if map[qi] == Feature::Door {
+                                map[qi] = Feature::Floor;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        door_axes.extend(normalize_doors(map, min, max, floor as u8));
     }
     Building {
         min,
@@ -693,6 +856,8 @@ fn floorplan(
         material: mat,
         foundation_z,
         layout,
+        wings,
+        door_axes,
         features,
     }
 }
@@ -711,11 +876,14 @@ fn place_building(lot: &Lot, building: &Building, tiles: &mut ParcelTiles) {
                 if x == lot.min.x || x == lot.max.x || y == lot.min.y || y == lot.max.y {
                     let p = Position::new(x, y);
                     if !road(tiles[p].ground) {
-                        tiles[p].feature = if p == lot.front {
-                            Feature::Gate
-                        } else {
-                            Feature::Fence
-                        };
+                        // The compound's explicit entry gate is stamped on the
+                        // building apron. Do not add a second lot-front gate one
+                        // tile ahead of it; that external leaf can seal the
+                        // entry's 3x3 passage and has no building metadata for
+                        // axis lookup. Leave the frontage open for the approach.
+                        if p != lot.front {
+                            tiles[p].feature = Feature::Fence;
+                        }
                     }
                 }
             }
