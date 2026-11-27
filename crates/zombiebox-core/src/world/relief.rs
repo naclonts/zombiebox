@@ -8,7 +8,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
 
 const GRID_LEN: usize = TERRAIN_GRID_SIDE * TERRAIN_GRID_SIDE;
-const ROAD_LIPSCHITZ_STEP: f32 = 0.130;
+const ROAD_LIPSCHITZ_STEP: f32 = 0.135;
 
 #[inline]
 fn grid_idx(gx: i32, gy: i32) -> usize {
@@ -177,16 +177,17 @@ pub(super) fn generate(
             );
             let town_mask = town_x * town_y;
 
-            let floodplain = 0.50 + smoothstep(4.0, 50.0, water_bank_dist) * 2.30;
+            let base_elevation = 0.50 + smoothstep(4.0, 36.0, water_bank_dist) * 3.80;
             let med = medium.sample(vx, vy);
-            let hills = (coarse.sample(vx, vy) * 1.55 + med * 0.40)
-                * smoothstep(6.0, 28.0, water_bank_dist)
-                * (1.0 - 0.78 * town_mask);
-            let foothill = smoothstep(0.0, 1.0, (m_edge + 36.0 - vx) / 36.0) * 3.8;
+            let seattle_ridges = ((vx / 22.0).sin() * 1.65 + (vy / 38.0).cos() * 0.85) * 1.25;
+            let hills = (coarse.sample(vx, vy) * 3.20 + med * 0.85 + seattle_ridges)
+                * smoothstep(6.0, 24.0, water_bank_dist)
+                * (1.0 - 0.15 * town_mask);
+            let foothill = smoothstep(0.0, 1.0, (m_edge + 36.0 - vx) / 36.0) * 4.5;
             let depth = (m_edge - vx).max(0.0);
-            let mountain = depth * 0.52 + (med * 0.5 + 0.5) * smoothstep(0.0, 8.0, depth) * 4.2;
+            let mountain = depth * 0.56 + (med * 0.5 + 0.5) * smoothstep(0.0, 8.0, depth) * 4.6;
 
-            heights[grid_idx(wgx, wgy)] = (floodplain + hills + foothill + mountain).max(0.45);
+            heights[grid_idx(wgx, wgy)] = (base_elevation + hills + foothill + mountain).max(0.45);
         }
     }
 

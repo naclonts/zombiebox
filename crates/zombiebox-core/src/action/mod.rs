@@ -1344,6 +1344,19 @@ impl ActionGame {
             speed_mult *= DROP_RECOVERY_SPEED_MULT;
         }
 
+        // Hill slope effect on walking: climbing uphill slightly reduces walking speed,
+        // descending downhill slightly increases walking speed.
+        if mag > 0.0 && self.player_body.motion.is_grounded() && self.player.floor == 0 {
+            let normal = self.stage.terrain_at(self.player.position).map_or(Vec3::Z, |t| t.normal);
+            let slope_grade = -dir.dot(Vec2::new(normal.x, normal.y)) / normal.z.max(0.1);
+            let slope_mult = if slope_grade > 0.0 {
+                1.0 - (slope_grade * 0.65).clamp(0.0, 0.25)
+            } else {
+                1.0 + ((-slope_grade) * 0.30).clamp(0.0, 0.10)
+            };
+            speed_mult *= slope_mult;
+        }
+
         let horiz_vel =
             dir * (mag * PLAYER_MAX_SPEED * speed_mult) + self.player_knockback * (1.0 / DT);
         let params = MoveParams {

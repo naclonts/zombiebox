@@ -20,7 +20,7 @@ pub(super) const MPH_PER_UNIT_PER_SECOND: f32 = 2.24;
 /// Conservative bike footprint used by the shared kinematic solver.
 pub(crate) const MOTORCYCLE_SHAPE: BodyShape = BodyShape::new(0.36, 0.92);
 
-/// Speed below which a mounted bike counts as stopped for dismounting.
+/// Speed below which a bike counts as stopped for phase changes and a clean dismount.
 pub(crate) const MOTORCYCLE_STOP_SPEED: f32 = 0.28;
 
 /// Sanitized rider controls. Values are finite and clamped by [`sanitize`].
@@ -30,7 +30,7 @@ pub struct MotorcycleInput {
     pub steer: f32,
     /// Throttle in `[0, 1]`.
     pub throttle: f32,
-    /// Brake in `[0, 1]`.
+    /// Brake in `[0, 1]`. Holding it at rest pushes the bike backward at walking pace.
     pub brake: f32,
     /// Rider weight shift in `[-1, 1]`, positive is rider-right.
     pub lean: f32,
@@ -300,6 +300,18 @@ pub(crate) fn step_motorcycle(
 
     let mut velocity = bike.body.velocity.xy();
     let heading = bike.body.facing_xy();
+
+    // Slope gravity effect: on Seattle-level hills, gravity acts along the terrain gradient.
+    const SLOPE_GRAVITY: f32 = 4.5;
+    let slope_normal = world
+        .terrain_at(bike.body.position.xy())
+        .map_or(Vec3::Z, |t| t.normal);
+    let slope_accel = if bike.body.motion.is_grounded() && slope_normal.z > 0.01 {
+        Vec2::new(slope_normal.x, slope_normal.y) * (SLOPE_GRAVITY * slope_normal.z)
+    } else {
+        Vec2::ZERO
+    };
+
     if bike.is_operable() && bike.recovery_ticks == 0 {
         if input.throttle > 0.0 {
             velocity += heading * (tuning.throttle_accel * input.throttle * dt);
@@ -316,10 +328,19 @@ pub(crate) fn step_motorcycle(
         }
     }
 
+    // Apply slope gravity when moving or rolling unbraked.
+    let holding_brake = input.brake > 0.0 && velocity.length() <= MOTORCYCLE_STOP_SPEED;
+    if bike.phase != MotorcyclePhase::Parked && !holding_brake {
+        velocity += slope_accel * dt;
+    }
+
     // Forward drive and leg-powered reverse have independent speed caps.
+    // Downhill momentum allows a modest speed boost beyond nominal engine cap.
     let forward_speed = velocity.dot(heading);
-    if forward_speed > tuning.max_speed {
-        velocity -= heading * (forward_speed - tuning.max_speed);
+    let downhill_component = heading.dot(slope_accel).max(0.0);
+    let effective_max_speed = tuning.max_speed + downhill_component * 0.35;
+    if forward_speed > effective_max_speed {
+        velocity -= heading * (forward_speed - effective_max_speed);
     } else if forward_speed < -tuning.reverse_max_speed {
         velocity -= heading * (forward_speed + tuning.reverse_max_speed);
     }
@@ -388,11 +409,13 @@ pub(crate) fn step_motorcycle(
 
     // Speed-scaled maximum safe steer threshold:
     // Below 8 mph, full steering lock is safe without crashing.
-    // Above 8 mph, safe handlebar deflection scales inversely with speed squared (tire lateral friction limit).
+    // Above 8 mph, safe handlebar deflection scales with speed toward high-speed road steering limit.
     let max_safe_steer = if speed_mph <= LOW_SPEED_MPH {
         tuning.low_speed_steer + 0.1
     } else {
-        (7.8 / (current_speed * current_speed)).min(tuning.low_speed_steer)
+        let t = ((speed_mph - LOW_SPEED_MPH) / (HIGH_SPEED_MPH - LOW_SPEED_MPH)).clamp(0.0, 1.0);
+        let road_steer = (8.5 / (current_speed * current_speed)).min(tuning.low_speed_steer);
+        (tuning.low_speed_steer + 0.1) * (1.0 - t) + road_steer * t
     };
 
     let high_speed_crash = (bike.steer_angle.abs() > max_safe_steer || steer_yank)
@@ -743,6 +766,45 @@ mod tests {
         );
         assert!((top_speed * MPH_PER_UNIT_PER_SECOND) < 2.5);
         assert_eq!(bike.condition, 100);
+    }
+
+    #[test]
+    fn reverse_handlebar_steering_uses_bicycle_kinematics() {
+        let world = TestWorld {
+            z: 0.0,
+            water_z: None,
+            supports: vec![support(SupportId::Terrain, 0.0, true, Surface::Road, None)],
+            colliders: Vec::new(),
+        };
+        let mut bike = MotorcycleState::parked(BodyState::from_pose_2d(
+            Vec2::new(0.0, 0.0),
+            Vec2::new(1.0, 0.0),
+            0.0,
+            SupportId::Terrain,
+        ));
+        let tuning = MotorcycleTuning::default();
+
+        for _ in 0..90 {
+            let step = step_motorcycle(
+                &mut bike,
+                Some(MotorcycleInput {
+                    steer: 1.0,
+                    brake: 1.0,
+                    ..MotorcycleInput::default()
+                }),
+                &world,
+                &[],
+                &tuning,
+            );
+            assert!(step.wipeout.is_none());
+        }
+
+        assert!(
+            bike.body.heading < -0.2,
+            "a right handlebar input should swing the nose left while backing: {}",
+            bike.body.heading
+        );
+        assert!(bike.body.position.x < -0.4);
     }
 
     #[test]

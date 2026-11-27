@@ -1,6 +1,6 @@
 use zombiebox_core::{
-    ActionGame, ActionInput, ControlMode, InteractPrompt, MotorcycleInput, RideInput, Tile3D, Vec2,
-    VehicleId, VehicleView,
+    ActionGame, ActionInput, ControlMode, InteractPrompt, MotorcycleInput, Position, RideInput,
+    Tile3D, Vec2, VehicleId, VehicleView, World, WORLD_SIZE,
 };
 
 fn motorcycle_views(game: &ActionGame) -> Vec<(VehicleId, VehicleView)> {
@@ -496,4 +496,109 @@ fn hard_lean_at_two_mph_tips_over() {
     }
     assert!(saw_tip, "hard lean at ~2 mph must tip the bike over");
     assert_eq!(game.control_mode(), ControlMode::OnFoot);
+}
+
+#[test]
+fn slope_gravity_affects_motorcycle_uphill_and_downhill() {
+    let mut game_up = ActionGame::county(42);
+    let (_, bike_pos) = starter_bike(&game_up);
+    assert!(game_up.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game_up.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    assert_eq!(game_up.control_mode(), ControlMode::Motorcycle);
+
+    let world = World::new(42);
+    let s = world.terrain_at(bike_pos).unwrap();
+    let downhill_dir = if s.normal.xy().length() > 0.01 {
+        Vec2::new(s.normal.x, s.normal.y).normalized()
+    } else {
+        Vec2::new(0.0, 1.0)
+    };
+    let uphill_dir = -downhill_dir;
+
+    let up_steer = (uphill_dir.y.atan2(uphill_dir.x) - game_up.player_body().heading).clamp(-1.0, 1.0);
+    for _ in 0..40 {
+        game_up.step(ride(0.8, 0.0, up_steer, 0.0));
+    }
+    let uphill_speed = game_up.hud().mounted.unwrap().speed_mph_x10;
+
+    let mut game_down = ActionGame::county(42);
+    assert!(game_down.teleport(Tile3D::from_vec2(bike_pos, 0)).is_some());
+    game_down.step(ActionInput {
+        interact: true,
+        ..ActionInput::default()
+    });
+    let down_steer = (downhill_dir.y.atan2(downhill_dir.x) - game_down.player_body().heading).clamp(-1.0, 1.0);
+    for _ in 0..40 {
+        game_down.step(ride(0.8, 0.0, down_steer, 0.0));
+    }
+    let downhill_speed = game_down.hud().mounted.unwrap().speed_mph_x10;
+
+    assert!(
+        downhill_speed >= uphill_speed,
+        "downhill speed ({downhill_speed}) should be >= uphill speed ({uphill_speed})"
+    );
+}
+
+#[test]
+fn slope_affects_walking_speed_uphill_vs_downhill() {
+    let mut game = ActionGame::county(42);
+    let world = World::new(42);
+
+    // Find an East-West road that is monotonically sloped along its length
+    let mut slope_found = None;
+    for y in 50..WORLD_SIZE - 50 {
+        for x in 50..WORLD_SIZE - 50 {
+            let p = Position::new(x, y);
+            let p_e = Position::new(x + 2, y);
+            let p_w = Position::new(x - 2, y);
+            if let (Some(t), Some(te), Some(tw)) = (world.tile_at(p), world.tile_at(p_e), world.tile_at(p_w)) {
+                if t.ground.is_road() && te.ground.is_road() && tw.ground.is_road() && t.water.is_none() {
+                    let z_c = world.elevation_at(Vec2::new(x as f32 + 0.5, y as f32 + 0.5)).unwrap();
+                    let z_e = world.elevation_at(Vec2::new(p_e.x as f32 + 0.5, p_e.y as f32 + 0.5)).unwrap();
+                    let z_w = world.elevation_at(Vec2::new(p_w.x as f32 + 0.5, p_w.y as f32 + 0.5)).unwrap();
+                    if z_e > z_c + 0.15 && z_c > z_w + 0.15 {
+                        slope_found = Some((p, Vec2::new(1.0, 0.0)));
+                        break;
+                    } else if z_w > z_c + 0.15 && z_c > z_e + 0.15 {
+                        slope_found = Some((p, Vec2::new(-1.0, 0.0)));
+                        break;
+                    }
+                }
+            }
+        }
+        if slope_found.is_some() {
+            break;
+        }
+    }
+    let (slope_pos, uphill_dir) = slope_found.expect("sloped East-West road exists in hilly county");
+    let downhill_dir = -uphill_dir;
+    // Test uphill walk
+    assert!(game.teleport(Tile3D::from_pos(slope_pos, 0)).is_some());
+    let start_up = game.player_body().position.xy();
+    for _ in 0..12 {
+        game.step(ActionInput {
+            movement: uphill_dir,
+            ..ActionInput::default()
+        });
+    }
+    let uphill_travel = game.player_body().position.xy().distance(start_up);
+
+    // Reset and test downhill walk
+    assert!(game.teleport(Tile3D::from_pos(slope_pos, 0)).is_some());
+    let start_down = game.player_body().position.xy();
+    for _ in 0..12 {
+        game.step(ActionInput {
+            movement: downhill_dir,
+            ..ActionInput::default()
+        });
+    }
+    let downhill_travel = game.player_body().position.xy().distance(start_down);
+
+    assert!(
+        downhill_travel > uphill_travel,
+        "downhill travel ({downhill_travel}) must exceed uphill travel ({uphill_travel})"
+    );
 }
