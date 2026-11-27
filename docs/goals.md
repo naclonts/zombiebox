@@ -29,9 +29,9 @@ Directional guidance for upcoming milestones. Keep implementation choices flexib
 - **Rich region & biome roster.** Grow from a single residential block into a full county containing:
   - **Residential neighborhoods:** varied multi-level houses, driveways, yards, fences, and streetlights.
   - **Downtown:** denser, larger-scale multi-story commercial/mixed-use buildings, shops, apartments, alleys, parking lots, and wide intersections.
-  - **Hospital:** multi-wing, multi-story medical complex with varied campus layouts per seed (ambulance bay, wards, pharmacy, service halls) and strong visual identity.
-  - **Police station(s):** tactical precinct buildings with offices, cells, parking, and armories.
-  - **Army base:** fortified perimeter compound with gates, barracks, motor pool, armory, and open runway/pad space.
+  - **Hospital:** multi-wing, 4+ story medical complex with varied campus layouts per seed (ambulance bay, lobby, wards, operating rooms, locked pharmacy, button-strip elevators), strong signage/wayfinding, and readable medical lore.
+  - **Police station(s):** security-zoned precinct buildings with public lobby, offices, interrogation, barred cells, sallyport, and keycard/breach-gated armories.
+  - **Extensible compounds & deferred army base:** build a modular compound/setpiece system (supporting future areas like a **traveling circus** with a Big Top and Ferris wheel), while deferring the **army base** until **tanks and planes** are implemented.
   - **Countryside & woods with cabins:** rural roads, fields/farms, dense woods, and occasional secluded cabins.
   - **Natural terrain:** **mountains** (elevation/ridges/passes), **rivers** (with bridges where roads cross), and **lakes** (shorelines, docks, lakeside cabins).
 - **Geographic plausibility.** Procedural layouts must feel believable rather than random:

@@ -4,6 +4,10 @@ This is a wip zombie survival sandbox game for mobile or web browser. The world 
 
 ![in-game screenshot in firefox](./screenshot.png)
 
+To play in your browser, clone the repo and do `make run`. Tested on Linux.
+
+To play on Android, run `make build` and copy the APK to your device from `./apps/mobile/zombiebox-android.apk`.
+
 > AI generated info below!
 
 ## Run the browser playtest
@@ -101,6 +105,7 @@ cargo run --locked -p zombiebox-core --example survival -- 42
 | [docs/architecture.md](docs/architecture.md) | Stack decision, runtime ownership, procedural streaming, rendering plan, and device criteria |
 | [docs/world-design.md](docs/world-design.md) | Seed-driven procedural county design, plausible district rules, loot/infected ecology, and vehicles |
 | [docs/motorcycle-plan.md](docs/motorcycle-plan.md) | Motorcycle gameplay, shared vehicle types, and implementation handoff |
+| [docs/living-buildings-plan.md](docs/living-buildings-plan.md) | Realistic multi-floor buildings, interior furnishing, signage, themed zombies, and extensible compounds |
 
 ## Run the checks
 
