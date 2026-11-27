@@ -133,6 +133,7 @@ impl ActorAnimator {
                 p.quiet_walking,
                 false,
                 false,
+                false,
                 0.0,
                 aim,
                 pitch,
@@ -164,6 +165,7 @@ impl ActorAnimator {
                 speed,
                 false,
                 m.kind == MonsterKind::Bloater,
+                m.kind == MonsterKind::Shambler,
                 m.hitstun,
                 telegraph,
                 0.0,
@@ -198,6 +200,7 @@ impl ActorAnimator {
                 0.0,
                 false,
                 corpse.kind == MonsterKind::Bloater,
+                corpse.kind == MonsterKind::Shambler,
                 false,
                 0.0,
                 0.0,
@@ -251,6 +254,7 @@ fn draw_actor(
     speed: f32,
     crouch: bool,
     bloater: bool,
+    zombie: bool,
     hit: bool,
     telegraph: f32,
     aim: f32,
@@ -265,6 +269,24 @@ fn draw_actor(
         * Mat4::from_translation(Vec3::new(0.0, crouch_y, 0.0))
         * Mat4::from_rotation_x(if hit { -0.18 } else { 0.0 });
     let flash = if hit { [0.5, 0.1, 0.1, 0.5] } else { [0.0; 4] };
+    // The shambler mesh carries its own palette; keep the instance tint neutral so
+    // the authored vertex colours read. Other actors still use the archetype tint.
+    let body_color = if zombie { [1.0; 4] } else { color };
+    let head_color = if zombie {
+        [1.0; 4]
+    } else {
+        [color[0] * 1.1, color[1] * 1.1, color[2] * 1.1, 1.0]
+    };
+    let body_part = if zombie {
+        ActorPart::ZombieBody
+    } else {
+        ActorPart::Body
+    };
+    let head_part = if zombie {
+        ActorPart::ZombieHead
+    } else {
+        ActorPart::Head
+    };
     let mut add = |part, parent: Mat4, pos: Vec3, size: Vec3, tint, glow| {
         let model = parent * Mat4::from_translation(pos) * Mat4::from_scale(size);
         out.entry(part).or_default().push(ActorInstance {
@@ -275,33 +297,51 @@ fn draw_actor(
         });
     };
     add(
-        ActorPart::Body,
+        body_part,
         root,
         Vec3::new(0.0, h * 0.60, 0.0),
         Vec3::new(r * 1.45, h * 0.38, r * 0.95),
-        color,
+        body_color,
         flash,
     );
     add(
-        ActorPart::Head,
+        head_part,
         root,
         Vec3::new(0.0, h * 0.90, 0.0),
         Vec3::new(r * 0.85, h * 0.20, r * 0.8),
-        [color[0] * 1.1, color[1] * 1.1, color[2] * 1.1, 1.0],
+        head_color,
         flash,
     );
     for side in [-1.0_f32, 1.0] {
+        let leg_part = if zombie {
+            if side < 0.0 {
+                ActorPart::ZombieLegL
+            } else {
+                ActorPart::ZombieLegR
+            }
+        } else {
+            ActorPart::Limb
+        };
         let leg = root
             * Mat4::from_translation(Vec3::new(side * r * 0.38, h * 0.43, 0.0))
             * Mat4::from_rotation_x(gait * side);
         add(
-            ActorPart::Limb,
+            leg_part,
             leg,
             Vec3::new(0.0, -h * 0.22, 0.0),
             Vec3::new(r * 0.55, h * 0.44, r * 0.65),
-            color,
+            body_color,
             flash,
         );
+        let arm_part = if zombie {
+            if side < 0.0 {
+                ActorPart::ZombieArmL
+            } else {
+                ActorPart::ZombieArmR
+            }
+        } else {
+            ActorPart::Limb
+        };
         let arm = root
             * Mat4::from_translation(Vec3::new(side * r * 0.95, h * 0.75, 0.0))
             * Mat4::from_rotation_y(if side > 0.0 { aim } else { 0.0 })
@@ -313,11 +353,11 @@ fn draw_actor(
                 }) + if side > 0.0 { action_motion } else { 0.0 },
             );
         add(
-            ActorPart::Limb,
+            arm_part,
             arm,
             Vec3::new(0.0, -h * 0.15, 0.0),
             Vec3::new(r * 0.40, h * 0.30, r * 0.45),
-            color,
+            body_color,
             flash,
         );
         if side > 0.0
@@ -368,6 +408,37 @@ mod tests {
     use crate::scene::SceneManager;
     use zombiebox_core::{ActionGame, TileVisibility};
 
+    fn body_count(batches: &ActorBatches) -> usize {
+        [ActorPart::Body, ActorPart::ZombieBody]
+            .into_iter()
+            .filter_map(|part| batches.get(&part))
+            .map(Vec::len)
+            .sum()
+    }
+
+    #[test]
+    fn shamblers_use_zombie_mesh_parts() {
+        let game = ActionGame::residential(42);
+        let mut scene = SceneManager::new()
+            .prepare_at_focus(&game, game.player_tile().pos(), 0.0)
+            .dynamic;
+        for cell in &mut scene.local_visibility.cells {
+            cell.visibility = TileVisibility::Visible;
+        }
+        let batches = ActorAnimator::new().prepare(&scene, 0.0);
+        assert!(!batches[&ActorPart::ZombieBody].is_empty());
+        assert!(!batches[&ActorPart::ZombieHead].is_empty());
+        assert!(!batches[&ActorPart::ZombieLegL].is_empty());
+        assert!(!batches[&ActorPart::ZombieArmR].is_empty());
+        // The survivor and non-shambler archetypes keep the neutral cuboid parts.
+        let non_shamblers = scene
+            .monsters
+            .iter()
+            .filter(|monster| monster.kind != MonsterKind::Shambler)
+            .count();
+        assert_eq!(batches[&ActorPart::Body].len(), 1 + non_shamblers);
+    }
+
     #[test]
     fn hidden_monsters_never_emit_instances() {
         let game = ActionGame::residential(42);
@@ -380,21 +451,18 @@ mod tests {
         }
         let mut animator = ActorAnimator::new();
         let hidden = animator.prepare(&scene, 0.0);
-        assert_eq!(hidden[&ActorPart::Body].len(), 1);
+        assert_eq!(body_count(&hidden), 1);
         for cell in &mut scene.local_visibility.cells {
             cell.visibility = TileVisibility::Visible;
         }
         let visible = animator.prepare(&scene, 0.0);
-        assert!(visible[&ActorPart::Body].len() > 1);
+        assert!(body_count(&visible) > 1);
         animator.set_draw_player(false);
         let first_person = animator.prepare(&scene, 0.0);
-        assert_eq!(
-            first_person[&ActorPart::Body].len() + 1,
-            visible[&ActorPart::Body].len()
-        );
+        assert_eq!(body_count(&first_person) + 1, body_count(&visible));
         animator.set_draw_player(true);
         scene.local_visibility.cells.clear();
-        assert_eq!(animator.prepare(&scene, 0.0)[&ActorPart::Body].len(), 1);
+        assert_eq!(body_count(&animator.prepare(&scene, 0.0)), 1);
     }
 
     #[test]
@@ -433,11 +501,11 @@ mod tests {
         for cell in &mut scene.local_visibility.cells {
             cell.visibility = TileVisibility::Visible;
         }
-        assert_eq!(animator.prepare(&scene, 0.0)[&ActorPart::Body].len(), 2);
+        assert_eq!(body_count(&animator.prepare(&scene, 0.0)), 2);
         for cell in &mut scene.local_visibility.cells {
             cell.visibility = TileVisibility::Hidden;
         }
-        assert_eq!(animator.prepare(&scene, 0.0)[&ActorPart::Body].len(), 1);
+        assert_eq!(body_count(&animator.prepare(&scene, 0.0)), 1);
         for _ in 0..61 {
             let _ = animator.prepare(&scene, 0.1);
         }

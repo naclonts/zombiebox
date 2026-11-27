@@ -24,19 +24,25 @@ pub struct Presentation {
     scene: SceneManager,
     renderer: GpuRenderer,
     actors: ActorAnimator,
-    actor_prototype: PrototypeMeshId,
+    actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
     cache_prototypes: [PrototypeMeshId; 2],
     effects: Effects,
     telemetry: FrameTelemetry,
     adaptive_resolution: bool,
 }
 
+const CACHE_BATCH_COUNT: usize = 2;
+const BATCH_COUNT: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT;
+
 impl Presentation {
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
         let mut renderer = GpuRenderer::new(ctx, RenderPipelineConfig::default());
         let actors = ActorMeshLibrary::new();
-        let actor_prototype =
-            renderer.register_prototype(ctx, "actor_part", actors.mesh(ActorPart::Body));
+        let actor_prototypes = std::array::from_fn(|index| {
+            let part = ActorPart::MESH_PARTS[index];
+            let label = format!("actor_mesh_{index}");
+            renderer.register_prototype(ctx, &label, actors.mesh(part))
+        });
         let cache_prototypes = [
             renderer.register_prototype(ctx, "closed_cache", cache_mesh(false)),
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
@@ -51,7 +57,7 @@ impl Presentation {
             }),
             renderer,
             actors: ActorAnimator::new(),
-            actor_prototype,
+            actor_prototypes,
             cache_prototypes,
             effects: Effects::new(),
             telemetry: FrameTelemetry::default(),
@@ -119,7 +125,7 @@ impl Presentation {
         CameraFrame,
         FrameSnapshot,
         SceneLightingUniforms,
-        [Vec<InstanceRaw>; 3],
+        [Vec<InstanceRaw>; BATCH_COUNT],
     ) {
         let body = game.player_body();
         let pose = game.player_pose();
@@ -163,12 +169,9 @@ impl Presentation {
         self.actors
             .set_draw_player(camera.mode != CameraMode::FirstPerson);
         self.actors.observe_events(&frame.events);
-        let actor_instances = self
-            .actors
-            .prepare(&frame.dynamic, dt)
-            .into_values()
-            .flatten()
-            .map(|actor| {
+        let mut instances: [Vec<InstanceRaw>; BATCH_COUNT] = std::array::from_fn(|_| Vec::new());
+        for (part, part_instances) in self.actors.prepare(&frame.dynamic, dt) {
+            instances[part.mesh_index()].extend(part_instances.into_iter().map(|actor| {
                 let mut instance =
                     InstanceRaw::from_transform(Mat4::from_cols_array_2d(&actor.model))
                         .with_tint(actor.color_tint)
@@ -178,11 +181,10 @@ impl Presentation {
                         );
                 instance.instance_meta[..2].copy_from_slice(&actor.meta_override);
                 instance
-            })
-            .collect();
-        let mut instances = [actor_instances, Vec::new(), Vec::new()];
+            }));
+        }
         for cache in cache_instances(&frame.dynamic.caches) {
-            instances[1 + usize::from(cache.opened)].push(
+            instances[ActorPart::MESH_COUNT + usize::from(cache.opened)].push(
                 InstanceRaw::from_transform(Mat4::from_translation(cache.position))
                     .with_tint(cache.tint),
             );
@@ -190,16 +192,25 @@ impl Presentation {
         (camera, frame, lighting, instances)
     }
 
-    fn batches<'a>(&self, instances: &'a [Vec<InstanceRaw>; 3]) -> [InstanceBatch<'a>; 3] {
-        let prototypes = [
-            self.actor_prototype,
-            self.cache_prototypes[0],
-            self.cache_prototypes[1],
-        ];
-        std::array::from_fn(|index| InstanceBatch {
-            mesh: prototypes[index],
-            instances: &instances[index],
-        })
+    fn batches<'a>(
+        actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
+        cache_prototypes: [PrototypeMeshId; 2],
+        instances: &'a [Vec<InstanceRaw>; BATCH_COUNT],
+    ) -> Vec<InstanceBatch<'a>> {
+        let mut batches = Vec::with_capacity(BATCH_COUNT);
+        for (index, mesh) in actor_prototypes.into_iter().enumerate() {
+            batches.push(InstanceBatch {
+                mesh,
+                instances: &instances[index],
+            });
+        }
+        for (index, mesh) in cache_prototypes.into_iter().enumerate() {
+            batches.push(InstanceBatch {
+                mesh,
+                instances: &instances[ActorPart::MESH_COUNT + index],
+            });
+        }
+        batches
     }
 
     pub fn render_offscreen(
@@ -211,7 +222,7 @@ impl Presentation {
         let started = Instant::now();
         let (camera, frame, lighting, instances) = self.prepare(ctx, game, dt);
         let effects = self.effects.prepare(&frame, dt);
-        let batches = self.batches(&instances);
+        let batches = Self::batches(self.actor_prototypes, self.cache_prototypes, &instances);
         let prepare_time = started.elapsed();
         let render_started = Instant::now();
         let rendered =
@@ -258,7 +269,7 @@ impl Presentation {
         self.camera.config_mut().iso_pixels_per_unit = original_iso_scale;
         self.camera.set_display_surface(config.width, config.height);
         let effects = self.effects.prepare(&frame, dt);
-        let batches = self.batches(&instances);
+        let batches = Self::batches(self.actor_prototypes, self.cache_prototypes, &instances);
         let prepare_time = started.elapsed();
         let render_started = Instant::now();
         let rendered = self.renderer.render_to_surface(

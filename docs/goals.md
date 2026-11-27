@@ -12,7 +12,7 @@ Directional guidance for upcoming milestones. Keep implementation choices flexib
 ## Audio, haptics, and settings
 
 - **Sound effects across gameplay and UI.** Maintain responsive retro audio for UI clicks, weapon fire (pistol, shotgun, rocket launch/blast, axe swing/hit), material impacts (shattering glass, splintering wood, stone/wall thuds), item pickups/switches, medkit use, monster alerts/hits, player damage, and upcoming vehicle sounds (engine RPM, tire skid/gravel, crash/scrape, water/propeller audio).
-- **Asset strategy.** Use FOSS/CC0 sound libraries, procedural/synthetic audio, or a blend of both so audio matches the retro Genesis/PS1 feel, stays license-clean, and works fully offline.
+- **Asset strategy.** Use openly licensed audio where it improves feedback and keep procedural effects where they fit. Audition Josh W. Comeau’s `hi75-soft` for weapon selection and reload button clicks, and consider openly licensed gunshot samples for the pistol and shotgun. Bundle selected sounds for offline play and record their sources and licenses. [Button Sounds playground](https://buttons.joshwcomeau.com/) · [MIT-licensed raw recordings](https://github.com/joshwcomeau/button-sounds/blob/main/docs/raw-audio-files.md)
 - **Touch polish and settings.** Pair subtle Android haptic feedback (shots, melee hits, blasts, damage, and future vehicle traction/crash cues) with a lightweight settings panel (SFX volume/mute, control scheme, camera options).
 
 ## Residential block and destructible environments
@@ -90,6 +90,7 @@ Directional guidance for upcoming milestones. Keep implementation choices flexib
   - **Humanoids (melee zombies):** shamblers and brisk runners forming baseline street and interior threats (especially dense in neighborhoods, downtown, and hospitals).
   - **Mutated zombies:** heavy bloated monsters (volatile/high-HP) plus room for additional hospital/late-game mutant variants (e.g., leapers, armored brutes, or caustic spitters) that make medical campuses genuinely dangerous.
   - **Shooters:** ranged armed infected that reward cover, flanking, and breaching new sightlines—concentrated especially in **army bases** and **police stations**.
+- **Distinct 3D models for Bloaters and Shooters.** Make Bloaters easy to recognize by their swollen build and readable blast buildup. Give Shooters a recognizable armed stance and a clear aiming animation at normal gameplay zoom.
 - **Combat readability.** Multi-HP enemies, hit reactions, knockback, and clear attack telegraphs keep touch combat fair and satisfying.
 
 ## Supporting notes for future sessions

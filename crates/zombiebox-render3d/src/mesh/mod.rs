@@ -5,6 +5,8 @@ pub mod buildings;
 pub mod primitives;
 pub mod props;
 pub mod terrain;
+#[allow(clippy::excessive_precision)] // generated f32 literal table
+pub mod zombie;
 
 pub use primitives::*;
 pub use props::*;

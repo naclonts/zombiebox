@@ -42,8 +42,12 @@ Variation happens across four nested layers, each driven by deterministic sub-se
 
 1. **World macro plan (seed -> geography & region graph):** Unique arrangement of mountains, rivers, lakes, town placement, district footprints, and highway/arterial road graphs.
 2. **District layout (region -> blocks & lots):** Unique street grids, alleys, cul-de-sacs, campus layouts (hospital wings/courtyards, army base gates/barracks/motor pool), and rural tracks.
-3. **Building variety (lot -> multi-level structures):** Just as Birch Street mixes distinct multi-level house templates, each district draws from its own pool of seed-varied building layouts, floor counts, materials, interior furnishings, and entry points—scaled appropriately for downtown blocks, hospital wings, police precincts, army barracks, and woodland cabins.
-4. **Local dressing, loot & encounters:** Seeded variation of props, lights, vehicles, supply caches, and infected placements weighted by district ecology.
+3. **Building variety (lot -> multi-level structures).** Build on Birch Street’s variety with seed-driven layouts, floor counts, materials, interiors, and entry points that suit each district, from woodland cabins to hospital wings. Residential footprints can include compact rectangles, L-shaped wings, and attached garages. Entrances, rooms, and stairs should connect in ways that make sense for the house. Check clearance on both sides of generated doorways, especially where walls meet at right angles.
+4. **Local dressing, loot & encounters.** Vary props, lights, vehicles, supply caches, and infected placements by district. Scatter objects where they plausibly belong, such as bins by driveways and benches along sidewalks. Vary tree and plant types and density across yards, roadsides, and woods. Keep entrances and travel routes clear.
+
+## Wandering road hordes
+
+Zombie hordes wander as groups along connected county roads, including through intersections and across chunk boundaries. Groups travel at a distance and resolve into individual infected near the survivor. Those infected can leave the road to investigate nearby disturbances. Track casualties as the group travels so returning to the area preserves the surviving threats.
 
 ## Navigation and the supply run
 
@@ -73,5 +77,5 @@ See [goals.md](goals.md#vehicles-and-motorcycle-riding) for control, physics, an
 2. **Seed-driven procedural world & plausible regions (implemented).** The default action run and the field atlas open a deterministic county containing mountains, rivers, lakes, woods and cabins, residential neighborhoods, downtown, a hospital, police stations, and an army base. Districts have distinct buildings, loot, and infected. The action run streams nearby chunks and retains world edits in memory.
 3. **Motorcycle prototype & vehicle camera.** Add drivable motorcycles with semi-realistic dual-stick controls (left stick handlebars, right stick lean), speed-dependent stability/wipeout/injury/skidding physics, and camera-mode experimentation (e.g., behind-overhead chase view while riding). Stream chunks smoothly ahead of travel and persist parked/wrecked bikes cleanly across chunk boundaries.
 4. **Persistent survival & supply run across procedural seeds.** Connect chunk streaming, delta persistence (save/resume, depleted loot, structural destruction, vehicle state), and wayfinding so a player can embark from a procedural residential start to the hospital or army base and return with supplies intact.
-5. **Full county under pressure.** Layer in distant road hordes that travel across the road network and resolve into individual infected near the player, plus expanded building templates and mutated/armed enemy variants across every district.
+5. **Full county under pressure.** Add wandering road hordes that resolve into individual infected near the player. Expand building variety and mutated and armed enemy variants across districts. [Wandering road hordes](#wandering-road-hordes) · [Completion checks](product-decisions.md#planned-milestones-and-completion-checks)
 6. **Expanded vehicle roster.** Build out **jeeps**, **motorboats** (navigating procedural rivers and lakes), and **planes** (taking off and landing across airstrips/fields and crossing mountains).
