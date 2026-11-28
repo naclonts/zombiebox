@@ -5,13 +5,20 @@ default; the blueprint path is opt-in.
 
 ## Fixture selector
 
+The normal county entry points now use the blueprint fixture by default, per an
+early testing request:
+
 ```rust
 use zombiebox_core::{CountyFixture, World};
 
-let world = World::with_fixture(seed, CountyFixture::BlueprintLot);
+let world = World::new(seed);                    // BlueprintLot
+let legacy = World::legacy(seed);                // pre-Phase-3 baseline
+let explicit = World::with_fixture(seed, CountyFixture::BlueprintLot);
 ```
 
-- `World::new(seed)` is unchanged and uses `CountyFixture::None`.
+- `World::new(seed)` is now equivalent to
+  `World::with_fixture(seed, CountyFixture::BlueprintLot)`.
+- `World::legacy(seed)` retains `CountyFixture::None` for regression comparisons.
 - `World::fixture()` reports the active selector.
 - `World::fixture_plan() -> Option<&ParcelPlan>` exposes the authored parcel for
   previews and tests.
@@ -108,7 +115,9 @@ Results:
   and open.
 - The fixture roof is owned by the registered blueprint structure, and an
   `ActionGame` teleport away/back reports exactly one prop instance.
-- `cargo test -p zombiebox-core --lib`: 80 passed.
+- `World::new` / `ActionGame::county` stream the fixture by default, while
+  `World::legacy` remains available for comparisons.
+- `cargo test -p zombiebox-core --lib`: 81 passed.
 - `cargo test --workspace --no-fail-fast` passes every target except the documented
   pre-existing baseline failure `spatial_kinematics::county_seed_42_terrain_seam_and_diagonal_raycasts`
   (`oblique ray z mismatch: hit_z=5.28868 expected=4.1443267`). The same failure
@@ -125,3 +134,7 @@ Results:
   runtime uses `ChunkSites::structures`; later packages that need survey/atlas
   output for authored structures should add a common projection instead of
   duplicating the fixture into `Sites`.
+- The full Phase 3.11 cutover is still open: remaining legacy districts are
+  still generated, and `GENERATOR_VERSION` / save-delta rejection have not been
+  bumped yet. The default switch here is intended to expose the new structure
+  path for early gameplay review.

@@ -13,6 +13,8 @@ Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [
 
 Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
 
+> Current WP 3.1 testing override: `World::new` now selects `CountyFixture::BlueprintLot` by default so normal county entry exercises the authored structure. `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
+
 ## 1. Ownership and shared contracts
 
 ### Module ownership

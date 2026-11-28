@@ -3380,6 +3380,25 @@ mod tests {
     }
 
     #[test]
+    fn default_county_entry_uses_blueprint_fixture_and_legacy_is_explicit() {
+        let seed = 42;
+        let world = World::new(seed);
+        assert_eq!(world.fixture(), CountyFixture::BlueprintLot);
+        let plan = world.fixture_plan().expect("default fixture plan");
+        let prop = plan.structures[0].props_world()[0];
+        assert_eq!(World::legacy(seed).fixture(), CountyFixture::None);
+        assert!(World::legacy(seed).fixture_plan().is_none());
+
+        let game = crate::action::ActionGame::county(seed);
+        assert!(
+            game.prop_anchors()
+                .iter()
+                .any(|anchor| anchor.anchor_uid == prop.anchor_uid),
+            "default county run should stream the blueprint prop"
+        );
+    }
+
+    #[test]
     fn blueprint_fixture_streams_across_seams_in_any_chunk_order() {
         // u64::MAX places the fixture outside the initial 7x7 window, so the
         // test actually exercises first-time streaming order.

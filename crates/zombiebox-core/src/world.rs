@@ -187,12 +187,20 @@ pub struct World {
 }
 
 impl World {
+    /// Default county generation. Phase 3.1 replaces one existing lot with the
+    /// authored blueprint fixture so normal game entry points exercise the new
+    /// generation path.
     pub fn new(seed: u64) -> Self {
+        Self::with_fixture(seed, CountyFixture::BlueprintLot)
+    }
+
+    /// Explicitly build the pre-Phase-3 baseline for regression comparisons.
+    pub fn legacy(seed: u64) -> Self {
         Self::with_fixture(seed, CountyFixture::None)
     }
 
-    /// Opt-in Phase 3 generation fixture. `World::new` stays on the legacy
-    /// baseline until the later cutover package.
+    /// Select the generation fixture explicitly. `CountyFixture::None` retains
+    /// the legacy baseline; `BlueprintLot` streams the authored structure.
     pub fn with_fixture(seed: u64, fixture: CountyFixture) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
         let (landmarks, lots, valley_meta) = geography::generate_with_meta(seed, &mut tiles);
