@@ -72,3 +72,27 @@ XDG_RUNTIME_DIR=/tmp VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.jso
 Result: 262 passed, zero failed, one ignored diagnostic. The isolated
 seed 42 terrain seam and diagonal raycast baseline also passed at pre-change
 commit `c2f4de9`.
+
+## Interactive desktop playtest
+
+```sh
+cargo run -p zombiebox-render3d --example viewer --features viewer -- --residential-street --seed 42
+```
+
+The viewer starts across the road from the selected pair. Substitute `--seed
+63` to see the other reference arrangement. Use `--support-lot --seed 42` in
+place of `--residential-street` for the two-floor support fixture. The normal
+viewer still starts the default county when no fixture flag is supplied.
+
+Move with WASD, aim with the arrow keys, fire with Space, and interact with E.
+Z/X/C/V select weapons; R reloads, H heals, Shift walks quietly, and P pauses.
+Keys 1–5 select cameras; drag to orbit and use the mouse wheel to zoom. B
+switches to Birch Street; N returns to the selected county fixture (or the
+normal county if no fixture was selected). Esc quits.
+
+The viewer was checked with `cargo check -p zombiebox-render3d --example
+viewer --features viewer`, its `--help` output, and `cargo test -p
+zombiebox-render3d --example viewer --features viewer
+fixture_scenes_start_at_their_access_points`, which verifies both fixture
+spawns for seed 42 without opening a window. Interactive desktop play remains
+to be exercised on a display.

@@ -11,11 +11,48 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
-use zombiebox_core::{ActionGame, ActionInput, Vec2, Weapon};
+use zombiebox_core::{
+    ActionGame, ActionInput, CountyFixture, Position, Tile3D, Vec2, Weapon, World,
+};
 use zombiebox_render3d::{CameraMode, GpuContext, Presentation, SurfaceFrameOutcome};
 
 const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
 const HELP: &str = "WASD move · arrows aim · Space fire · E interact · Z/X/C/V weapons · R reload · H heal · Shift walk · P pause · 1–5 cameras · drag to orbit · wheel zoom · B Birch · N county · Esc quit";
+
+#[derive(Clone, Copy)]
+enum CountyScene {
+    Default,
+    ResidentialStreet,
+    SupportLot,
+}
+
+fn county_game(seed: u64, scene: CountyScene) -> Result<ActionGame, String> {
+    let fixture = match scene {
+        CountyScene::Default => return Ok(ActionGame::county(seed)),
+        CountyScene::ResidentialStreet => CountyFixture::ResidentialStreet,
+        CountyScene::SupportLot => CountyFixture::SupportLot,
+    };
+    let world = World::with_fixture(seed, fixture);
+    let plans = world.fixture_plans();
+    let plan = plans
+        .first()
+        .ok_or("no compatible fixture lot for this seed")?;
+    let target = if matches!(scene, CountyScene::ResidentialStreet) {
+        let other = plans
+            .get(1)
+            .ok_or("no compatible reference street for this seed")?;
+        let a = plan.structures[0].front_door;
+        let b = other.structures[0].front_door;
+        let (ix, iy) = plan.frontage.side.inward();
+        Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8)
+    } else {
+        plan.frontage.access
+    };
+    let mut game = ActionGame::county_with_world(world);
+    game.teleport(Tile3D::from_pos(target, 0))
+        .ok_or("fixture access is not a valid teleport destination")?;
+    Ok(game)
+}
 
 struct View {
     window: Arc<Window>,
@@ -28,6 +65,7 @@ struct App {
     view: Option<View>,
     game: ActionGame,
     seed: u64,
+    county_scene: CountyScene,
     birch: bool,
     keys: HashSet<KeyCode>,
     once: HashSet<KeyCode>,
@@ -40,15 +78,17 @@ struct App {
     frames: u32,
 }
 impl App {
-    fn new(seed: u64, birch: bool) -> Self {
-        Self {
+    fn new(seed: u64, birch: bool, county_scene: CountyScene) -> Result<Self, String> {
+        let game = if birch {
+            ActionGame::residential(seed)
+        } else {
+            county_game(seed, county_scene)?
+        };
+        Ok(Self {
             view: None,
-            game: if birch {
-                ActionGame::residential(seed)
-            } else {
-                ActionGame::county(seed)
-            },
+            game,
             seed,
+            county_scene,
             birch,
             keys: HashSet::new(),
             once: HashSet::new(),
@@ -59,15 +99,21 @@ impl App {
             accumulator: Duration::ZERO,
             title_at: Instant::now(),
             frames: 0,
-        }
+        })
     }
     fn restart(&mut self, birch: bool) {
-        self.birch = birch;
         self.game = if birch {
             ActionGame::residential(self.seed)
         } else {
-            ActionGame::county(self.seed)
+            match county_game(self.seed, self.county_scene) {
+                Ok(game) => game,
+                Err(error) => {
+                    eprintln!("Could not restart county: {error}");
+                    return;
+                }
+            }
         };
+        self.birch = birch;
         self.paused = false;
         self.accumulator = Duration::ZERO;
         if let Some(v) = &mut self.view {
@@ -324,20 +370,57 @@ impl ApplicationHandler for App {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut birch = false;
     let mut seed = 42;
+    let mut county_scene = CountyScene::Default;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--birch" => birch = true,
+            "--residential-street" => county_scene = CountyScene::ResidentialStreet,
+            "--support-lot" => county_scene = CountyScene::SupportLot,
             "--seed" => seed = args.next().ok_or("--seed requires an integer")?.parse()?,
             "--help" | "-h" => {
-                println!("Usage: viewer [--birch] [--seed N]\n{HELP}");
+                println!(
+                    "Usage: viewer [--birch | --residential-street | --support-lot] [--seed N]\n{HELP}"
+                );
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {arg}").into()),
         }
     }
+    let mut app = App::new(seed, birch, county_scene)?;
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    event_loop.run_app(&mut App::new(seed, birch))?;
+    event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_scenes_start_at_their_access_points() {
+        for (scene, fixture) in [
+            (
+                CountyScene::ResidentialStreet,
+                CountyFixture::ResidentialStreet,
+            ),
+            (CountyScene::SupportLot, CountyFixture::SupportLot),
+        ] {
+            let world = World::with_fixture(42, fixture);
+            let plans = world.fixture_plans();
+            let expected = if matches!(scene, CountyScene::ResidentialStreet) {
+                let a = plans[0].structures[0].front_door;
+                let b = plans[1].structures[0].front_door;
+                let (ix, iy) = plans[0].frontage.side.inward();
+                Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8)
+            } else {
+                plans[0].frontage.access
+            };
+            assert_eq!(
+                county_game(42, scene).unwrap().player_tile().pos(),
+                expected
+            );
+        }
+    }
 }
