@@ -1,9 +1,9 @@
 use zombiebox_core::{
-    ActionGame, ActionInput, DamageKind, InteractPrompt, Position, PropAnchor, PropFacing, PropId,
-    PropState, Tile3D, TileKind,
+    ActionGame, ActionInput, CountyFixture, DamageKind, InteractPrompt, Position, PropAnchor,
+    PropFacing, PropId, PropState, ReadableId, Tile3D, TileKind, Vec2, World,
 };
-use zombiebox_render3d::{CacheSyncMode, ChunkCoord, SceneConfig, SceneManager};
 use zombiebox_render3d::mesh::props::build_chunk_props_mesh;
+use zombiebox_render3d::{CacheSyncMode, ChunkCoord, SceneConfig, SceneManager};
 
 #[test]
 fn searching_a_container_preserves_its_state_and_keeps_chunks_clean() {
@@ -103,6 +103,84 @@ fn searching_a_container_preserves_its_state_and_keeps_chunks_clean() {
             .iter()
             .any(|p| { p.anchor_uid == prop.anchor_uid && p.state == PropState::Opened })
     );
+}
+
+#[test]
+fn grocery_containers_open_without_chunk_rebuilds() {
+    let world = World::with_fixture(42, CountyFixture::GroceryLot);
+    let structure = &world.fixture_plan().unwrap().structures[0];
+    let props = structure.planned_props();
+    let signs = structure.planned_signs();
+    let mut game = ActionGame::county_with_world(world);
+    for id in [PropId::CheckoutTill, PropId::CardboardBox] {
+        let (approach, container) = props
+            .iter()
+            .filter(|prop| prop.id == id)
+            .find_map(|prop| {
+                let Tile3D { x, y, floor } = prop.tile;
+                [(x, y - 1), (x, y + 1), (x - 1, y), (x + 1, y)]
+                    .into_iter()
+                    .map(|(x, y)| Tile3D::new(x, y, floor))
+                    .find(|&tile| {
+                        game.teleport(tile) == Some(tile)
+                            && game
+                                .tile_render_info(tile.pos(), floor)
+                                .is_some_and(|info| info.indoor)
+                            && game.hud().interact_prompt == InteractPrompt::Search
+                    })
+                    .map(|tile| (tile, prop))
+            })
+            .unwrap_or_else(|| panic!("{id:?} is searchable from an indoor approach"));
+        for anchor in props.iter().chain(&signs) {
+            assert!(
+                game.prop_anchors().contains(anchor),
+                "missing grocery anchor {anchor:?}"
+            );
+        }
+        let mut scene = SceneManager::new();
+        let initial = scene.prepare_at_focus(&game, approach.pos(), 0.0);
+        assert!(initial.dynamic.props.iter().any(|view| {
+            view.anchor_uid == container.anchor_uid && view.state == PropState::Closed
+        }));
+
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        let searched = scene.prepare_at_focus(&game, approach.pos(), 0.0);
+        assert!(searched.dirty_chunks.is_empty());
+        assert!(searched.dynamic.props.iter().any(|view| {
+            view.anchor_uid == container.anchor_uid && view.state == PropState::Opened
+        }));
+    }
+}
+
+#[test]
+fn grocery_notice_opens_from_the_sales_floor() {
+    let world = World::with_fixture(42, CountyFixture::GroceryLot);
+    let structure = &world.fixture_plan().unwrap().structures[0];
+    let sign = structure
+        .signs_world()
+        .into_iter()
+        .find(|sign| sign.readable == Some(ReadableId::GroceryNotice))
+        .unwrap();
+    let (ix, iy) = structure.transform.inward();
+    let Tile3D { x, y, floor } = sign.anchor.tile;
+    let approach = Tile3D::new(x - ix, y - iy, floor);
+    let mut game = ActionGame::county_with_world(world);
+    assert_eq!(game.teleport(approach), Some(approach));
+    game.step(ActionInput {
+        aim: Some(Vec2::new(ix as f32, iy as f32)),
+        ..Default::default()
+    });
+    assert_eq!(game.hud().interact_prompt, InteractPrompt::Read);
+    game.step(ActionInput {
+        interact: true,
+        ..Default::default()
+    });
+    let hud = game.hud();
+    assert!(hud.read_open);
+    assert_eq!(hud.read_id, ReadableId::GroceryNotice as u8);
 }
 
 #[test]

@@ -146,6 +146,9 @@ impl PropMeshLibrary {
             (PropId::TvStand, kit::build_tv_stand()),
             (PropId::Nightstand, kit::build_nightstand()),
             (PropId::Sign, signage::build_sign("BIRCH →", 0.96)),
+            (PropId::GrocerySign, signage::build_sign("GROCERY", 1.9)),
+            (PropId::RestroomSign, signage::build_sign("WC", 0.65)),
+            (PropId::AisleSign, signage::build_sign("AISLES", 0.9)),
             (PropId::Note, signage::build_sign("NOTE", 0.42)),
             (PropId::Journal, signage::build_sign("LOG", 0.48)),
         ] {

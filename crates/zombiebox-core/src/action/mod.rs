@@ -628,6 +628,7 @@ fn readable_fixtures(spawn: Tile3D, county: bool) -> Vec<(ReadableId, PropAnchor
                     ReadableId::MaintenanceNote => PropId::Note,
                     ReadableId::SurvivorJournal => PropId::Journal,
                     ReadableId::CraftsmanNote => PropId::Note,
+                    ReadableId::GroceryNotice => PropId::Note,
                 },
                 span: PropSpan::new(1, 1),
                 attachment: CellAttachment::WallMount,
@@ -3663,6 +3664,73 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn grocery_public_and_service_routes_are_walkable_in_live_action() {
+        let world = World::with_fixture(42, crate::CountyFixture::GroceryLot);
+        let plan = world.fixture_plan().expect("grocery fixture");
+        let access = Tile3D::from_pos(plan.frontage.access, 0);
+        let transform = plan.structures[0].transform;
+        let tile = |u, v| {
+            Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(u, v, 0)), 0)
+        };
+        let mut game = ActionGame::county_with_world(world);
+
+        let walk = |game: &mut ActionGame, u, v| {
+            let target = tile(u, v).center();
+            for _ in 0..480 {
+                let delta = target - game.player.position;
+                if delta.length() < 0.08 {
+                    return;
+                }
+                game.step(ActionInput {
+                    movement: delta.normalized(),
+                    ..ActionInput::default()
+                });
+            }
+            panic!(
+                "grocery route blocked at local ({u}, {v}) / {target:?}, player {:?} {:?}",
+                game.player.position, game.outcome()
+            );
+        };
+        let open = |game: &mut ActionGame, u, v| {
+            assert_eq!(
+                game.hud().interact_prompt,
+                InteractPrompt::OpenDoor,
+                "grocery door at local ({u}, {v}), player {:?}",
+                game.player.position
+            );
+            game.step(ActionInput {
+                interact: true,
+                ..ActionInput::default()
+            });
+            assert!(matches!(
+                game.stage.tile_kind(tile(u, v)),
+                TileKind::Door { open: true, .. }
+            ));
+        };
+
+        assert_eq!(game.teleport(access), Some(access));
+        game.monsters.clear();
+        walk(&mut game, 2, -2);
+        walk(&mut game, 10, -2);
+        walk(&mut game, 10, -1);
+        open(&mut game, 10, 0);
+        for (u, v) in [(10, 2), (9, 4), (9, 10), (3, 10), (3, 15)] {
+            walk(&mut game, u, v);
+        }
+        open(&mut game, 3, 16);
+        walk(&mut game, 3, 17);
+
+        let apron = tile(17, -2);
+        assert_eq!(game.teleport(apron), Some(apron));
+        game.monsters.clear();
+        for (u, v) in [(21, -2), (21, 23), (14, 23), (14, 22)] {
+            walk(&mut game, u, v);
+        }
+        open(&mut game, 14, 21);
+        walk(&mut game, 14, 20);
     }
 
     #[test]

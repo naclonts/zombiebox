@@ -29,6 +29,7 @@ enum SceneChoice {
     CountyColonial,
     CountySplitLevel,
     CountyDuplex,
+    CountyGrocery,
     CountyMountains,
 }
 
@@ -47,6 +48,7 @@ impl SceneChoice {
             "colonial" | "colonial-lot" => Ok(Self::CountyColonial),
             "split-level" | "split-level-lot" => Ok(Self::CountySplitLevel),
             "duplex" | "duplex-lot" => Ok(Self::CountyDuplex),
+            "grocery" | "grocery-lot" => Ok(Self::CountyGrocery),
             "mountains" | "county-mountains" => Ok(Self::CountyMountains),
             other => Err(format!("Unknown --scene '{other}'")),
         }
@@ -685,6 +687,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 World::with_fixture(seed, CountyFixture::SplitLevelLot)
             }
             SceneChoice::CountyDuplex => World::with_fixture(seed, CountyFixture::DuplexLot),
+            SceneChoice::CountyGrocery => World::with_fixture(seed, CountyFixture::GroceryLot),
             _ => World::new(42),
         };
         let mut county = ActionGame::county_with_world(world.clone());
@@ -695,6 +698,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | SceneChoice::CountyColonial
                 | SceneChoice::CountySplitLevel
                 | SceneChoice::CountyDuplex
+                | SceneChoice::CountyGrocery
         ) {
             let plans = world.fixture_plans();
             for plan in &plans {
@@ -718,7 +722,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SceneChoice::CountyDuplex => Some("duplex"),
                 _ => None,
             };
-            let (target, scene_name, orbit_distance) = if let Some(scene_name) = single_house {
+            let (target, scene_name, orbit_distance) = if scene == SceneChoice::CountyGrocery {
+                let structure = &plan.structures[0];
+                let door = structure.front_door;
+                let (target, distance) = match focus_name.as_str() {
+                    "overview" | "frontage" => {
+                        (Tile3D::new(door.x - ix * 3, door.y - iy * 3, 0), 1.35)
+                    }
+                    "interior" => {
+                        let room = structure
+                            .blueprint
+                            .rooms
+                            .iter()
+                            .find(|room| room.kind == RoomKind::Shop)
+                            .ok_or("fixture has no sales floor")?;
+                        let (u, v) = room
+                            .cells
+                            .iter()
+                            .fold((0, 0), |(u, v), cell| (u + cell.u, v + cell.v));
+                        let count = room.cells.len() as i32;
+                        let props = structure.props_world();
+                        let (_, tile, _) = structure
+                            .world_cells()
+                            .filter(|(local, tile, cell)| {
+                                room.cells.contains(local)
+                                    && cell.kind.walkable()
+                                    && !props.iter().any(|prop| {
+                                        prop.span
+                                            .covered_tiles(prop.tile)
+                                            .any(|p| p == Tile3D::from_pos(*tile, local.floor))
+                                    })
+                            })
+                            .min_by_key(|(cell, _, _)| {
+                                (cell.u * count - u).abs() + (cell.v * count - v).abs()
+                            })
+                            .ok_or("fixture sales floor has no clear focus tile")?;
+                        (Tile3D::from_pos(tile, room.floor), 1.5)
+                    }
+                    _ => return Err("--focus for grocery must be frontage or interior".into()),
+                };
+                (target, "grocery", distance)
+            } else if let Some(scene_name) = single_house {
                 let structure = &plan.structures[0];
                 let door = structure.front_door;
                 let (target, distance) = match focus_name.as_str() {

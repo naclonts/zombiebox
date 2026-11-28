@@ -188,4 +188,7 @@ define_props! {
     Journal = 41, "journal", [1, 1], [0.38, 0.22, 0.08], None, Floor, WoodLight, 15, None;
     TvStand = 42, "tv-stand", [2, 1], [0.60, 0.22, 0.42], Low, Floor, WoodLight, 60, None;
     Nightstand = 43, "nightstand", [1, 1], [0.26, 0.24, 0.58], Low, Floor, WoodLight, 40, None;
+    GrocerySign = 44, "grocery-sign", [1, 1], [0.90, 0.06, 0.40], None, WallMount, WoodLight, 25, None;
+    RestroomSign = 45, "restroom-sign", [1, 1], [0.42, 0.06, 0.30], None, WallMount, WoodLight, 20, None;
+    AisleSign = 46, "aisle-sign", [1, 1], [0.40, 0.06, 0.28], None, WallMount, WoodLight, 20, None;
 }

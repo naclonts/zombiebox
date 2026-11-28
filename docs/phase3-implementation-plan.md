@@ -301,6 +301,20 @@ Handoff: [WP 3.5 handoff](phase3-wp35-handoff.md).
 - **Build** grocery zones, walkway reservations, pillar grid, floor lanes with attached tills, shelf runs, rear service approach, WC, and signage. Start with an existing road-front fixture lot. Reuse the kit shelf and lane before adding any new visual.
 - **Accept** public path from sidewalk and parking to the main entrance, checkout and WC. Verify independent rear access, full clear aisle widths, real shelf occlusion, support behavior and an accessible looted fixture. Check that open till bounds and carts leave the approach usable. Capture interior and frontage views.
 
+The MVP uses one authored, single-floor plan on an existing road-front City lot. `GroceryParcel::plan` places the `grocery_blueprint` room masks, door intents, and kit fixtures in frontage-local coordinates. The public and service approaches and the sales-floor aisles have reserved cells for circulation. The shared parcel and blueprint path handles foundation placement, orientation, stable IDs, and streaming.
+
+Use seed `42` for the reference fixture, with north frontage on the lot from `(305, 204)` through `(332, 230)`.
+
+```sh
+cargo run -p zombiebox-render3d --features viewer --example viewer -- --grocery-lot --seed 42
+cargo run -p zombiebox-render3d --features gpu --example preview3d -- --scene grocery --seed 42 --focus frontage --mode orbit --size 1280x720
+cargo run -p zombiebox-render3d --features gpu --example preview3d -- --scene grocery --seed 42 --focus interior --mode iso --size 1280x720
+```
+
+The fixture uses kit shelves, carts, lanes, and tills, plus three sign prototypes. Detailed endcaps, coolers, and parking markings can build on this layout. The live pillars carry the existing load-bearing flag. Single-story roof collapse and physical handset frame pacing remain open.
+
+Host checks exercise deterministic placement and fit on seeds `0`, `1`, `7`, `42`, and `63`. The seed `42` County run walks from the frontage to the sales floor and public WC, then takes the outside service route into the stockroom. The runtime sight ray hits a shelf and clears the adjacent aisle. The checkout till and stockroom box open with zero dirty render chunks, and the store notice opens through Read.
+
 ### WP 3.7 — Highway gas station
 
 - **Owns** retail compound definitions and gas station fixture. Coordinate with the catalog owner for a pump or counter addition.

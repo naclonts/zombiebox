@@ -250,13 +250,17 @@ impl Parcels {
             if fixture.furnished_lot() && lot.district != District::Residential {
                 continue;
             }
+            if fixture == CountyFixture::GroceryLot && lot.district != District::City {
+                continue;
+            }
             let context = parcel_context(seed, lot);
             let Ok(plan) = plan_fixture(fixture, &context) else {
                 continue;
             };
             if fixture != CountyFixture::BlueprintLot {
                 parcels[index].plan = Some(plan);
-                parcels[index].planned_outdoors = fixture.furnished_lot();
+                parcels[index].planned_outdoors =
+                    fixture.furnished_lot() || fixture == CountyFixture::GroceryLot;
                 return Some(index);
             }
             let crosses_seam = plan.structures.iter().any(|structure| {

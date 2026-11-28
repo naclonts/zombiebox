@@ -10,6 +10,7 @@ pub enum ReadableId {
     SurvivorJournal = 3,
     CountyDirectory = 4,
     CraftsmanNote = 5,
+    GroceryNotice = 6,
 }
 
 impl ReadableId {
@@ -20,6 +21,7 @@ impl ReadableId {
             3 => Some(Self::SurvivorJournal),
             4 => Some(Self::CountyDirectory),
             5 => Some(Self::CraftsmanNote),
+            6 => Some(Self::GroceryNotice),
             _ => None,
         }
     }
@@ -30,6 +32,7 @@ impl ReadableId {
             Self::SurvivorJournal => "Survivor journal",
             Self::CountyDirectory => "County directory",
             Self::CraftsmanNote => "Craftsman house note",
+            Self::GroceryNotice => "Market notice",
         }
     }
     pub const fn body(self) -> &'static str {
@@ -49,6 +52,9 @@ impl ReadableId {
             Self::CraftsmanNote => {
                 "Porch light stays on. The spare key is under the kitchen sink, and the pantry is stocked."
             }
+            Self::GroceryNotice => {
+                "Store closed at dusk. Take only what you need, and keep the loading door clear."
+            }
         }
     }
     pub const fn title_c(self) -> &'static std::ffi::CStr {
@@ -58,6 +64,7 @@ impl ReadableId {
             Self::SurvivorJournal => c"Survivor journal",
             Self::CountyDirectory => c"County directory",
             Self::CraftsmanNote => c"Craftsman house note",
+            Self::GroceryNotice => c"Market notice",
         }
     }
     pub const fn body_c(self) -> &'static std::ffi::CStr {
@@ -67,6 +74,7 @@ impl ReadableId {
             Self::SurvivorJournal => c"Noise carries after dusk. Move quietly, and keep an exit in view.",
             Self::CountyDirectory => c"County roads radiate from the town center. Bridges and marked routes are safest after dusk.",
             Self::CraftsmanNote => c"Porch light stays on. The spare key is under the kitchen sink, and the pantry is stocked.",
+            Self::GroceryNotice => c"Store closed at dusk. Take only what you need, and keep the loading door clear.",
         }
     }
 }

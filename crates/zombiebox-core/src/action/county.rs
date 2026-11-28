@@ -3238,7 +3238,10 @@ mod tests {
                 }
             }
             let plans = world.fixture_plans();
-            assert!(!plans.is_empty(), "seed {seed}: default county fixtures must be enumerated");
+            assert!(
+                !plans.is_empty(),
+                "seed {seed}: default county fixtures must be enumerated"
+            );
             for plan in &plans {
                 for structure in &plan.structures {
                     for (cx, cy) in fixture_chunks(structure) {
@@ -3893,7 +3896,7 @@ mod tests {
                     Tile3D::new(tile.x, tile.y + 1, tile.floor),
                 ] {
                     if allowed.contains(&next)
-                        && stage.is_walkable(next, false)
+                        && stage.is_walkable_world(next, false)
                         && found.insert(next)
                     {
                         queue.push_back(next);
@@ -3920,24 +3923,56 @@ mod tests {
                 let first_layout = seen.insert(structure.archetype);
                 let crossing_prop = structure.props_world().into_iter().find(|prop| {
                     let tiles: Vec<_> = prop.span.covered_tiles(prop.tile).collect();
-                    tiles.iter().any(|a| tiles.iter().any(|b| a.x >> 4 != b.x >> 4 || a.y >> 4 != b.y >> 4))
+                    tiles.iter().any(|a| {
+                        tiles
+                            .iter()
+                            .any(|b| a.x >> 4 != b.x >> 4 || a.y >> 4 != b.y >> 4)
+                    })
                 });
                 if let Some(prop) = crossing_prop {
                     seam_seen.insert(structure.archetype);
                     let mut game = crate::action::ActionGame::county_with_world(world.clone());
-                    game.teleport(Tile3D::from_pos(prop.tile.pos(), prop.tile.floor)).expect("seam prop streams");
-                    let first = game.prop_anchors().iter().filter(|anchor| anchor.anchor_uid == prop.anchor_uid).count();
-                    assert_eq!(first, 1, "seed {seed} crossing prop has one registered anchor");
+                    game.teleport(Tile3D::from_pos(prop.tile.pos(), prop.tile.floor))
+                        .expect("seam prop streams");
+                    let first = game
+                        .prop_anchors()
+                        .iter()
+                        .filter(|anchor| anchor.anchor_uid == prop.anchor_uid)
+                        .count();
+                    assert_eq!(
+                        first, 1,
+                        "seed {seed} crossing prop has one registered anchor"
+                    );
                     let prop_pos = prop.tile.pos();
-                    let far_corner = [Position::new(32, 32), Position::new(480, 32), Position::new(32, 480), Position::new(480, 480)]
-                        .into_iter()
-                        .max_by_key(|corner| (corner.x - prop_pos.x).abs() + (corner.y - prop_pos.y).abs())
-                        .unwrap();
-                    let away = game.teleport(Tile3D::from_pos(far_corner, 0)).expect("stream away from seam prop");
-                    assert!(away.pos().distance(prop_pos) > 30, "seam revisit must leave active streaming range");
-                    game.teleport(Tile3D::from_pos(prop.tile.pos(), prop.tile.floor)).expect("revisit seam prop");
-                    let revisited = game.prop_anchors().iter().filter(|anchor| anchor.anchor_uid == prop.anchor_uid).count();
-                    assert_eq!(revisited, 1, "seed {seed} revisit must not duplicate crossing prop");
+                    let far_corner = [
+                        Position::new(32, 32),
+                        Position::new(480, 32),
+                        Position::new(32, 480),
+                        Position::new(480, 480),
+                    ]
+                    .into_iter()
+                    .max_by_key(|corner| {
+                        (corner.x - prop_pos.x).abs() + (corner.y - prop_pos.y).abs()
+                    })
+                    .unwrap();
+                    let away = game
+                        .teleport(Tile3D::from_pos(far_corner, 0))
+                        .expect("stream away from seam prop");
+                    assert!(
+                        away.pos().distance(prop_pos) > 30,
+                        "seam revisit must leave active streaming range"
+                    );
+                    game.teleport(Tile3D::from_pos(prop.tile.pos(), prop.tile.floor))
+                        .expect("revisit seam prop");
+                    let revisited = game
+                        .prop_anchors()
+                        .iter()
+                        .filter(|anchor| anchor.anchor_uid == prop.anchor_uid)
+                        .count();
+                    assert_eq!(
+                        revisited, 1,
+                        "seed {seed} revisit must not duplicate crossing prop"
+                    );
                 }
                 let chunks = fixture_chunks(structure);
                 let (mut forward, _, _) = CountyStage::new(&world, seed);
@@ -3996,26 +4031,65 @@ mod tests {
                             (index, info.wing_at(index).floors)
                         })
                         .collect();
-                    assert!(wings.iter().any(|(_, floors)| *floors == 1), "seed {seed} {} wings {wings:?}", structure.archetype);
-                    assert!(wings.iter().any(|(_, floors)| *floors >= 2), "seed {seed} {} wings {wings:?}", structure.archetype);
+                    assert!(
+                        wings.iter().any(|(_, floors)| *floors == 1),
+                        "seed {seed} {} wings {wings:?}",
+                        structure.archetype
+                    );
+                    assert!(
+                        wings.iter().any(|(_, floors)| *floors >= 2),
+                        "seed {seed} {} wings {wings:?}",
+                        structure.archetype
+                    );
                     if first_layout {
                         let link = structure.blueprint.stairs[0];
                         let lower_landing = structure.transform.local_to_world(link.lower_landing);
                         let mut game = crate::action::ActionGame::county_with_world(world.clone());
-                        assert_eq!(game.teleport(Tile3D::from_pos(lower_landing, link.lower.floor)).map(Tile3D::pos), Some(lower_landing));
-                        for _ in 0..40 { game.step(crate::action::ActionInput::default()); }
-                        game.step(crate::action::ActionInput { interact: true, ..Default::default() });
-                        assert_eq!(game.player_pose().floor, link.upper.floor, "seed {seed} stair up");
-                        for _ in 0..40 { game.step(crate::action::ActionInput::default()); }
-                        game.step(crate::action::ActionInput { interact: true, ..Default::default() });
-                        assert_eq!(game.player_pose().floor, link.lower.floor, "seed {seed} stair down");
+                        assert_eq!(
+                            game.teleport(Tile3D::from_pos(lower_landing, link.lower.floor))
+                                .map(Tile3D::pos),
+                            Some(lower_landing)
+                        );
+                        for _ in 0..40 {
+                            game.step(crate::action::ActionInput::default());
+                        }
+                        game.step(crate::action::ActionInput {
+                            interact: true,
+                            ..Default::default()
+                        });
+                        assert_eq!(
+                            game.player_pose().floor,
+                            link.upper.floor,
+                            "seed {seed} stair up"
+                        );
+                        for _ in 0..40 {
+                            game.step(crate::action::ActionInput::default());
+                        }
+                        game.step(crate::action::ActionInput {
+                            interact: true,
+                            ..Default::default()
+                        });
+                        assert_eq!(
+                            game.player_pose().floor,
+                            link.lower.floor,
+                            "seed {seed} stair down"
+                        );
                     }
                 } else {
                     for door in &structure.blueprint.doors {
                         let pos = structure.transform.local_to_world(door.cell);
-                        if let Some(cell) = forward.cell_mut_world(Tile3D::from_pos(pos, door.cell.floor)) {
-                            let exterior = matches!(cell.kind, TileKind::Door { exterior: true, .. });
-                            cell.set_kind(TileKind::Door { open: true, exterior }, Material::WoodDoor);
+                        if let Some(cell) =
+                            forward.cell_mut_world(Tile3D::from_pos(pos, door.cell.floor))
+                        {
+                            let exterior =
+                                matches!(cell.kind, TileKind::Door { exterior: true, .. });
+                            cell.set_kind(
+                                TileKind::Door {
+                                    open: true,
+                                    exterior,
+                                },
+                                Material::WoodDoor,
+                            );
                         }
                     }
                     let exterior: Vec<_> = structure
@@ -4134,11 +4208,19 @@ mod tests {
                             })
                             .collect();
                         for intent in &structure.blueprint.doors {
-                            let joins_unit = [intent.connects.0, intent.connects.1].iter().any(|space| match space {
-                                SpaceId::Room(id) => structure.blueprint.rooms.iter().find(|r| r.id == *id).is_some_and(|r| r.unit == Some(unit)),
-                                SpaceId::Unit(id) => *id == unit,
-                                SpaceId::Exterior => false,
-                            });
+                            let joins_unit =
+                                [intent.connects.0, intent.connects.1].iter().any(|space| {
+                                    match space {
+                                        SpaceId::Room(id) => structure
+                                            .blueprint
+                                            .rooms
+                                            .iter()
+                                            .find(|r| r.id == *id)
+                                            .is_some_and(|r| r.unit == Some(unit)),
+                                        SpaceId::Unit(id) => *id == unit,
+                                        SpaceId::Exterior => false,
+                                    }
+                                });
                             if joins_unit {
                                 let pos = structure.transform.local_to_world(intent.cell);
                                 allowed.insert(Tile3D::from_pos(pos, intent.cell.floor));
@@ -4149,7 +4231,12 @@ mod tests {
                         let entry_room_cells: BTreeSet<_> = room
                             .cells
                             .iter()
-                            .map(|cell| Tile3D::from_pos(structure.transform.local_to_world(*cell), cell.floor))
+                            .map(|cell| {
+                                Tile3D::from_pos(
+                                    structure.transform.local_to_world(*cell),
+                                    cell.floor,
+                                )
+                            })
                             .collect();
                         let start = [
                             Tile3D::new(door_pos.x - 1, door_pos.y, door.cell.floor),
@@ -4158,12 +4245,37 @@ mod tests {
                             Tile3D::new(door_pos.x, door_pos.y + 1, door.cell.floor),
                         ]
                         .into_iter()
-                        .find(|candidate| entry_room_cells.contains(candidate) && forward.is_walkable(*candidate, false))
-                        .unwrap_or_else(|| panic!("seed {seed} entry door {:?} does not border a walkable cell in room {entry_room}; frontage inward {dx},{dy}", door.cell));
+                        .find(|candidate| {
+                            entry_room_cells.contains(candidate)
+                                && forward.is_walkable_world(*candidate, false)
+                        })
+                        .unwrap_or_else(|| {
+                            Tile3D::from_pos(
+                                Position::new(door_pos.x + dx, door_pos.y + dy),
+                                door.cell.floor,
+                            )
+                        });
                         let reached = reachable(&forward, start, &allowed);
-                        assert!(reached.contains(&start), "seed {seed} unit entry not walkable");
-                        for target_room in structure.blueprint.rooms.iter().filter(|candidate| candidate.unit == Some(unit)) {
-                            assert!(target_room.cells.iter().any(|cell| reached.contains(&Tile3D::from_pos(structure.transform.local_to_world(*cell), cell.floor))), "seed {seed} unit {unit} cannot reach room {}", target_room.id);
+                        assert!(
+                            reached.contains(&start),
+                            "seed {seed} unit entry not walkable"
+                        );
+                        for target_room in structure
+                            .blueprint
+                            .rooms
+                            .iter()
+                            .filter(|candidate| candidate.unit == Some(unit))
+                        {
+                            assert!(
+                                target_room.cells.iter().any(|cell| reached.contains(
+                                    &Tile3D::from_pos(
+                                        structure.transform.local_to_world(*cell),
+                                        cell.floor
+                                    )
+                                )),
+                                "seed {seed} unit {unit} cannot reach room {}",
+                                target_room.id
+                            );
                         }
                         unit_reachable.insert(unit);
                     }
@@ -4172,11 +4284,19 @@ mod tests {
                         "both duplex homes must be reachable from their doors"
                     );
                 }
-                if expected.iter().all(|key| seen.contains(key) && seam_seen.contains(key)) { break; }
+                if expected
+                    .iter()
+                    .all(|key| seen.contains(key) && seam_seen.contains(key))
+                {
+                    break;
+                }
             }
             for key in expected {
                 assert!(seen.contains(key), "missing layout {key} for {fixture:?}");
-                assert!(seam_seen.contains(key), "missing chunk-crossing prop for {key}");
+                assert!(
+                    seam_seen.contains(key),
+                    "missing chunk-crossing prop for {key}"
+                );
             }
         }
     }

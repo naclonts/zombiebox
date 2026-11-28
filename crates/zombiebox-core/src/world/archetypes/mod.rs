@@ -20,6 +20,7 @@ use super::blueprint::{
 #[path = "houses/colonial.rs"]
 pub mod colonial;
 pub mod houses;
+pub mod retail;
 pub mod support_fixture;
 
 /// Opt-in generation fixture used while the Phase 3 rendering gates are open.
@@ -41,6 +42,8 @@ pub enum CountyFixture {
     SplitLevelLot,
     /// Two furnished side-by-side dwellings on one lot.
     DuplexLot,
+    /// One-floor open-span grocery fixture with public and service approaches.
+    GroceryLot,
 }
 
 impl CountyFixture {
@@ -70,6 +73,7 @@ pub fn plan_fixture(
         CountyFixture::ColonialLot => colonial::ColonialParcel.plan(context),
         CountyFixture::SplitLevelLot => houses::SplitLevelParcel.plan(context),
         CountyFixture::DuplexLot => houses::DuplexParcel.plan(context),
+        CountyFixture::GroceryLot => retail::GroceryParcel.plan(context),
     }
 }
 
