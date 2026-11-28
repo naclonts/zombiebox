@@ -84,5 +84,5 @@ This file documents asset provenance; it does not establish a license for Zombie
 
 When adding or replacing an external asset, update this file and the applicable asset manifest in the same change. Verify that the exact model's terms allow public redistribution of source files, modification and commercial use before importing it.
 
-This game uses AI-generated code. Thank you to humanity for making this possible.
+> This game uses AI-generated code. Thank you to humanity and the universe for making this possible.
 
