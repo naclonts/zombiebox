@@ -1,466 +1,333 @@
-See ./living-buildings-plan.md and related docs for context.
+# Phase 3 implementation plan
 
----
+Build a county with recognizable, lived-in houses, working retail spaces, and streets that follow the terrain. Birch Street sets the bar for furnished rooms, clear approaches, readable silhouettes, and destructibility. Phase 3 delivers five house families, an open-span grocery, a highway gas station, and terrain-aware towns. Use the current 512 × 512 county for this phase.
 
-## Research Summary: Why These Algorithms (and What to Avoid)
+Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [building generation](building-generation-algorithms.md), [assets and ecology](building-assets-and-ecology.md), [prop catalog](prop-asset-catalog.md), [town layout](world-and-town-layout-plan.md), and [product decisions](product-decisions.md). This copy was reviewed against [main at 4c60c6f](https://github.com/naclonts/zombiebox/tree/4c60c6fa95410c326d54b354bf63ce91c44baed8). Relative links assume placement in the repository's `docs/` directory.
 
-To get true-to-life buildings and organic towns that still generate deterministically in milliseconds on mobile—and stay simple enough for lightweight coding agents to implement without breaking—four algorithmic choices matter most:
+## Scope and rollout
 
-* **Grid-Snapped Organic Block Accretion + Frontage OBB Subdivision (over Straight Skeletons / Voronoi):** Full straight-skeleton lot subdivision is $O(N^3 \log N)$ and produces awkward triangular slivers that clash with tile-based buildings. Instead, grow orthogonal road blocks outward along terrain/water contours using a priority queue of candidate block expansions (stopping at steep slopes or water), then subdivide blocks via **rule-constrained OBB slicing** enforcing minimum area, aspect ratio, and road frontage. Every resulting lot stays axis-aligned to its street edge, guarantees road access, and drops cleanly onto the tile grid.
-* **Wing-Massing + Topology-First Constrained BSP (over pure WFC or raw BSP):** Pure Wave Function Collapse struggles with global architectural invariants (e.g., "every house has exactly one kitchen adjacent to the living room and one front porch"). Instead, separate generation into three deterministic stages: (1) **Massing** (compose 1–3 overlapping rectangles into an L/T/U/split-level footprint), (2) **Topology-First Partitioning** (allocate public/entry rooms on the street face, place a minimal spine/hallway only when rooms exceed direct adjacency, and carve private rooms via constrained BSP), and (3) **Doorway Stenciling** (stamp the Phase 1 `3×3` clearance invariant before any walls or props touch the grid).
-* **Hierarchical Wall-Hugging & Anchor-Child Furnishing (over random scatter):** Real rooms are organized by wall affinity and functional clusters—a sofa faces a TV across a coffee table; a dining table spawns chairs around its perimeter; kitchen counters run continuously along an exterior wall with the sink under a window. Solving **perimeter wall runs first**, then **anchor-child clusters**, then **center/floor fills**, with a hard reservation mask around every doorway apron and 1-tile walking spine, guarantees playable navigation and believable interiors.
-* **Data-Driven Archetypes + Pluggable Traits (over enum sprawl):** Expressing building variants, room adjacency rules, and furnishing palettes as declarative structs (embeddable via `include_str!` RON/TOML later, or static Rust registries in Phase 3) behind `CompoundPlanner` and `StructureGenerator` traits lets Phase 4 (Police/Hospital) and Phase 6 (Traveling Circus) plug in without modifying chunk streaming or `CountyStage`.
+1. **Prove one county house in play.** Put a furnished Craftsman on an existing lot in a repeatable county fixture. Use the actual streaming, collision, interaction, and rendering paths. Add an L-wing ranch on the same street to test reuse and a small two-floor fixture to test stairs, support, and cutaways.
+2. **Fill out the building roster.** Add the Colonial, stepped split-level, duplex, grocery, and gas mart. Use fixed lots for isolated authoring and preview before the new town planner assigns them.
+3. **Build one connected town.** Start with a highway ribbon, a residential street or cul-de-sac, and actual foot and motorcycle routes. Add crossroads, split-bank, and bay/lakeshore morphologies in follow-up packages within Phase 3.
+4. **Switch county generation after verification.** Keep current police, hospital, downtown, and cabin content reachable through a legacy adapter. Retire the Army Base from active county generation together with its landmark, lot, routing, and runtime special cases. Phase 4 owns civic replacements, Phase 5 owns new infected variants, and later milestones own the circus, freeway interchanges, and infinite-region streaming. Phase 3 uses a state highway as the first regional spine.
 
----
+Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
 
-# `docs/phase3-implementation-plan.md`
+## 1. Ownership and shared contracts
 
-## 1. Phase 3 Scope & Legacy Teardown
+### Module ownership
 
-**Goal:** Replace the legacy county town stamp (`5×5` grid) and `midx`/`midy` 4-quadrant building generator with a unified, extensible world-generation pipeline producing:
+| Module | Responsibility |
+| --- | --- |
+| `world/parcels.rs`, `world.rs` | Parcel dispatch, planned pad bounds, lazy immutable detail, chunk-facing views, generation version |
+| `world/blueprint.rs` | Sparse local blueprint, coordinate transform, doorway and support validation |
+| `world/massing.rs`, `world/floorplan.rs` | Footprint masks, authored room arrangements, fit, windows, stairs |
+| `world/furnish.rs` | Fixture placement, dependencies, circulation reservations, final reachability |
+| `world/archetypes/` | Static house and retail definitions and parcel composition |
+| `world/geography.rs`, `world/town_planner.rs`, `world/relief.rs` | Terrain suitability, road topology and grades, zoning and lots |
+| `world/dressing.rs` | Outdoor surfaces, paths, parking, frontage, signs, vegetation |
+| `action/county.rs` | Materialize into live cells, structures, props and signs. Apply existing chunk deltas |
+| `action/prop_catalog.rs`, `zombiebox-render3d/src/mesh/{library,kit}.rs` | Authoritative gameplay prop definitions, shared visual prototypes |
 
-1. **Organic towns & road networks:** Contour-hugging morphologies (riverfront split-bank, highway ribbon, bay/lakefront, crossroads), separated residential subdivisions with cul-de-sacs, and regional highways with roadside **Gas Stations**.
-2. **Unified `ParcelPlan` & `BlueprintGrid`:** Multi-structure parcels + outdoor dressing layer, retiring `ArmySub` and the placeholder Army Base.
-3. **5 Residential House sub-archetypes:** Craftsman Bungalow (full porch), L-Wing Suburban Ranch (attached garage + driveway), 2-Story Center-Hall Colonial, Stepped Split-Level, and Side-by-Side Duplex.
-4. **Open-span Grocery Store:** Load-bearing `TileKind::Pillar` grid, entrance vestibule, checkout lanes, `HighBlocker` gondola aisles, perimeter coolers, public restrooms, and rear stockroom/loading dock.
-5. **Flagged rectangular block placeholders:** Any prop not yet in `assets/living-buildings/converted/` renders via a unified `PlaceholderBlock` primitive with accurate collider bounds and a tracked `PlaceholderId` for later asset swaps.
+Repository paths in this plan are relative to `crates/zombiebox-core/src/` unless a crate is named. The Rust sketches specify ownership and fields. Map their conceptual types onto repository types during WP 3.1 and record the resulting names and entry points in the handoff. Use static Rust definitions in Phase 3. A new archetype should register through one dispatch point and materialize through the common path.
 
-### Legacy Code to Scrap / Replace
+```rust
+struct ParcelPlan {
+    id: ParcelId,
+    bounds: GridRect,               // Half-open world-tile rectangle
+    frontage: Frontage,             // Cardinal side, usable interval, road/access node
+    zone: ZoneKind,
+    structures: Vec<PlacedStructure>,
+    outdoor: OutdoorLayer,
+}
 
-* `crates/zombiebox-core/src/world/sites.rs`: Remove `ArmySub`, Army Base site generation, and the legacy 4-quadrant (`midx`/`midy`) box builder and corner-only 1×1 prop scatter.
-* `crates/zombiebox-core/src/world/parcels.rs`: Replace single-building-per-parcel structs with `ParcelPlan` (`0..N` `PlacedStructure`s + `OutdoorLayer`).
-* `crates/zombiebox-core/src/world/geography.rs`: Replace the fixed `5×5` rectangular town stamp with the organic block accretion + highway/subdivision planner.
+struct PlacedStructure {
+    id: StructureId,
+    archetype: ArchetypeId,
+    transform: LotTransform,
+    foundation_z: f32,
+    blueprint: BlueprintGrid,
+}
 
----
+struct OutdoorLayer {
+    surfaces: Vec<SurfacePatch>,    // Sidewalk, driveway, parking, apron, porch path
+    paths: Vec<AccessRoute>,        // Links frontage, doors, parking and service access
+    fences: Vec<FenceSegment>,
+    props: Vec<PlannedProp>,
+    signs: Vec<PlannedSign>,
+    vehicle_slots: Vec<VehicleSlot>,
+}
 
-## 2. File & Module Outline
+trait CompoundPlanner {
+    fn plan(&self, context: &ParcelContext) -> Result<ParcelPlan, FitError>;
+}
 
-Keep each subagent focused on a small set of files. New modules go under `crates/zombiebox-core/src/world/`:
+trait StructureGenerator {
+    fn generate(&self, context: &StructureContext) -> Result<BlueprintGrid, FitError>;
+}
+```
 
-| File | Responsibility | Status |
+- **Pads and timing.** Derive a stable footprint and planned pad bounds before final relief. Finalize foundation elevations before placing props, signs, or other things that sample surface height. Multi-structure parcels carry independent pads where needed. Keep the existing lazy parcel detail and chunk ownership strategy. Write the expanded blueprint once per parcel and let all intersecting chunks read from it. Keep the live world on sparse floors. Format static definitions and cached detail so a lot can be inspected without creating all other interiors.
+- **Coordinates.** Use local `u` along frontage and `v` into the lot. Define world placement as `origin + u * right + v * inward` with a cardinal basis. Define origin as the world tile for local `(0,0)`. Transform all rectangle corners or covered cells, then take min/max in world axes. Convert legacy inclusive lot bounds once at the adapter. Test all four frontage orientations using an asymmetric fixture. Rotate door tangents, stair vectors, sign normals and facing by the same basis. For multi-tile props transform their covered tiles, derive the world min corner and world span, then use the existing pivot and support offset. Apply each rotation once.
+- **IDs and replay.** Derive versioned, namespaced 64-bit IDs from canonical world-space parcel identity, stable structure slots and authored local keys. Derive independent streams for roads, layout, furnishing, loot, signs and dressing using seed, owner ID and stage salt. Use a stable candidate order, explicit score tie-breaks, and canonical ordering when emitting or hashing cells, placements, and roads. Keep lookup maps out of iteration-dependent decisions. Test different chunk visitation orders and verify that changing loot or optional clutter leaves the structure, openings and road plan identical. Use a documented stable mixer and bump the existing `GENERATOR_VERSION` when enabling the new baseline. Keep incompatible saved deltas with their original generator if supported, or use the existing version-rejection path. Verify actual save behavior before cutover.
+- **Chunk ownership.** A parcel supplies all intersecting geometry, but each persistent entity has one owner. Place props through the existing `PropAnchor` path and use the anchor-owner chunk. Query its covered cells across seams through the same runtime spatial APIs. Keep structure IDs separate from transient renderer IDs. Revisit must preserve opened containers, broken props, structural edits and moved vehicles without duplication.
+
+### Blueprint and runtime handoff
+
+```rust
+struct BlueprintGrid {
+    cells: BTreeMap<LocalCell, BlueprintCell>,  // Key includes floor index
+    rooms: Vec<RoomMeta>,
+    doors: Vec<DoorIntent>,
+    stairs: Vec<StairLink>,
+    props: Vec<PlannedProp>,
+    signs: Vec<PlannedSign>,
+}
+
+struct BlueprintCell {
+    room: Option<RoomId>,
+    wing: WingId,
+    kind: TileKind,
+    material: Material,
+    surface: Surface,
+    indoor: bool,
+    load_bearing: bool,
+    stair_dir: Option<CardinalDir>,
+    roof: Option<RoofSpec>,
+    reserved: ReserveFlags,
+}
+
+struct DoorIntent {
+    cell: LocalCell,
+    tangent: DoorAxis,
+    kind: DoorKind,
+    connects: (SpaceId, SpaceId),   // Room, exterior access, or separate duplex unit
+}
+
+struct PlannedProp {
+    key: LocalPlacementKey,
+    prop: PropId,
+    anchor: LocalCell,
+    facing: PropFacing,
+    room: Option<RoomId>,
+    host: Option<LocalPlacementKey>,
+    offset_m: Vec3,
+    loot: Option<LootProfileId>,
+}
+```
+
+- Use existing `DoorAxis::{AlongX, AlongY}` as the **wall tangent** and get the normal from the runtime helpers. One intent owns each opening. Compile openings and windows to existing runtime cell semantics. Reject inconsistent duplicate intents. Store the physical walls and openings in one authoritative representation and derive room adjacency from the compiled openings.
+- Store room membership by cell mask where spaces are irregular. Room metadata needs room kind, optional duplex unit, wing, and required interaction approaches. Stairs link explicit floor/cell endpoints and reserve the landings. Floor indices are `0..MAX_COUNTY_FLOORS`, where `MAX_COUNTY_FLOORS = 8`. Use existing roof/support fields and preserve per-wing cutaways in the compiled result.
+- County materialization writes `TileKind`, `Material`, `Surface`, indoor state, building ownership, support, door axis, stairs and roofs. Props and signs go through Phase 2 placement and Read interfaces. A porch or canopy can have a roof and supports while remaining outdoor space. Record the support that carries each stepped roof or upper floor. Route shelf cover, collisions and destruction through core.
+- `FitError` distinguishes invalid lot, impossible required room or fixture, access failure, and support failure. Candidate searches have fixed attempt budgets. On exhaustion, use an authored fallback for that lot class, select a compatible archetype where allowed, or leave an optional parcel unbuilt. Required landmarks reserve feasible parcels and use a verified fallback. Include reproducible seed, parcel, orientation, floor and invariant in failure diagnostics.
+
+## 2. Algorithms and authored layouts
+
+### Residential massing and room fitting
+
+1. Subtract setbacks and reserve paths from frontage to porch or driveway before choosing massing. Fit a main rectangle plus an optional porch or garage rectangle. Upper floors occupy the supported overlap of their lower masses. Compose masks in local coordinates. Keep porch and garage roof silhouettes distinct from the main house.
+2. Choose an authored **room arrangement** that fits the available width/depth. Each arrangement declares entry side, zones, required adjacency, exterior exposure, room minima and stair position as applicable. Carve the entry, hall or shared living zone, and stairs first. Subdivide remaining rectangular bays with constrained axis-aligned cuts. Enumerate feasible cuts from room minima and required wall contacts. Include usable spaces for signature fixtures when sizing bays.
+3. Place doors on shared walls that have the required tangent and approach space. Prefer long, clear segments with midpoint bias and deterministic ties. For a door at `p`, keep secure jambs at `p ± tangent` and clear walkable passage on both normals. Run the shared 3×3 clearance stencil before emitting walls, stairs or fixtures into those cells. Audit widened transitions with the same runtime capsule. A failure retries an alternate opening, cut or layout within the budget.
+4. Place windows on eligible exterior walls, preserving privacy, structure and fixture candidates. Kitchen sink under a window is a preference. Check room reachability from the appropriate public entrance. Private bedrooms and bathrooms cannot be through-routes. Check exposed roof, roof support, and stair alignment and landings before furnishing.
+5. Choose exterior variation with the building's era and use in mind. Share a neighborhood palette and setbacks while varying porch depth, window groupings, trim and yard treatment per lot. Keep changes to material palette independent of circulation. Review adjacent houses from the road at gameplay zoom before adding more variations.
+
+| Family | Ship these layout options | Invariants and visual cues |
 | --- | --- | --- |
-| `world/geography.rs` | Regional highway spline/polyline graph, town seed placement, morphology selection (`Riverfront`, `HighwayRibbon`, `BayHugging`, `Crossroads`), and separated subdivision anchors. | Refactor |
-| `world/town_planner.rs` | **New.** Organic block accretion along terrain/water contours, cul-de-sac spurs, zoning assignment (`Downtown`, `CommercialStrip`, `ResidentialSubdivision`, `HighwayService`), and OBB lot subdivision. | New |
-| `world/parcels.rs` | `ParcelPlan`, `PlacedStructure`, `OutdoorLayer`, `CompoundPlanner` trait, and parcel-to-chunk materialization bridge. | Refactor |
-| `world/blueprint.rs` | **New.** `BlueprintGrid` (sparse multi-floor `0..8F` cell buffer), `RoomId`, `WingId`, `DoorwayIntent`, `3×3` doorway clearance reservation, and validation checks. | New |
-| `world/massing.rs` | **New.** Non-rectangular footprint composer (`Rect`, `LWing`, `TWing`, `SteppedSplit`, `Duplex`) with per-cell roof style and per-wing cutaway IDs. | New |
-| `world/floorplan.rs` | **New.** Topology-first room graph solver, constrained BSP subdivision, hallway/stairwell placement, window placement, and open-span `Pillar` grid solver. | New |
-| `world/furnish.rs` | **New.** Wall-hugging, anchor-child cluster, and aisle-run furnishing solver consuming `RoomFurnishRule`s + doorway/walkway reservation masks. | New |
-| `world/archetypes/mod.rs` | **New.** Declarative registries (`BuildingArchetypeDef`, `AreaArchetypeDef`, `RoomFurnishRule`) + `StructureGenerator` trait. | New |
-| `world/archetypes/houses.rs` | **New.** Definitions for the 5 House sub-archetypes + residential room palettes (Kitchen, Living, Bedroom, Bathroom, Garage, Porch). | New |
-| `world/archetypes/retail.rs` | **New.** Grocery Store + Highway Gas Station (canopy + convenience store) archetypes and aisle/checkout/pump planners. | New |
-| `world/dressing.rs` | Update to consume `OutdoorLayer` (driveways, sidewalks, fences, yard trees, parking lot stripes, highway signage, gas station aprons). | Update |
-| `action/prop_catalog.rs` | Add `PropVisual::PlaceholderBlock(PlaceholderBlockSpec)` entries for missing Phase 3 props, tagged with `#[placeholder]` / `asset_todo` IDs. | Update |
-| `zombiebox-render3d/src/mesh/props.rs` | Render `PropVisual::PlaceholderBlock` as muted, beveled/tinted cuboids respecting `PropSpan`, `HighBlocker` height, and `DoorAxis`/facing rotation. | Update |
+| Craftsman bungalow | **A** porch → living → dining/kitchen, with a short bedroom hall. **B** porch → foyer between living and dining, with kitchen at rear and bedrooms off a side hall. | One floor, street-facing porch with usable approach, recognizable trim and porch supports. |
+| L-wing ranch | **A** garage → mudroom → kitchen, living toward street. **B** garage → utility/kitchen entry, living along rear yard and bedrooms on short side hall. | Driveway connects to the garage opening and aligns with the garage wing. Public walking approach stays clear of vehicle placement. |
+| Center-hall Colonial | **A** straight hall with living and dining on opposite sides and stair along the hall. **B** compressed hall with a rear kitchen and side stair reached directly from the hall. | Two floors, front-centered entry, supported upper mass, stairs from common circulation to the upstairs hall. |
+| Stepped split-level | **A** one-floor street living wing and taller rear bedroom wing. **B** same massing with taller side wing and stair in the shared entry zone. | Whole-floor changes using existing stair mechanics, supported stepped roofs, per-wing cutaway. |
+| Side-by-side duplex | **A** paired street doors. **B** twin approaches with offset front stoops and a shared frontage path that forks outside. | Two independent homes, uninterrupted party wall, separate kitchens and baths, unit-specific reachability and room ownership. |
 
----
+### Furnishing and navigation
 
-## 3. Core Data Structures & Extensibility Traits
-
-Place these in `world/parcels.rs`, `world/blueprint.rs`, and `world/archetypes/mod.rs` **first** (WP 3.1) so all downstream subagents compile against a frozen contract.
+Reserve exterior approaches, door aprons, stair landings and interaction positions. In each room, connect every required portal and approach to a chosen circulation node using deterministic four-neighbor BFS on the walkable mask. Enforce clear corridor width on the reserved corridor and check the resulting route again after furnishing. Start with one clear tile in houses and two in ordinary public aisles, and use the existing runtime capsule for physical clearance.
 
 ```rust
-// --- world/parcels.rs ---
-
-#[derive(Clone, Debug)]
-pub struct ParcelPlan {
-    pub parcel_id: u64,              // Deterministic 64-bit UID (Phase 1 convention)
-    pub bounds: GridRect,            // World-tile AABB
-    pub street_edge: CardinalDir,    // Primary road frontage
-    pub zone: ZoneKind,              // Residential, Commercial, HighwayService, Civic, Compound
-    pub structures: Vec<PlacedStructure>,
-    pub outdoor: OutdoorLayer,
+struct PropPlacementRule {
+    key: RuleKey,
+    alternatives: &'static [PropId],
+    strategy: PlacementStrategy,
+    required: u8,
+    maximum: u8,
+    extra_chance: f32,
+    priority: u8,
+    loot: Option<LootProfileId>,
 }
 
-#[derive(Clone, Debug)]
-pub struct PlacedStructure {
-    pub structure_id: u64,
-    pub archetype_id: &'static str,  // e.g. "house.craftsman_bungalow", "retail.grocery"
-    pub origin: (i32, i32),          // World tile origin
-    pub pad_elevation: f32,          // Flattened terrain pad height
-    pub facing: CardinalDir,         // Rotates local blueprint -> world
-    pub blueprint: BlueprintGrid,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct OutdoorLayer {
-    pub ground_overrides: Vec<(i32, i32, GroundSurface)>, // Asphalt, Concrete, Driveway, PorchWood
-    pub fences: Vec<FenceSegment>,
-    pub props: Vec<PlacedProp>,       // Mailboxes, shopping cart corrals, fuel pumps, dumpsters
-    pub signs: Vec<PlacedSign>,       // Exterior fascia, road signs, gas price pylons
-    pub vehicle_slots: Vec<VehicleSlot>, // Driveways, parking spaces, loading docks
-}
-
-pub trait CompoundPlanner: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn plan_parcel(&self, ctx: &ParcelContext, rng: &mut StdRng) -> ParcelPlan;
-}
-
-pub trait StructureGenerator: Send + Sync {
-    fn archetype_id(&self) -> &'static str;
-    fn generate(&self, lot: GridRect, facing: CardinalDir, rng: &mut StdRng) -> BlueprintGrid;
-}
-
-```
-
-```rust
-// --- world/blueprint.rs ---
-
-pub type WingId = u8;
-pub type RoomId = u16;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RoomKind {
-    Porch, Foyer, LivingRoom, Kitchen, Dining, Bedroom, Bathroom,
-    Hallway, Garage, Stairwell,
-    RetailVestibule, CheckoutZone, SalesFloor, Stockroom, LoadingDock,
-    PublicRestroom, ConvenienceStore, FuelCanopy,
-}
-
-#[derive(Clone, Debug)]
-pub struct BlueprintCell {
-    pub floor: u8,                     // 0..MAX_COUNTY_FLOORS (8)
-    pub wing_id: WingId,               // Drives per-wing cutaway masks (Phase 1)
-    pub room_id: RoomId,
-    pub room_kind: RoomKind,
-    pub tile: TileKind,                // Floor, Wall, Pillar, StairsUp, StairsDown, Doorway
-    pub roof_style: Option<RoofStyle>, // Per-cell roof emission for stepped/split-level wings
-    pub walls: EdgeMask,               // N/S/E/W wall/window/door edge specs
-    pub reserved: ReserveFlags,        // DOOR_APRON | WALK_SPINE | WINDOW_LIGHT | OCCUPIED
-}
-
-#[derive(Clone, Debug)]
-pub struct BlueprintGrid {
-    pub width: u16,
-    pub height: u16,
-    pub max_floor: u8,
-    pub cells: HashMap<(u16, u16, u8), BlueprintCell>, // Sparse storage matching Phase 1
-    pub rooms: Vec<RoomMeta>,          // Bounds, RoomKind, WingId, connected_rooms
-    pub doors: Vec<DoorIntent>,        // Pos, floor, DoorAxis, DoorKind, exterior flag
-    pub props: Vec<PlacedProp>,        // Multi-tile PropAnchor + PropSpan + attachments
-    pub signs: Vec<PlacedSign>,        // Uses Phase 2 signage.rs + Readables
-}
-
-```
-
-```rust
-// --- action/prop_catalog.rs (Placeholder support) ---
-
-#[derive(Clone, Debug)]
-pub struct PlaceholderBlockSpec {
-    pub todo_id: &'static str,   // e.g. "ASSET_TODO_GONDOLA_SHELF"
-    pub size_m: [f32; 3],        // Width (X), Depth (Y), Height (Z) in meters
-    pub color_rgba: [f32; 4],    // Distinct muted debug/blockout tint
-    pub high_blocker: bool,      // True for 1.45m+ retail shelves / tall coolers
-    pub label: &'static str,     // Human-readable name for gallery/inspector
-}
-
-```
-
-```rust
-// --- world/archetypes/mod.rs ---
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WallPreference {
-    AnyWall,
-    ExteriorWall,
-    InteriorWall,
-    UnderWindow,        // Prefer edge with a window (e.g. kitchen sink)
-    AvoidWindow,        // Forbid blocking a window (e.g. fridge, bookcase, wardrobe)
-    OppositeOf(&'static str), // Face across the room from an already-placed prop_id (e.g. TV opposite sofa)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlacementStrategy {
-    /// Pass 1: Hug a wall segment, facing inward into the room.
-    WallHug {
-        pref: WallPreference,
-        /// Optional: repeat continuously along the wall (e.g. kitchen counters, perimeter freezers).
-        run_length: Option<(u8, u8)>, // (min_tiles, max_tiles)
-    },
-    /// Pass 1b (Retail): Parallel interior runs aligned to pillar/room axis with fixed aisle gaps.
-    AisleGrid {
-        aisle_width: u8,     // Minimum clear walking tiles between runs (e.g. 2)
-        cross_aisle_margin: u8, // Clear tiles at ends of runs (e.g. 2..3)
-        endcap_prop: Option<&'static str>, // e.g. Some("ASSET_TODO_GONDOLA_ENDCAP")
-    },
-    /// Pass 2: Spawn relative to a parent prop's local coordinate frame (rotated by parent facing).
-    AnchorChild {
-        parent_prop: &'static str,
-        /// Local (right, forward) tile offsets relative to parent anchor.
-        offsets: &'static [(i8, i8, RelativeFacing)],
-    },
-    /// Pass 3: Free-standing placement in open floor space (respects WALK_SPINE & DOOR_APRON).
-    FloorOpen {
-        prefer_corner: bool,
-        min_wall_clearance: u8,
-    },
-    /// Layered attachment on top of an existing prop or wall (Phase 2 CellAttachment).
-    Attachment {
-        layer: AttachmentLayer, // CounterTop, WallMount, Ceiling
-        host_prop: Option<&'static str>, // None = any valid wall/ceiling
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RelativeFacing {
-    SameAsParent,
-    TowardParent,     // e.g. dining chairs facing table, desk chair facing desk
-    OppositeParent,   // e.g. coffee table or TV facing sofa
-    Perpendicular,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct PropPlacementRule {
-    pub prop_id: &'static str,     // Existing converted mesh id OR "ASSET_TODO_*"
-    pub strategy: PlacementStrategy,
-    pub count: (u8, u8),           // (min_required, max_allowed)
-    pub chance: f32,               // 0.0..=1.0 (evaluated per extra instance after min_required)
-    pub priority: u8,              // Higher runs first (100 = hero fixture, 50 = cluster, 10 = clutter)
-    pub loot_table: Option<&'static str>, // e.g. Some("loot.kitchen_fridge")
-    pub readable_pool: Option<&'static str>, // Optional Phase 2 Read lore tag
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct RoomFurnishRule {
-    pub room_kind: RoomKind,
-    pub min_walk_spine_width: u8,  // 1 for houses, 2 for retail/public
-    pub rules: &'static [PropPlacementRule],
+enum PlacementStrategy {
+    WallRun { preference: WallPreference, segments: (u8, u8) },
+    AisleRun { clear_gap: u8, end_margin: u8, endcap: Option<PropId> },
+    RelativeTo { parent: RuleKey, offsets: &'static [LocalPropOffset] },
+    FloorOpen { min_wall_clearance: u8, prefer_corner: bool },
+    Attachment { layer: CellAttachment, host: RuleKey },
 }
 ```
 
----
+1. Order by dependency first. Among ready candidates, place required fixtures and their support hosts before optional clusters or clutter. Break ties by descending priority and then stable rule key. Reject cycles during validation. A child with an optional absent parent is skipped. A required missing host fails the layout candidate.
+2. Enumerate wall segments, aisle centerlines, or floor cells in stable order. Rotate `PropDef.span` and test the whole footprint and collider envelope. Reserve windows for lighting where requested. Keep clear sweep space for container states and a reachable interaction position. Attachments validate their host surface and vertical bounds. Their horizontal overlap with the host is intentional, and they must fit without blocking the approach.
+3. Use relative offsets from the placed parent's pivot and rotated bounds. Derive chair locations around the actual edge of the table. Prefer a TV on the stand opposite the sofa, with a coffee table between and a clear walking lane around the seating group. Use typed `PropId` alternatives for bed sizes. Match the actual selected parent through its placement key.
+4. Search a small number of deterministic arrangements if required fixtures fail. Validate a fallback with the same tests. Skip optional clutter when it would close a route and record the reason in fixture diagnostics. Keep contextual loot overrides in instance data only where the runtime supports them. Model closed/opened as container state, and use container-capable IDs. Where an asset has no container behavior, put loot in a nearby supported crate or box until gameplay support is added.
+
+| Room | Required fixtures and placement | Optional variation |
+| --- | --- | --- |
+| Kitchen | Sink, stove and fridge on usable wall run, with an open interaction approach. Prefer sink under window. Use base cabinets to fill continuous gaps. | Small dining group where it fits, countertop clutter, pantry box. |
+| Living room | Sofa plus usable seating area. Space for facing TV and coffee table with a path around the group. | TV stand/module, attached TV, bookcase, rug and readable note. Use a stand that supports the TV if it is placed. |
+| Bedroom | Bed against a wall with accessible approach. Choose double or single by actual rotated footprint. | Nightstands, wardrobe, desk with chair, journal. |
+| Bathroom | Toilet and sink with reachable fixture approaches. A bath or shower in each primary residential bathroom. | First-aid kit on a compatible host. A compact secondary WC may omit a bath. |
+| Garage and porch | Keep driveway/garage opening and public porch path clear. Anchor porch rails to exposed edges. | Crates, unoccupied parking position, porch chairs and mailbox. |
+
+Use these initial rule bounds for the residential fixture. Counts apply per eligible room. Each placement still goes through the full span, host and approach checks.
+
+| Group | Starting ranges and placement order |
+| --- | --- |
+| Kitchen wall run | Place 1 sink, 1 stove and 1 fridge before 2–5 cabinet segments where the wall fits. Try the sink/window alignment first, then a clear adjacent wall. For a dining group, place 1 table and sample up to 4 chairs on its open sides. |
+| Seating group | Try 1 sofa against an interior wall, 1 facing stand and 1 attached TV, then 1 coffee table. Place up to 2 bookcases and 2 boxes only after the circulation check. |
+| Bedroom cluster | Place 1 bed and try up to 2 nightstands using the selected bed's bounds. Add at most 1 wardrobe and 1 desk/chair cluster. Use the desk's supported opened state if searchable. |
+| Bathroom and entry | Place 1 toilet and 1 sink, then a primary bath fixture with a usable entry. Fit the bath footprint before accepting the room dimensions. Try at most 1 attached first-aid kit. Reserve the porch entry and garage approach before trying 0–2 porch chairs or up to 4 garage crates. |
+
+### Grocery and gas station
+
+**Grocery.** Reserve a wide arterial-facing parcel with front parking and an independent rear service approach. Start with one floor. Lay out a shallow vestibule and checkout zone, open sales floor, and rear stockroom/public restrooms. A front strip around 4 tiles and rear strip around 6 tiles are starting points subject to actual clearance. Allocate a walkable connection from the sidewalk and parking to the main entrance. Position a cart bay out of the vestibule path and reserve a separate loading approach.
+
+- Reserve main cross-aisles at 3 clear tiles and shelf aisles at 2 before placing pillars or shelf modules. Use a repeating 6-tile starting pitch for load-bearing columns. Align columns with shelving bays where feasible and check support and navigability after final placement. Skip a shelf segment where a column, door approach or cross-aisle needs the space.
+- Build checkout rows with `PropId::CheckoutLane` on the floor and `PropId::CheckoutTill` attached to a compatible countertop location. Use `PropId::GondolaShelf` modules for repeatable 1.45 m tall cover. Use endcaps and perimeter coolers to give the store a recognizable layout. Place accessible stockroom boxes for grocery loot. Test line of sight and cover through the real colliders.
+- Provide an exterior identity sign, aisle markers, a WC plaque, and a Read interaction for at least one store notice. Use the actual public route from door to sales floor, checkout and restroom in acceptance. Check the separate rear route to stockroom and loading dock.
+
+**Gas station.** Use one parcel with two placed structures, the mart and open-sided canopy, plus driveway apron, signs and pump islands in the outdoor layer. Start from a roughly 22 × 18 tile lot and expand or pick a larger lot if the route and fixtures do not fit. Connect the highway to an entry and exit or a validated turnaround. Prove a drivable path past one pump island with parked vehicles in their permitted slots. Keep a distinct walking route to the store. Inside, place a checkout lane or clerk counter and attached till, a short snack aisle, perimeter coolers and a public WC. Put the price pylon outside the driving envelope. Use separate parking slots for static props and drivable vehicles and route drivable placement through existing vehicle ownership.
 
-## 4. Key Algorithms
+### Town geography and frontage
 
-### Algorithm 1: Organic Town Accretion & Highway Network (`world/geography.rs`, `world/town_planner.rs`)
+1. **Preliminary natural terrain.** Separate or expose a deterministic natural-height, water and slope sample from the current relief pipeline. Today `World::new` plans roads and pads before final relief. First produce the natural suitability field, then select routes and pads, then apply final road grades, bridge decks, and foundation blending. Reject or reroute access if final grades or transitions fail runtime checks. Keep world size and chunk coordinates in Phase 3 stable.
+2. **Connected roads.** Start with a highway ribbon and a collector to a residential street or satellite cluster. Represent the network as connected nodes and edges with road class, centerline, width and bridge spans. Start with arterial, collector, local and trail classes. Route necessary connections on a coarse grid, such as 16 tiles, with explicit stable queue tie-breaks. Expand and grade the route on the fine grid, then validate the full paved corridor. Cross rivers at short validated bridge spans with connected approaches. Keep unbuildable sites and water crossings out of ordinary road candidates.
+3. **Grow blocks along roads.** Expand from the commercial core through candidate frontages scored by flatness, dry buildable area, distance from center and connection to the arterial. Increase density near the core and break up the fringe with T-junctions, park space and a turnaround. A detached residential pocket gets a collector branch, trees or fields along the approach, and a real route back to town. Keep lot placement subordinate to the road network.
+4. **Split usable frontage.** Keep lots cardinal and use snapped cuts perpendicular to the frontage for standard through-depth splits. Require each accepted child to retain a minimum road-facing interval and sufficient buildable area after setbacks. Reject landlocked remainders. Begin with residential lots around 12–18 tiles wide and 14–22 deep, with at least 8 tiles of usable frontage. Grocery and gas lots use their own fit checks. Validate road crossings and frontage on the final raster and require non-overlapping dry lots.
+5. **Assign landmarks and variants.** Reserve sites for the starting residential district, grocery, gas station, and the existing downtown, police, hospital and cabin content. Keep civic sites near the downtown–residential seam and connected to arterials. Choose crossroads where two arterials meet, split-bank where both banks support development and a bridge, and bay/lakeshore where a dry setback and feasible grades allow a contour road. Fall back to a viable morphology if terrain rejects a candidate. Maintain local fixtures that force each morphology for review.
+6. **Validate access.** Run road connectivity from the starter approach through every required district. Continue on foot from roads to actual public doors. Check swept motorcycle routes over the primary highway, a bridge when present, turns, grade transitions and both retail approaches. Inspect the final route with vegetation, signs, parked vehicles and sidewalk dressing applied. Keep regional town stops sparse and purposeful. A small subdivision need not contain grocery or fuel services of its own.
 
-1. **Regional Spine (Highways):** Connect map edges and major town seeds with gently curved, terrain-aware polylines (A* on a coarse 16-tile grid penalizing steep slopes and water crossings, keeping bridge crossings short and perpendicular).
-2. **Town Morphology Selection:** Pick morphology from local geography around each town seed:
-* *Riverfront Split-Bank:* Main street parallel to river + 1–2 bridges connecting commercial bank and residential bank.
-* *Highway Ribbon:* Commercial strip + motels/gas stations hugging the highway, with residential streets branching perpendicularly behind.
-* *Bay/Lakefront:* Crescent waterfront road with civic/commercial core and hillside residential tiers.
-* *Crossroads:* Classic 2-arterial intersection with downtown core tapering into subdivisions.
+## 3. Asset reuse and placeholders
 
+The checked-in [converted manifest](../assets/living-buildings/converted/manifest.json) lists 34 prototypes or states at the review commit. Gameplay uses [`PropId` and `PropDef`](../crates/zombiebox-core/src/action/prop_catalog.rs). The [mesh library](../crates/zombiebox-render3d/src/mesh/library.rs) selects the appropriate prototype for each state. Build the registry check against those interfaces.
 
-3. **Contour-Hugging Block Accretion:**
-* Seed 1–2 core commercial blocks at the town anchor.
-* Maintain a priority queue of candidate adjacent blocks (scored by flatness, distance to core, and alignment to river/highway tangent).
-* Pop and place blocks until the town's target block budget is reached, rejecting blocks that overlap water or exceed slope threshold.
-* **Separated Subdivisions:** Spawn 1–3 detached residential clusters 12–24 tiles off secondary roads, connected by a single collector road ending in a **cul-de-sac loop/bulb** (`6×6` turnaround pad).
+| Reuse | Application |
+| --- | --- |
+| Existing Phase 2 furniture and fixtures | Sofa, coffee table, table/chairs, beds, desk, bookcase, TV, kitchen modules, fridge, bath fittings, crates, boxes and static cars. Check gallery-scale fit, facing and support. |
+| Procedural `GondolaShelf` and `CheckoutLane`, existing `CheckoutTill` | Compose retail aisles and lanes from the existing geometry. Attach the till through the existing countertop layer. |
+| Existing mailbox, fence and street dressing | Reuse its IDs, authored geometry or existing dressing path where fit has been verified. Adapt rails from the edge/fence system where possible. |
+| Phase 2 signs and Read | Identity signs, WC pictograms, aisle marks, notes and price pylon text. Use the existing sign geometry and readable ID transport. |
 
+For a true gap, add one stable gameplay ID and a searchable visual TODO in the same package that needs it. `PropDef` owns span, physical bounds, collision, cover, materials and gameplay capability. The fallback visual uses those same bounds and the mesh library's normal pivot and facing. Use a distinct muted tint in preview, and verify that swapping the mesh leaves gameplay placement, cover and persistence intact. Preferred assets should have readable silhouettes and muted palettes at gameplay zoom.
 
-4. **Rule-Constrained OBB Lot Subdivision:**
-* For each block, recursively split along its longest axis (with small seeded jitter `±15%`) until child lots satisfy zone constraints:
-* *Residential:* width `12..18`, depth `14..22`, **must** retain ≥8 tiles of road frontage.
-* *Grocery/Retail:* reserve an entire block or half-block (`28..40` × `24..34`) with front parking lot + rear alley/loading access.
-* *Highway Gas Station:* snap directly to highway frontage (`22×18` lot) at town outskirts and rural highway junctions.
+| Gap | Starting size in meters (width × depth × height) | Initial handling |
+| --- | --- | --- |
+| Gondola endcap | 1.0 × 0.9 × 1.45 | Adapt shelf kit geometry, keep `HighBlocker` when the collider warrants it. |
+| Glass cooler/freezer | 2.0 × 0.9 × 2.0 | Perimeter module with visible panel framing, high cover. |
+| Stockroom rack | 2.0 × 1.0 × 2.2 | Shelf-kit variant or placeholder, high cover. Keep loot in supported containers until rack interactions exist. |
+| Fuel pump | 0.9 × 0.7 × 1.65 | Placeholder with a recognizable dispenser silhouette and a tested driving envelope. |
+| Convenience counter | 2.0 × 0.9 × 1.05 | Reuse the checkout lane or counter when suitable, or add a countertop-compatible module. |
+| Wardrobe | 1.0 × 0.6 × 1.85 | Optional tall fixture. Reuse cabinet geometry if fit matches. |
+| Nightstand | 0.5 × 0.5 × 0.6 | Optional bedside module. Prefer an existing table or cabinet when suitable. |
+| Porch rail | 1.0 × 0.15 × 0.95 | Edge-mounted module. Leave porch entry and stair apron clear. |
+| Dumpster | 2.0 × 1.2 × 1.35 | Optional service-yard cover. Choose cover class by runtime behavior and test approach. |
 
+## 4. Agent work packages
 
+Give each agent its package, the shared contracts above, and the previous handoff. Each package should compile after merge. Tests and fixtures travel with the code they exercise. A package owns its listed files and may make minimal module-registration changes. Coordinate overlapping ownership in merge order. In handoff, record the fixture selector, seeds and orientations, actual commands and results, new interfaces, and any open findings. Use named targeted tests for intermediate merges and the workspace suite for final sign-off.
 
+| WP | Outcome | Depends on |
+| --- | --- | --- |
+| 3.1 | One county lot streams a blueprint through the normal runtime | — |
+| 3.2 | Furnished Craftsman, playable at the first milestone | 3.1 |
+| 3.3 | Ranch on the same street and two-floor support fixture | 3.2 |
+| 3.4 | Reusable layout fitting and the Colonial | 3.3 |
+| 3.5 | Stepped split-level and duplex | 3.4 |
+| 3.6 | Open-span grocery | 3.3 |
+| 3.7 | Two-structure gas station | 3.6 |
+| 3.8 | Natural terrain input and one connected highway-ribbon town | 3.3 |
+| 3.9 | Retail lots, frontage splitting, regional access and outdoor dressing | 3.5, 3.7, 3.8 |
+| 3.10 | Crossroads, split-bank and lakeshore variations | 3.9 |
+| 3.11 | County cutover, Army Base retirement and release verification | 3.10 |
 
+WP 3.8 can run in parallel with retail after WP 3.3. Keep housing and retail PRs independent where possible. Serialize any changes to shared furnishing, archetype registration or catalog files.
 
-### Algorithm 2: Wing Massing & Topology-First Floorplan (`world/massing.rs`, `world/floorplan.rs`)
+### WP 3.1 — Blueprint-to-county handoff
 
-1. **Massing Composer:** Build the footprint from 1–3 axis-aligned rectangles tagged with `WingId` and `floor_count`:
-* *Craftsman Bungalow:* `1F` main rect + `WingId(1)` recessed front porch strip.
-* *L-Wing Suburban Ranch:* `1F` main living wing + protruding `WingId(1)` garage wing facing the driveway.
-* *Center-Hall Colonial:* `2F` symmetric box with central `1F`/`2F` foyer/hallway and staircase.
-* *Stepped Split-Level:* `WingId(0)` (`1F` living/kitchen) + `WingId(1)` (`2F` bedroom stack with per-cell gable roof on both heights).
-* *Side-by-Side Duplex:* Mirrored twin units sharing a solid party wall (`WingId(0)` and `WingId(1)`).
+- **Owns** `world.rs`, `world/parcels.rs`, new `world/blueprint.rs`, the registration seam in `world/archetypes/mod.rs`, and `action/county.rs`.
+- **Build** an opt-in existing-lot fixture with one authored blueprint room, one exterior door and one known Phase 2 prop. Add parcel dispatch, a local-to-world transform, and one materialization entry point. Keep the legacy parcel fallback. Connect the blueprint to planned pads, live floor cells, support/roof fields, explicit door axes, and stable prop and building ownership. Start with the data required by this fixture and add shared fields as downstream packages prove their use.
+- **Accept** an asymmetric fixture in all four orientations. Check opening tangent, rotated footprint and pivot, roof/structure ownership, and the runtime bilateral door sweep. Force a seam-crossing prop and reverse the order of streaming the neighboring chunks. Compare owner, footprint and placement IDs. Revisit the fixture and check exactly one prop instance.
+- **Hand off** the fixture selector, coordinate examples including an even-sized span, and the names of the parcel, placement and validation entry points.
 
+### WP 3.2 — First furnished Craftsman
 
-2. **Room Allocation (Graph-First Constrained BSP):**
-* Stamp fixed anchor rooms first: **Porch/Foyer** on street face, **Garage** on driveway wing, **Stairwell** in multi-story cores (aligned across `F0` and `F1`).
-* Partition remaining interior cells by slicing along the longest axis, assigning rooms from the archetype's weighted `RoomSpec` list (`LivingRoom` adjacent to `Foyer`, `Kitchen` adjacent to `LivingRoom`/exterior wall, `Bedroom`s and `Bathroom` off hallway or private zone).
-* If any room lacks a path to `Foyer` without passing through a `Bedroom` or `Bathroom`, carve a 2-tile-wide **Hallway** along the shared interior spine.
+- **Owns** `world/archetypes/houses.rs`, `world/furnish.rs`, and the first residential fixture.
+- **Build** arrangement A with the current county frontage, main mass and porch, one furnished kitchen, living room, bedroom and primary bath. Begin with authored room masks and deterministic wall/relative placement using existing IDs. Include one supported searchable container and one readable. Use the seed-based decision and placement rules in Sections 1–2.
+- **Accept** live entry and room traversal in isometric and a street-level camera, reachable fixture interactions, correct cutaways, and the bilateral capsule sweep. Open a container with zero chunk rebuilds, breach a wall, leave streaming range and revisit. Record that both states persist. Capture a street view and a furnished interior from the same seed.
+- **Hand off** a working fixture plus the prop approach and room-circulation APIs. Record fit or device findings for the release review.
 
+### WP 3.3 — Ranch and shared street
 
-3. **Mandatory `3×3` Doorway Stencil (Phase 1 Invariant):**
-* For every interior and exterior door in `doors`: record explicit `DoorAxis` (`NorthSouth` or `EastWest`), mark the 2 jamb tiles as solid wall, and flag the 2×3 front/back apron cells with `ReserveFlags::DOOR_APRON`.
-* Reject or shift any door placement whose apron intersects a perpendicular wall, stairwell, or another door's jamb—guaranteeing the 64-seed `0.23m` swept-capsule test passes out of the box.
+- **Owns** `world/archetypes/houses.rs`, `world/massing.rs`, residential fixture dressing and the small two-floor fixture. Extend `world/furnish.rs` as needed for shared placement.
+- **Build** the ranch garage wing and driveway, place it next to the Craftsman, and add the second arrangement for each family. Write the smallest shared footprint-mask helper that supports both. Keep vehicle and pedestrian reservations separate. Use the two-floor fixture to wire aligned stairs, landing reservations, roof and supporting cells into the live path.
+- **Accept** street-side recognition of the two houses by approach, massing and roofline. Walk the garage connection and both directions on the stairs. Verify support loss follows existing collapse rules and entering a wing cuts away the correct roof. Confirm the two dwelling entries remain clear with a parked car.
+- **Hand off** the first reference street for visual and performance comparison.
 
+### WP 3.4 — Room-fit solver and Colonial
 
+- **Owns** `world/floorplan.rs`, residential `world/massing.rs` and `world/archetypes/houses.rs`.
+- **Build** the bounded arrangement selector, bay cuts, common-space and landing reservations, and shared-wall opening candidates. Convert the first two house families to use these helpers where the fit remains equivalent. Add both Colonial layouts and their supported upper floors. Use a compact authored fallback when a feasible lot cannot fit the preferred arrangement.
+- **Accept** multi-seed and four-orientation fit for representative small, typical and large compatible lots. Verify required fixtures, exterior access, public-to-private circulation, two-way stair traversal and fallback behavior. Assert that the layout is stable when loot changes.
 
-### Algorithm 3: Open-Span Retail & Column Grid (`world/archetypes/retail.rs`)
+### WP 3.5 — Stepped split-level and duplex
 
-For the **Grocery Store** (and future warehouses/civic halls):
+- **Owns** residential definitions and the house family test matrix.
+- **Build** both arrangements per family. Use the shared stair/link contract for the stepped house and distinct unit, room, wing and entry ownership for the duplex. Add any needed small frontage helpers for paired entries.
+- **Accept** all five families across seeds `0..63` and four orientations at blueprint level. Verify their archetype-specific topology and required furnishing. Run live stair and wing-cutaway checks for stepped houses and check both duplex entrances and the intact party wall. Replay seam placements and compare normalized plan output.
 
-1. Do **not** run residential BSP on the sales floor. Instead, partition the building into 4 macro-zones:
-* Front strip (`depth 4`): **Entrance Vestibule** + **Checkout Lanes** (parallel conveyor/till rows spaced 3 tiles apart) + **Shopping Cart bay**.
-* Center span (`65%` of area): **Sales Floor** with a regular `TileKind::Pillar` structural grid (every 6×6 tiles) so Phase 1/2 structural overhang collapse still works if pillars are destroyed.
-* Rear strip (`depth 6`): **Stockroom**, **Loading Dock** (exterior roll-up bay + crate stacks), and **Public Restrooms** (with Male/Female/WC relief plaques via `signage.rs`).
+### WP 3.6 — Open-span grocery
 
+- **Owns** `world/archetypes/retail.rs`, retail fixture, and approved shared prop additions in `action/prop_catalog.rs` and renderer `mesh/{library,kit}.rs`.
+- **Build** grocery zones, walkway reservations, pillar grid, floor lanes with attached tills, shelf runs, rear service approach, WC, and signage. Start with an existing road-front fixture lot. Reuse the kit shelf and lane before adding any new visual.
+- **Accept** public path from sidewalk and parking to the main entrance, checkout and WC. Verify independent rear access, full clear aisle widths, real shelf occlusion, support behavior and an accessible looted fixture. Check that open till bounds and carts leave the approach usable. Capture interior and frontage views.
 
-2. Generate parallel **Gondola Aisle Runs** (`HighBlocker` 1.45m shelves) aligned with the pillar grid, guaranteeing 3-tile-wide main cross-aisles and 2-tile-wide shelf aisles with endcap displays and overhead aisle number signs.
+### WP 3.7 — Highway gas station
 
-### Algorithm 4: Hierarchical Wall-Hugging Furnishing Solver (`world/furnish.rs`)
+- **Owns** retail compound definitions and gas station fixture. Coordinate with the catalog owner for a pump or counter addition.
+- **Build** independent mart and canopy placements on one parcel, paths and pump islands, test vehicle slots, a sign pylon, and a fixture driveway connected to a current road. Share checkout and shelf rules with the grocery. Keep open canopy cells outdoor and emit roof support through the common blueprint.
+- **Accept** a drive in, pass a pump, and exit or turn around with normal parking populated. Walk through the public path to the WC, read a sign, approach the till and stream away and back. Verify the two structures and each parked vehicle keep one stable identity. Hand off minimum feasible frontage, depth, and access parameters to WP 3.9.
 
-Run per room after all walls, windows, and `DOOR_APRON`s are finalized:
+### WP 3.8 — Natural terrain and highway-ribbon town
 
-1. **Reserve Navigation Spine:** Compute a shortest path (BFS) connecting all doors in the room; mark those cells `ReserveFlags::WALK_SPINE` (width 1–2 tiles).
-2. **Pass 1 — Wall-Hugging Fixtures:** Place wall-anchored props (`kitchen_cabinet`, `kitchen_stove`, `kitchen_fridge`, `bed_double`, `bathtub`, `toilet`, `bookcase`, `desk`, `television`) facing inward along unreserved wall segments. Prefer `kitchen_sink` under a window edge; forbid tall props (`bookcase`, `fridge`) from blocking windows.
-3. **Pass 2 — Anchor-Child Clusters:** When a parent prop spawns, evaluate its child offsets (`table` → 2–4 `chair`s tucked around open sides; `desk` → `chair_desk` in front; `lounge_sofa` → `table_coffee` 1 tile forward facing `television`; `kitchen_cabinet` → `CounterTop` clutter).
-4. **Pass 3 — Floor & Outdoor Fill:** Place free-standing props (`cardboard_box`, `crate`, `shopping_cart`, `first_aid_kit`) in remaining open corners and outdoor slots (driveway `car`, porch chairs, loading dock crates).
-5. **Contextual Loot & Readables:** Bind container props (`fridge`, `desk`, `bookcase`, `cardboard_box`, `checkout_till`) to room-appropriate loot tables and seed 1–2 readable notes/store flyers/signs per structure using Phase 2's `Read` transport.
+- **Owns** `world.rs`, `world/geography.rs`, `world/relief.rs`, and new `world/town_planner.rs`.
+- **Build** natural terrain inputs, road graph and raster, highway ribbon, collector and residential cul-de-sac on an opt-in seed fixture. Use explicit tie-breaks, grade and water checks, and retain `ValleyMeta` or its replacement for terrain/bridge code. Put the first residential street on a reachable dry block.
+- **Accept** stable road hashes and routes from spawn to the primary arterial and residential street. Drive a motorcycle through the grades, junction and turnaround. Run the existing terrain seam and raycast checks. Record a clean pre-change baseline and diagnose any changed terrain failure before handing off.
+- **Hand off** frontage and lot input APIs, road classes, sampling units and route fixture coordinates.
 
-### Room Furnishing Rule Tables (WP 3.3–3.5 Reference)
+### WP 3.9 — Zoning, retail frontage and dressing
 
-#### Solver Execution Contract (`world/furnish.rs` — WP 3.3)
+- **Owns** lot subdivision in `world/town_planner.rs`, the outdoor layer consumption in `world/dressing.rs`, and the town fixture.
+- **Build** frontage-preserving lots, regional grocery and highway gas sites, park or undeveloped fringe, and the detached residential connector. Preserve connected civic/downtown/cabin lots through the adapter. Stamp sidewalk, driveway, parking, loading apron, safe vegetation, and signs from parcel plans. Keep lots and road corridors disjoint except at explicit access connectors.
+- **Accept** across the seed corpus that built lots are dry and non-overlapping, every required landmark is reachable from spawn, and the actual grocery and gas accesses work on foot and by motorcycle as applicable. Rerun after dressing and parking. Verify users can visually distinguish an entrance, a loading dock, and a private driveway.
 
-To keep lightweight subagents on rails, `furnish_room()` executes rules strictly in **descending `priority` order** with these hard invariants:
+### WP 3.10 — Other town morphologies
 
-1. **Before any prop is placed:** Run BFS between all doors in `RoomMeta`; stamp `ReserveFlags::WALK_SPINE` (dilated to `min_walk_spine_width`). Never overwrite `DOOR_APRON` or `WALK_SPINE`.
-2. **Multi-tile check:** Query `PropSpan` from `prop_catalog.rs`, rotate by candidate facing, and verify every footprint cell is inside `room_id`, unoccupied, and not reserved.
-3. **Graceful fallback:** If `min_required` cannot fit (e.g. tiny bathroom), log a non-fatal placement miss in debug telemetry and continue—never panic or violate `DOOR_APRON`.
-4. **Containers & Readables:** Any prop with `loot_table: Some(..)` spawns in its `closed` mesh variant (e.g. `kitchen-fridge-closed`, `desk-closed`) so Phase 2's container-open swap works automatically.
+- **Owns** morphology selection and candidate generation in `world/town_planner.rs` and bridge/terrain integration in `world/geography.rs` and `world/relief.rs`.
+- **Build** crossroads, riverfront split-bank, and bay/lakeshore layouts on the shared graph, frontage and grading contracts. Use validated bridges for cross-bank access. Preserve dry shore setbacks and useful dead ends. Record eligibility and fallback diagnostics.
+- **Accept** fixed review fixtures for each morphology, plus multi-seed topology/access regression. Drive a bridge and its approaches, and traverse dry foot routes on both banks. Inspect terrain seams and use canonical plan hashes to check repeatability. Confirm in a map view that the road hierarchy and town shapes differ visibly.
 
-#### Residential House Rules (`world/archetypes/houses.rs` — WP 3.4)
+### WP 3.11 — County cutover and release checks
 
-| `RoomKind` | Priority | `prop_id` | Strategy | Count | Loot / Notes |
-| --- | --- | --- | --- | --- | --- |
-| **Kitchen** | 100 | `kitchen-sink` | `WallHug { UnderWindow }` | `1..1` | Falls back to `ExteriorWall` if no window |
-|  | 95 | `kitchen-stove-electric` | `WallHug { ExteriorWall }` | `1..1` | Adjacent to sink/counter run |
-|  | 90 | `kitchen-fridge-closed` | `WallHug { AvoidWindow }` | `1..1` | `loot.kitchen_food` |
-|  | 80 | `kitchen-cabinet` | `WallHug { AnyWall, run: 2..5 }` | `2..5` | Fills gaps along counter wall; `loot.kitchen_pantry` |
-|  | 60 | `table` | `FloorOpen { corner: false, clear: 1 }` | `0..1` | Only if room ≥ 4×4 |
-|  | 55 | `chair` | `AnchorChild { parent: "table", TowardParent }` | `2..4` | Offsets: `(±1, 0)`, `(0, ±1)` |
-| **LivingRoom** | 100 | `lounge-sofa` | `WallHug { InteriorWall }` | `1..1` | Hero anchor |
-|  | 90 | `television-vintage` | `WallHug { OppositeOf("lounge-sofa") }` | `1..1` | Faces sofa across room |
-|  | 85 | `table-coffee` | `AnchorChild { parent: "lounge-sofa", SameAsParent }` | `1..1` | Offset: `(0, +1)` in front of sofa |
-|  | 60 | `bookcase-closed-doors` | `WallHug { AvoidWindow }` | `0..2` | `loot.residential_misc`; `readable.house_notes` |
-|  | 30 | `cardboard-box-closed` | `FloorOpen { corner: true, clear: 0 }` | `0..2` | `loot.residential_clutter` |
-| **Bedroom** | 100 | `bed-double` / `bed-single` | `WallHug { AvoidWindow }` | `1..1` | `bed-double` if room ≥ 4×4, else `bed-single` |
-|  | 85 | `ASSET_TODO_NIGHTSTAND` | `AnchorChild { parent: "bed-*", SameAsParent }` | `1..2` | Offsets: `(-1, 0)`, `(+1, 0)`; `loot.bedside` |
-|  | 80 | `ASSET_TODO_WARDROBE` | `WallHug { AvoidWindow }` | `1..1` | `loot.clothing` |
-|  | 60 | `desk-closed` | `WallHug { UnderWindow }` | `0..1` | `loot.desk_drawer`; `readable.journal` |
-|  | 55 | `chair-desk` | `AnchorChild { parent: "desk-closed", TowardParent }` | `0..1` | Offset: `(0, +1)` |
-| **Bathroom** | 100 | `bathtub` | `WallHug { AvoidWindow }` | `1..1` | Skip if room < 3×3 |
-|  | 95 | `toilet` | `WallHug { InteriorWall }` | `1..1` | — |
-|  | 90 | `bathroom-sink` | `WallHug { AnyWall }` | `1..1` | `loot.medicine_cabinet` |
-|  | 40 | `first-aid-kit` | `Attachment { CounterTop, Some("bathroom-sink") }` | `0..1` | `chance: 0.35`, `loot.medical_basic` |
-| **Garage** | 90 | `car` | `FloorOpen { corner: false, clear: 1 }` | `0..1` | `chance: 0.65`, aligned to garage door |
-|  | 60 | `crate` | `WallHug { AnyWall }` | `1..4` | `loot.tools_hardware` |
-|  | 40 | `cardboard-box-closed` | `WallHug { AnyWall }` | `1..3` | `loot.residential_clutter` |
-| **Porch** | 80 | `ASSET_TODO_PORCH_RAIL` | `WallHug { ExteriorWall, run: 2..8 }` | `2..8` | Perimeter edges except door apron |
-|  | 40 | `chair` | `FloorOpen { corner: true, clear: 0 }` | `0..2` | Faces street |
+- **Owns** final gating and `GENERATOR_VERSION` in `world.rs`, legacy parcel dispatch and site cleanup, `action/county.rs`, and county integration checks.
+- **Build** default dispatch for Phase 3 houses, grocery, gas and geography after fixture acceptance, and preserve current civic, downtown and cabin content through the adapter. Remove active Army Base landmarks, military lots, special materialization and obsolete tests together. Clean up the 4-quadrant paths only for migrated content. Update seed fixtures that intentionally change, documenting their new coordinates and keeping their assertions about behavior.
+- **Accept** all final checks below. Keep the opt-in path until the furnished-scene and handset review is complete. Record generator-version handling, test results and scene evidence in the handoff.
 
-#### Retail & Highway Service Rules (`world/archetypes/retail.rs` — WP 3.5)
+## 5. Final verification
 
-| `RoomKind` | Priority | `prop_id` | Strategy | Count | Loot / Notes |
-| --- | --- | --- | --- | --- | --- |
-| **CheckoutZone** | 100 | `assisted-checkout-till-closed` | `AisleGrid { aisle: 2, margin: 2, endcap: None }` | `2..5` | Parallel checkout lanes; `loot.register` |
-|  | 60 | `shopping-cart` | `WallHug { ExteriorWall, run: 2..4 }` | `2..4` | Vestibule cart corral |
-| **SalesFloor** | 100 | `ASSET_TODO_GLASS_FREEZER` | `WallHug { ExteriorWall, run: 3..8 }` | `4..12` | Perimeter coolers; `loot.grocery_cold` |
-|  | 90 | `ASSET_TODO_GONDOLA_SHELF` | `AisleGrid { aisle: 2, margin: 3, endcap: Some("ASSET_TODO_GONDOLA_ENDCAP") }` | `6..24` | `HighBlocker` stealth cover; `loot.grocery_dry` |
-|  | 30 | `shopping-cart` | `FloorOpen { corner: false, clear: 0 }` | `1..3` | Abandoned in cross-aisles |
-| **Stockroom** | 95 | `ASSET_TODO_STOCKROOM_RACK` | `WallHug { AnyWall, run: 2..6 }` | `2..6` | `HighBlocker`; `loot.grocery_bulk` |
-|  | 70 | `crate` | `FloorOpen { corner: true, clear: 0 }` | `3..8` | Stacked near loading bay; `loot.grocery_bulk` |
-|  | 50 | `cardboard-box-closed` | `FloorOpen { corner: false, clear: 0 }` | `2..6` | `loot.grocery_dry` |
-| **PublicRestroom** | 100 | `toilet` | `WallHug { InteriorWall }` | `1..2` | Exterior door gets `signage.rs` WC plaque |
-|  | 90 | `bathroom-sink` | `WallHug { AnyWall }` | `1..2` | — |
-| **ConvenienceStore** (Gas Station) | 100 | `ASSET_TODO_CONVENIENCE_COUNTER` | `WallHug { InteriorWall, run: 2..3 }` | `2..3` | Behind front window |
-|  | 95 | `assisted-checkout-till-closed` | `Attachment { CounterTop, Some("ASSET_TODO_CONVENIENCE_COUNTER") }` | `1..1` | `loot.register` |
-|  | 85 | `ASSET_TODO_GLASS_FREEZER` | `WallHug { AvoidWindow, run: 2..4 }` | `2..4` | Rear wall drink coolers; `loot.grocery_cold` |
-|  | 75 | `ASSET_TODO_GONDOLA_SHELF` | `AisleGrid { aisle: 2, margin: 2, endcap: None }` | `2..4` | 2 short snack aisles; `loot.grocery_dry` |
-| **FuelCanopy** (Outdoor) | 100 | `ASSET_TODO_FUEL_PUMP` | `AisleGrid { aisle: 4, margin: 2, endcap: None }` | `2..4` | 4-tile drive-through lanes under canopy |
-|  | 40 | `car` | `FloorOpen { corner: false, clear: 1 }` | `0..2` | Parked beside pumps (`chance: 0.5`)
+| Check | Pass condition |
+| --- | --- |
+| Doorways and runtime navigation | Run `cargo test -p zombiebox-core --lib generated_doors_and_gates_pass_runtime_bilateral_capsule_sweep` over seeds `0..63`. Closed openings block and open openings pass the 0.23 m capsule in both directions. Extend the test enumeration to include newly materialized doors and active legacy sites so the gate cannot pass on an empty set. Check room reachability, required fixture approaches, stairs and exterior entries after dressing. |
+| Determinism and persistence | Compare canonical roads, structures, placement IDs and loot across repeated runs and chunk load orders. Include the existing `living_props` coverage and the county geography test `county_roads_frontages_and_natural_landmarks_across_seeds` or its successor. Check floor and wing rendering, prop overlap at seams, opened containers, structural destruction, and taken/moved vehicles after leaving and returning. Confirm generator version behavior. |
+| Rendering and visual playthrough | Use headless `check3d` or `preview3d` and also walk or ride seed 42 and one alternate seed in the browser. Capture both at street level and normal isometric zoom. From the street, identify individual houses by their rooflines and approaches, find their actual doors, and tell the grocery entrance from its loading dock. Inside, check floor transitions, cutaways, breaches, signs and Read. Include a complete gas station drive-through and at least one bridge or grade transition. |
+| Performance | Record host and modest physical Android handset separately. Measure frame pacing during residential walking, dense retail and fast road streaming. Record the 60 Hz target, the static-prop rebuild target below 0.35 ms per dirty chunk, the target below 20k triangles per chunk, and zero rebuilds on container open. Record draw and instance batch counts against the [existing mobile budgets](building-assets-and-ecology.md#4-asset-creation-pipeline--60-hz-mobile-budgets). Verify Read in a furnished County scene. Record deferred Birch Android Read separately from county readiness. |
+| Baseline and release | Run `cargo test --workspace` and report the result. Phase 2 records a reproducible baseline `county_seed_42_terrain_seam_and_diagonal_raycasts` failure on the old generator. Reproduce or clear it at the starting commit, investigate any change during terrain work, and record a resolution before calling the workspace suite green. Keep the focused behavior checks even if a terrain fixture must move with the new generator. |
 
- |
-
-
-
----
-
-## 5. Asset Audit & Flagged Rectangular Block Placeholders
-
-Audit against the 36 converted meshes currently in `assets/living-buildings/converted/`:
-
-### Ready to Use Now (Existing `.mesh` Assets)
-
-* **Residential Houses:** `bed-double`, `bed-single`, `lounge-sofa`, `table-coffee`, `table`, `chair`, `chair-desk`, `desk-closed`/`desk-opened`, `bookcase-closed-doors`/`bookcase-open`, `television-vintage`, `kitchen-cabinet`, `kitchen-sink`, `kitchen-stove-electric`, `kitchen-fridge-closed`/`kitchen-fridge-opened`, `toilet`, `bathtub`, `bathroom-sink`, `cardboard-box-closed`/`cardboard-box-opened`, `crate`, `car`.
-
-
-* **Grocery Store & Gas Station:** `assisted-checkout-till-closed`/`assisted-checkout-till-opened`, `shopping-cart`, `crate`, `cardboard-box-closed`/`opened`, `toilet`, `bathroom-sink`, `desk-closed`/`opened`, `car`, `police-car`, `first-aid-kit`.
-
-
-* **Signage:** All exterior fascia (`"GROCERY"`, `"GAS & MART"`, aisle numbers, restroom plaques, highway exit signs) use Phase 2's procedural 3D `signage.rs`—zero new mesh files needed.
-
-### Missing Assets — Implement as `PlaceholderBlockSpec` & Flag for Later
-
-Each entry below gets a `PlaceholderBlockSpec` in `action/prop_catalog.rs` with a searchable `ASSET_TODO_*` constant:
-
-| `todo_id` | Where Used | Box Size (W×D×H m) | `HighBlocker` | Notes |
-| --- | --- | --- | --- | --- |
-| `ASSET_TODO_GONDOLA_SHELF` | Grocery Store | `2.0 × 0.9 × 1.45` | **Yes** | Double-sided aisle shelving (tiles into long runs) |
-| `ASSET_TODO_GONDOLA_ENDCAP` | Grocery Store | `1.0 × 0.9 × 1.45` | **Yes** | Capped end of aisle with lootable cache |
-| `ASSET_TODO_GLASS_FREEZER` | Grocery / Gas Mart | `2.0 × 0.9 × 2.00` | **Yes** | Perimeter cooler/freezer bank (emissive cool tint) |
-| `ASSET_TODO_STOCKROOM_RACK` | Grocery Stockroom | `2.0 × 1.0 × 2.20` | **Yes** | Heavy warehouse pallet shelving |
-| `ASSET_TODO_FUEL_PUMP` | Gas Station | `0.9 × 0.7 × 1.65` | **Yes** | Island gas dispenser under overhead canopy |
-| `ASSET_TODO_CONVENIENCE_COUNTER` | Gas Station | `2.0 × 0.9 × 1.05` | No | Front clerk counter (pairs with checkout till) |
-| `ASSET_TODO_WARDROBE` | House Bedroom | `1.0 × 0.6 × 1.85` | **Yes** | Lootable bedroom closet/dresser |
-| `ASSET_TODO_NIGHTSTAND` | House Bedroom | `0.5 × 0.5 × 0.60` | No | Flanks `bed-double` / `bed-single` |
-| `ASSET_TODO_PORCH_RAIL` | House Porch | `1.0 × 0.15 × 0.95` | No | Craftsman bungalow perimeter railing |
-| `ASSET_TODO_DUMPSTER` | Rear Alleys / Retail | `2.0 × 1.2 × 1.35` | **Yes** | Commercial rear-lot cover + loot container |
-| `ASSET_TODO_STREETLIGHT` | Towns / Highways | `0.3 × 0.3 × 4.50` | No | Street corner pole (emitter hook for night) |
-| `ASSET_TODO_MAILBOX` | House Curbs | `0.3 × 0.4 × 1.15` | No | Street-edge residential detail |
-
----
-
-## 6. Subagent Work Packages (Sequential / Parallel Handoffs)
-
-Each package is sized for a single lightweight subagent session with explicit file ownership and automated `cargo test` acceptance gates.
-
-### WP 3.1: Core Contracts, Blueprint Grid & Placeholder Renderer
-
-* **Files:** `world/parcels.rs`, `world/blueprint.rs`, `world/archetypes/mod.rs`, `action/prop_catalog.rs`, `zombiebox-render3d/src/mesh/props.rs`.
-* **Deliverables:** Define `ParcelPlan`, `PlacedStructure`, `OutdoorLayer`, `BlueprintGrid`, `CompoundPlanner`, `StructureGenerator`, and `PlaceholderBlockSpec`. Add the 12 `ASSET_TODO_*` entries to `prop_catalog.rs` and render them in `mesh/props.rs` as tinted boxes matching `size_m` and facing. Add a `#[cfg(test)]` check that iterates over every `RoomFurnishRule` in the registry and asserts every `prop_id` resolves in `prop_catalog.rs`.
-* **Acceptance Gate:** `cargo test -p zombiebox-core` and `cargo test -p zombiebox-render3d` pass; a unit test verifies `BlueprintGrid` doorway `3×3` apron reservation rejects overlapping walls/props.
-* **Status:** Not started.
-
-### WP 3.2: Massing Composer & Topology-First Floorplan Solver
-
-* **Files:** `world/massing.rs`, `world/floorplan.rs`.
-* **Deliverables:** Implement the 5 massing shapes (`Rect`, `LWing`, `TWing`, `SteppedSplit`, `Duplex`) with per-wing `WingId` and per-cell `RoofStyle`. Implement graph-first constrained BSP room allocation, stairwell alignment across floors, exterior windows, and the `3×3` doorway stencil.
-* **Acceptance Gate:** Unit test across 64 seeds proves every generated building has: (a) 100% room connectivity from exterior entrance via BFS, (b) zero doorway apron violations, (c) aligned stairwells on 2F structures.
-* **Status:** Not started.
-
-### WP 3.3: Hierarchical Furnishing Solver
-
-* **Files:** `world/furnish.rs`.
-* **Deliverables:** Implement the 3-pass furnishing solver (walk-spine BFS reservation → wall-hugging pass → anchor-child clusters → floor fill), respecting `PropSpan` footprints, window clearance, and `CounterTop`/`WallMount` attachment layers from Phase 2.
-* **Acceptance Gate:** Unit test verifies zero props overlap walls, zero props intrude into `DOOR_APRON` or block the room `WALK_SPINE`, and anchor-child clusters (e.g., sofa + coffee table, table + chairs) orient toward each other.
-* **Status:** Not started.
-
-### WP 3.4: 5 Residential House Archetypes
-
-* **Files:** `world/archetypes/houses.rs`.
-* **Deliverables:** Author `StructureGenerator` + `RoomFurnishRule` definitions for Craftsman Bungalow, L-Wing Suburban Ranch (with garage + driveway car slot), 2-Story Center-Hall Colonial, Stepped Split-Level, and Side-by-Side Duplex using existing Kenney meshes + `WARDROBE`/`NIGHTSTAND`/`PORCH_RAIL`/`MAILBOX` placeholders.
-* **Acceptance Gate:** 64-seed generation test confirms all 5 sub-archetypes produce distinct footprints, distinct room counts, furnished kitchens/baths/bedrooms/living rooms, and pass the bilateral `0.23m` doorway capsule sweep.
-* **Status:** Not started.
-
-### WP 3.5: Grocery Store & Highway Gas Station Archetypes
-
-* **Files:** `world/archetypes/retail.rs`.
-* **Deliverables:** Implement the open-span Grocery Store (vestibule, checkout lanes with `assisted-checkout-till`, `TileKind::Pillar` grid, `HighBlocker` gondola aisles, perimeter freezers, public restrooms with `signage.rs` plaques, rear stockroom/loading dock) and Highway Gas Station (overhead `FuelCanopy` + `ASSET_TODO_FUEL_PUMP` islands + convenience mart + highway pylon sign).
-* **Acceptance Gate:** Unit test verifies `TileKind::Pillar` spacing, 2-tile aisle navigability from entrance to stockroom and restrooms, `HighBlocker` collider flags on gondola shelves, and readable exterior/aisle signage.
-* **Status:** Not started.
-
-### WP 3.6: Organic Town Planner, Highways & Subdivisions
-
-* **Files:** `world/geography.rs`, `world/town_planner.rs`, `world/dressing.rs`.
-* **Deliverables:** Replace the `5×5` town stamp with terrain-aware highway polylines, morphology-driven contour-hugging block accretion, detached cul-de-sac subdivisions, and OBB lot subdivision. Wire `OutdoorLayer` dressing (driveways, sidewalks, parking lots, fences, dumpsters, streetlights).
-* **Acceptance Gate:** Determinism test (same seed → identical `ParcelPlan` hashes); multi-seed geometry test confirms zero lots overlap water, 100% of lots touch a road edge, and every town spawns at least one Grocery Store, multiple House archetypes, and highway Gas Stations.
-* **Status:** Not started.
-
-### WP 3.7: Legacy Teardown, `CountyStage` Wiring & Headless 3D Verification
-
-* **Files:** `world/sites.rs`, `action/county.rs`, `crates/zombiebox-core/tests/`.
-* **Deliverables:** Delete legacy `ArmySub` and `midx`/`midy` box generation from `world/sites.rs`. Wire `CountyStage` chunk materialization exclusively to `ParcelPlan` + `BlueprintGrid`. Update integration tests.
-* **Acceptance Gate:**
-1. `cargo test -p zombiebox-core --lib generated_doors_and_gates_pass_runtime_bilateral_capsule_sweep` passes across seeds `0..63`.
-2. Full `cargo test --workspace` passes.
-3. Headless `check3d` / `preview3d` renders a seed-42 town showing non-rectangular houses, grocery aisles, gas station canopy, and organic road layout without chunk-seam panics or cutaway artifacts.
-* **Status:** Not started.
-
-
+The first milestone is complete when a furnished Craftsman can be entered, explored, looted, breached and revisited through the real runtime. The street with the ranch is the first test that the shared contracts support distinct buildings. The final county cutover demonstrates that the same generation path works for a two-structure roadside parcel, a public retail building and a believable town.
