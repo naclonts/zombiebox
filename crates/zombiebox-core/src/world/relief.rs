@@ -316,15 +316,12 @@ fn road_profiles(town: &TownPlan, heights: &[f32]) -> Vec<Vec<f32>> {
         for i in (1..line.len()).rev() {
             profile[i - 1] = profile[i - 1].clamp(profile[i] - step(i), profile[i] + step(i));
         }
-        for (parent, parent_profile) in town.roads[..index].iter().zip(&profiles) {
-            if let Some(junction_index) = parent
-                .continuous_centerline
-                .iter()
-                .position(|p| *p == line[0])
-            {
-                profile[0] = parent_profile[junction_index];
-                break;
-            }
+        if let Some(junction) = town
+            .junctions
+            .iter()
+            .find(|j| j.road == index && j.sample == 0)
+        {
+            profile[0] = profiles[junction.parent_road][junction.parent_sample];
         }
         for i in 1..line.len() {
             profile[i] = profile[i].clamp(profile[i - 1] - step(i), profile[i - 1] + step(i));
@@ -350,8 +347,6 @@ fn road_target(
     let y = gy as f32 - 0.5;
     let mut best: Option<(usize, f32, f32)> = None;
     let mut max_step = 0.084_f32;
-    let in_bulb =
-        (x - town.turnaround.x as f32).abs() <= 2.5 && (y - town.turnaround.y as f32).abs() <= 2.5;
     for ty in gy - 1..=gy {
         for tx in gx - 1..=gx {
             let p = Position::new(tx, ty);
@@ -374,14 +369,24 @@ fn road_target(
                 let (dx, dy) = (bx - ax, by - ay);
                 let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
                 let distance = (x - ax - t * dx).powi(2) + (y - ay - t * dy).powi(2);
-                let z = if in_bulb && road.class == RoadClass::Local {
+                let in_bulb = road.turnaround.is_some_and(|p| {
+                    (x - p.x as f32).abs() <= 2.5 && (y - p.y as f32).abs() <= 2.5
+                });
+                let z = if in_bulb {
                     max_step = max_step.min(0.020);
                     *profile.last().unwrap()
                 } else {
                     profile[j] + (profile[j + 1] - profile[j]) * t
                 };
                 if best.is_none_or(|(road_index, d, _)| {
-                    cell.road_index < road_index || (cell.road_index == road_index && distance < d)
+                    let priority = |i: usize| match town.roads[i].class {
+                        RoadClass::Arterial => 0,
+                        RoadClass::Collector => 1,
+                        RoadClass::Local => 2,
+                    };
+                    priority(cell.road_index) < priority(road_index)
+                        || (priority(cell.road_index) == priority(road_index)
+                            && (distance < d || (distance == d && cell.road_index < road_index)))
                 }) {
                     best = Some((cell.road_index, distance, z));
                 }
@@ -391,7 +396,9 @@ fn road_target(
     best.map(|(road_index, _, height)| RoadGradeTarget {
         height,
         max_step,
-        fixed: town.roads[road_index].class == RoadClass::Arterial,
+        // Only the primary arterial is fixed: other arterials must blend
+        // into its already-graded junction and satisfy the network clamp.
+        fixed: road_index == 0,
     })
 }
 

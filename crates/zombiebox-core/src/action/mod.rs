@@ -680,6 +680,8 @@ pub struct ActionGame {
     prop_revision: u64,
     blueprint_prop_cursor: usize,
     blueprint_readable_cursor: usize,
+    pending_blueprint_props: Vec<PropAnchor>,
+    pending_blueprint_readables: Vec<(ReadableId, PropAnchor)>,
     readable_fixtures: Vec<(ReadableId, PropAnchor)>,
     readable_id: ReadableId,
     read_open: bool,
@@ -770,6 +772,8 @@ impl ActionGame {
             prop_revision: 0,
             blueprint_prop_cursor: 0,
             blueprint_readable_cursor: 0,
+            pending_blueprint_props: Vec::new(),
+            pending_blueprint_readables: Vec::new(),
             readable_fixtures: readable,
             readable_id: ReadableId::CountyDirectory,
             read_open: false,
@@ -847,6 +851,8 @@ impl ActionGame {
             prop_revision: 0,
             blueprint_prop_cursor: 0,
             blueprint_readable_cursor: 0,
+            pending_blueprint_props: Vec::new(),
+            pending_blueprint_readables: Vec::new(),
             readable_fixtures: readable,
             readable_id: ReadableId::BirchDirectory,
             read_open: false,
@@ -963,6 +969,8 @@ impl ActionGame {
         let dest = county.find_teleport_destination(&self.world, target);
         let Some(dest) = dest else {
             county.sync_active_window(&self.world, current_pos, &mut self.monsters);
+            self.sync_county_blueprint_props();
+            self.sync_county_blueprint_readables();
             return None;
         };
 
@@ -1048,10 +1056,13 @@ impl ActionGame {
         self.step_unmounted_vehicles();
         let focus = self.player_tile().pos();
         if let Stage::County(county) = &mut self.stage {
+            let version = county.terrain_version();
             county.sync_active_window(&self.world, focus, &mut self.monsters);
+            if version != county.terrain_version() {
+                self.sync_county_blueprint_props();
+                self.sync_county_blueprint_readables();
+            }
         }
-        self.sync_county_blueprint_props();
-        self.sync_county_blueprint_readables();
 
         // 4. On-foot aim / facing update (right-stick retains facing on release).
         // Vehicle heading is authoritative while mounted; carried look input is ignored.
@@ -2067,7 +2078,9 @@ impl ActionGame {
         for dy in -1..=1 {
             for dx in -1..=1 {
                 let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, floor);
-                if let TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } = self.stage.tile_kind(t) {
+                if let TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } =
+                    self.stage.tile_kind(t)
+                {
                     let d = p.distance(t.center());
                     if d <= INTERACT_FEATURE_RADIUS {
                         let dir_bias = if d > 0.05 {
@@ -2254,13 +2267,24 @@ impl ActionGame {
                             PLAYER_RADIUS,
                             occupied_tile,
                         ) || self.monsters.iter().any(|m| {
-                            m.is_alive() && self.actor_overlaps_tile(m.pos, m.floor, m.radius(), occupied_tile)
+                            m.is_alive()
+                                && self.actor_overlaps_tile(
+                                    m.pos,
+                                    m.floor,
+                                    m.radius(),
+                                    occupied_tile,
+                                )
                         }) {
                             return;
                         }
                     }
                 }
-                if let Some(opened) = self.stage.toggle_door(tile) {
+                let group = self.door_group_tiles(tile);
+                let opened = self.stage.toggle_door(tile);
+                if let Some(opened) = opened {
+                    for part in group.into_iter().filter(|part| *part != tile) {
+                        self.stage.toggle_door(part);
+                    }
                     let (dz, _, _) = resolve_tile_support(&self.stage, tile);
                     self.events.push(ActionEvent::DoorToggled {
                         at: tile,
@@ -2388,13 +2412,25 @@ impl ActionGame {
                 Tile3D::new(tile.x, tile.y - 1, tile.floor),
                 Tile3D::new(tile.x, tile.y + 1, tile.floor),
             ])
-            .find(|candidate| matches!(self.stage.tile_kind(*candidate), TileKind::GarageDoor { segment: 1, .. }));
-        let Some(center) = center else { return vec![tile] };
+            .find(|candidate| {
+                matches!(
+                    self.stage.tile_kind(*candidate),
+                    TileKind::GarageDoor { segment: 1, .. }
+                )
+            });
+        let Some(center) = center else {
+            return vec![tile];
+        };
         for (dx, dy) in [(1, 0), (0, 1)] {
             let group: Vec<_> = (-1..=1)
-                .map(|offset| Tile3D::new(center.x + dx * offset, center.y + dy * offset, center.floor))
+                .map(|offset| {
+                    Tile3D::new(center.x + dx * offset, center.y + dy * offset, center.floor)
+                })
                 .collect();
-            if group.iter().all(|part| matches!(self.stage.tile_kind(*part), TileKind::GarageDoor { .. })) {
+            if group
+                .iter()
+                .all(|part| matches!(self.stage.tile_kind(*part), TileKind::GarageDoor { .. }))
+            {
                 return group;
             }
         }
@@ -2721,59 +2757,47 @@ impl ActionGame {
     /// after streaming is idempotent, so revisiting a parcel cannot duplicate a
     /// prop instance.
     fn sync_county_blueprint_props(&mut self) {
-        let anchors = match &self.stage {
-            Stage::County(county) => {
-                let all = county.blueprint_prop_anchors();
-                let start = self.blueprint_prop_cursor.min(all.len());
-                if start == all.len() {
-                    return;
-                }
-                all[start..].to_vec()
-            }
-            Stage::Residential(_) => return,
+        let Stage::County(county) = &self.stage else {
+            return;
         };
-        for anchor in anchors {
+        let anchors = county.blueprint_prop_anchors();
+        self.pending_blueprint_props
+            .extend_from_slice(&anchors[self.blueprint_prop_cursor..]);
+        self.blueprint_prop_cursor = anchors.len();
+        let mut pending = std::mem::take(&mut self.pending_blueprint_props);
+        pending.retain(|&anchor| {
             if self
                 .prop_anchors
                 .iter()
                 .any(|existing| existing.anchor_uid == anchor.anchor_uid)
             {
-                continue;
+                return false;
             }
-            if !self.add_prop_fixture(anchor) {
-                // The anchor's chunk window is not fully materialized yet.
-                // Retry the same tail after the next streaming update.
-                return;
-            }
-        }
-        if let Stage::County(county) = &self.stage {
-            self.blueprint_prop_cursor = county.blueprint_prop_anchors().len();
-        }
+            // Retry incomplete anchors after streaming, without delaying other parcels.
+            !self.add_prop_fixture(anchor)
+        });
+        self.pending_blueprint_props = pending;
     }
 
     /// Ingest readable signs/notes authored inside blueprint structures. This
     /// runs after the prop sync so the readable's wall/floor anchor already
     /// exists in the shared prop registry.
     fn sync_county_blueprint_readables(&mut self) {
-        let pending = match &self.stage {
-            Stage::County(county) => {
-                let all = county.blueprint_readables();
-                let start = self.blueprint_readable_cursor.min(all.len());
-                if start == all.len() {
-                    return;
-                }
-                all[start..].to_vec()
-            }
-            Stage::Residential(_) => return,
+        let Stage::County(county) = &self.stage else {
+            return;
         };
-        for (id, anchor) in pending {
+        let readables = county.blueprint_readables();
+        self.pending_blueprint_readables
+            .extend_from_slice(&readables[self.blueprint_readable_cursor..]);
+        self.blueprint_readable_cursor = readables.len();
+        let mut pending = std::mem::take(&mut self.pending_blueprint_readables);
+        pending.retain(|&(id, anchor)| {
             if !self
                 .prop_anchors
                 .iter()
                 .any(|existing| existing.anchor_uid == anchor.anchor_uid)
             {
-                // The anchor's chunk window is not fully materialized yet.
-                return;
+                return true;
             }
             if !self
                 .readable_fixtures
@@ -2782,8 +2806,9 @@ impl ActionGame {
             {
                 self.readable_fixtures.push((id, anchor));
             }
-            self.blueprint_readable_cursor += 1;
-        }
+            false
+        });
+        self.pending_blueprint_readables = pending;
     }
 
     /// Persistent prop anchors in stable placement order.
@@ -3140,6 +3165,64 @@ impl ActionGame {
 mod tests {
     use super::*;
     use crate::WORLD_SIZE;
+
+    #[test]
+    fn motorcycle_crosses_the_seed_2_split_bank_bridge() {
+        let world = World::new(2);
+        let plan = world.town_plan().expect("seed 2 town plan");
+        assert_eq!(plan.morphology, crate::TownMorphology::SplitBank);
+        let (road, span) = plan
+            .roads
+            .iter()
+            .find_map(|road| road.bridge.map(|span| (road, span)))
+            .expect("split-bank bridge");
+        let start = Tile3D::from_pos(road.centerline[span.first_sample - 4], 0);
+        let exit = Tile3D::from_pos(road.centerline[span.last_sample + 4], 0);
+        let direction = (exit.center() - start.center()).normalized();
+
+        let mut game = ActionGame::county_with_world(world);
+        assert_eq!(game.teleport(start), Some(start));
+        game.monsters.clear();
+        let bike_id = vehicles::vehicle_id(2, 0);
+        let bike = game
+            .vehicles
+            .motorcycle_mut(bike_id)
+            .expect("starter motorcycle");
+        bike.body = game.player_body;
+        bike.body.heading = direction.y.atan2(direction.x);
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        assert_eq!(game.mounted_vehicle(), Some(bike_id));
+
+        let mut rode_deck = false;
+        for _ in 0..600 {
+            game.step(ActionInput {
+                ride: Some(RideInput::Motorcycle(MotorcycleInput {
+                    throttle: 0.55,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            });
+            let body = game.vehicles.motorcycle(bike_id).unwrap().body;
+            rode_deck |= matches!(
+                body.motion,
+                MotionState::Grounded(crate::SupportId::Bridge(_))
+            );
+            if (body.position.xy() - exit.center()).dot(direction) >= 0.0 {
+                break;
+            }
+        }
+        assert!(rode_deck, "motorcycle used the bridge deck");
+        assert_eq!(game.mounted_vehicle(), Some(bike_id));
+        assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
+        assert!(
+            game.player.position.distance(exit.center()) < 0.8,
+            "motorcycle reached the dry exit at {exit:?}, player {:?}",
+            game.player.position
+        );
+    }
 
     #[test]
     fn disabled_motorcycle_skid_remains_in_registry_across_streaming_revisit() {
@@ -3596,7 +3679,11 @@ mod tests {
             .entrance;
         game.teleport(Tile3D::from_pos(distant_road, 0))
             .expect("teleport away from the breach");
-        assert_ne!(game.stage.tile_kind(wall), TileKind::Rubble);
+        let (min, max, _) = game.stage.bounds();
+        assert!(
+            wall.x < min.x || wall.x > max.x || wall.y < min.y || wall.y > max.y,
+            "the breached wall should leave the active window"
+        );
         game.teleport(inside).expect("teleport back to the breach");
         assert_eq!(
             game.stage.tile_kind(wall),
@@ -3699,61 +3786,83 @@ mod tests {
 
     #[test]
     fn gas_station_motorcycle_drives_in_and_reverses_out() {
-        let world = World::with_fixture(42, crate::CountyFixture::GasStationLot);
-        let transform = world.fixture_plan().unwrap().structures[1].transform;
-        let start_tile =
-            Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(8, -6, 0)), 0);
-        assert!(world.tile_at(start_tile.pos()).unwrap().ground.is_road());
-        let pump = transform.local_to_world(crate::LocalCell::new(5, 3, 0));
-        let (ix, iy) = transform.inward();
-        let inward = Vec2::new(ix as f32, iy as f32);
-        let mut game = ActionGame::county_with_world(world);
-        assert_eq!(game.teleport(start_tile), Some(start_tile));
-        game.monsters.clear();
-        game.step(ActionInput {
-            interact: true,
-            ..Default::default()
-        });
-        assert_eq!(game.control_mode(), ControlMode::Motorcycle);
-        let initial = game.player.position;
-        let input = |throttle, brake| ActionInput {
-            ride: Some(RideInput::Motorcycle(MotorcycleInput {
-                throttle,
-                brake,
-                steer: 0.0,
-                lean: 0.0,
-            })),
-            ..Default::default()
-        };
-        for _ in 0..170 {
-            game.step(input(0.45, 0.0));
-        }
-        let inside = game.player.position;
-        assert!(
-            inside.distance(initial) > 8.5,
-            "drive in {initial:?} → {inside:?}"
-        );
-        assert!((inside - Tile3D::from_pos(pump, 0).center()).dot(inward) > 0.0);
-        for _ in 0..90 {
-            if game.hud().mounted.unwrap().speed_mph_x10 == 0 {
-                break;
+        for default_county in [false, true] {
+            let world = if default_county {
+                World::new(42)
+            } else {
+                World::with_fixture(42, crate::CountyFixture::GasStationLot)
+            };
+            let plans = world.fixture_plans();
+            let plan = plans
+                .iter()
+                .find(|p| p.structures.iter().any(|s| s.archetype == "gas_canopy"))
+                .unwrap();
+            let transform = plan.structures[1].transform;
+            let start_tile =
+                Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(8, -6, 0)), 0);
+            assert!(world.tile_at(start_tile.pos()).unwrap().ground.walkable());
+            let pump = transform.local_to_world(crate::LocalCell::new(5, 3, 0));
+            let (ix, iy) = transform.inward();
+            let inward = Vec2::new(ix as f32, iy as f32);
+            let mut game = ActionGame::county_with_world(world);
+            assert_eq!(game.teleport(start_tile), Some(start_tile));
+            game.monsters.clear();
+            if default_county {
+                let id = game
+                    .vehicles
+                    .iter()
+                    .find_map(|(id, state)| state.motorcycle().map(|_| id))
+                    .unwrap();
+                let z = game.world.elevation_at(start_tile.center()).unwrap();
+                let bike = game.vehicles.motorcycle_mut(id).unwrap();
+                bike.body.position = start_tile.center().extend(z);
+                bike.body.heading = inward.y.atan2(inward.x);
             }
-            game.step(input(0.0, 1.0));
-        }
-        for _ in 0..1100 {
-            game.step(input(0.0, 1.0));
-            if game.player.position.distance(initial) < 0.3 {
-                break;
+            game.step(ActionInput {
+                interact: true,
+                ..Default::default()
+            });
+            assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+            let initial = game.player.position;
+            let input = |throttle, brake| ActionInput {
+                ride: Some(RideInput::Motorcycle(MotorcycleInput {
+                    throttle,
+                    brake,
+                    steer: 0.0,
+                    lean: 0.0,
+                })),
+                ..Default::default()
+            };
+            for _ in 0..170 {
+                game.step(input(0.45, 0.0));
             }
+            let inside = game.player.position;
+            assert!(
+                inside.distance(initial) > 8.5,
+                "drive in {initial:?} → {inside:?}"
+            );
+            assert!((inside - Tile3D::from_pos(pump, 0).center()).dot(inward) > 0.0);
+            for _ in 0..90 {
+                if game.hud().mounted.unwrap().speed_mph_x10 == 0 {
+                    break;
+                }
+                game.step(input(0.0, 1.0));
+            }
+            for _ in 0..1100 {
+                game.step(input(0.0, 1.0));
+                if game.player.position.distance(initial) < 0.3 {
+                    break;
+                }
+            }
+            let exit = game.player.position;
+            eprintln!("gas motorcycle start {initial:?}, inside {inside:?}, exit {exit:?}");
+            assert!(
+                exit.distance(initial) < 0.3,
+                "reverse out {inside:?} → {exit:?}"
+            );
+            assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+            assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
         }
-        let exit = game.player.position;
-        eprintln!("gas motorcycle start {initial:?}, inside {inside:?}, exit {exit:?}");
-        assert!(
-            exit.distance(initial) < 0.3,
-            "reverse out {inside:?} → {exit:?}"
-        );
-        assert_eq!(game.control_mode(), ControlMode::Motorcycle);
-        assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
     }
 
     #[test]
@@ -3820,69 +3929,84 @@ mod tests {
 
     #[test]
     fn grocery_public_and_service_routes_are_walkable_in_live_action() {
-        let world = World::with_fixture(42, crate::CountyFixture::GroceryLot);
-        let plan = world.fixture_plan().expect("grocery fixture");
-        let access = Tile3D::from_pos(plan.frontage.access, 0);
-        let transform = plan.structures[0].transform;
-        let tile =
-            |u, v| Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(u, v, 0)), 0);
-        let mut game = ActionGame::county_with_world(world);
+        for default_county in [false, true] {
+            let world = if default_county {
+                World::new(42)
+            } else {
+                World::with_fixture(42, crate::CountyFixture::GroceryLot)
+            };
+            let plans = world.fixture_plans();
+            let plan = plans
+                .iter()
+                .find(|p| {
+                    p.structures
+                        .iter()
+                        .any(|s| s.archetype == "grocery_open_span")
+                })
+                .expect("grocery parcel");
+            let access = Tile3D::from_pos(plan.frontage.access, 0);
+            let transform = plan.structures[0].transform;
+            let tile = |u, v| {
+                Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(u, v, 0)), 0)
+            };
+            let mut game = ActionGame::county_with_world(world);
 
-        let walk = |game: &mut ActionGame, u, v| {
-            let target = tile(u, v).center();
-            for _ in 0..480 {
-                let delta = target - game.player.position;
-                if delta.length() < 0.08 {
-                    return;
+            let walk = |game: &mut ActionGame, u, v| {
+                let target = tile(u, v).center();
+                for _ in 0..480 {
+                    let delta = target - game.player.position;
+                    if delta.length() < 0.08 {
+                        return;
+                    }
+                    game.step(ActionInput {
+                        movement: delta.normalized(),
+                        ..ActionInput::default()
+                    });
                 }
+                panic!(
+                    "grocery route blocked at local ({u}, {v}) / {target:?}, player {:?} {:?}",
+                    game.player.position,
+                    game.outcome()
+                );
+            };
+            let open = |game: &mut ActionGame, u, v| {
+                assert_eq!(
+                    game.hud().interact_prompt,
+                    InteractPrompt::OpenDoor,
+                    "grocery door at local ({u}, {v}), player {:?}",
+                    game.player.position
+                );
                 game.step(ActionInput {
-                    movement: delta.normalized(),
+                    interact: true,
                     ..ActionInput::default()
                 });
+                assert!(matches!(
+                    game.stage.tile_kind(tile(u, v)),
+                    TileKind::Door { open: true, .. }
+                ));
+            };
+
+            assert_eq!(game.teleport(access), Some(access));
+            game.monsters.clear();
+            walk(&mut game, 2, -2);
+            walk(&mut game, 10, -2);
+            walk(&mut game, 10, -1);
+            open(&mut game, 10, 0);
+            for (u, v) in [(10, 2), (9, 4), (9, 10), (3, 10), (3, 15)] {
+                walk(&mut game, u, v);
             }
-            panic!(
-                "grocery route blocked at local ({u}, {v}) / {target:?}, player {:?} {:?}",
-                game.player.position,
-                game.outcome()
-            );
-        };
-        let open = |game: &mut ActionGame, u, v| {
-            assert_eq!(
-                game.hud().interact_prompt,
-                InteractPrompt::OpenDoor,
-                "grocery door at local ({u}, {v}), player {:?}",
-                game.player.position
-            );
-            game.step(ActionInput {
-                interact: true,
-                ..ActionInput::default()
-            });
-            assert!(matches!(
-                game.stage.tile_kind(tile(u, v)),
-                TileKind::Door { open: true, .. }
-            ));
-        };
+            open(&mut game, 3, 16);
+            walk(&mut game, 3, 17);
 
-        assert_eq!(game.teleport(access), Some(access));
-        game.monsters.clear();
-        walk(&mut game, 2, -2);
-        walk(&mut game, 10, -2);
-        walk(&mut game, 10, -1);
-        open(&mut game, 10, 0);
-        for (u, v) in [(10, 2), (9, 4), (9, 10), (3, 10), (3, 15)] {
-            walk(&mut game, u, v);
+            let apron = tile(17, -2);
+            assert_eq!(game.teleport(apron), Some(apron));
+            game.monsters.clear();
+            for (u, v) in [(21, -2), (21, 23), (14, 23), (14, 22)] {
+                walk(&mut game, u, v);
+            }
+            open(&mut game, 14, 21);
+            walk(&mut game, 14, 20);
         }
-        open(&mut game, 3, 16);
-        walk(&mut game, 3, 17);
-
-        let apron = tile(17, -2);
-        assert_eq!(game.teleport(apron), Some(apron));
-        game.monsters.clear();
-        for (u, v) in [(21, -2), (21, 23), (14, 23), (14, 22)] {
-            walk(&mut game, u, v);
-        }
-        open(&mut game, 14, 21);
-        walk(&mut game, 14, 20);
     }
 
     #[test]
@@ -4545,28 +4669,10 @@ mod tests {
     }
 
     #[test]
-    fn county_army_base_subbuildings_and_3f_collapse_work() {
+    fn county_three_floor_apartment_collapse_works() {
         let mut game = ActionGame::county(42);
         let world = game.world().clone();
         let sites = world.sites().unwrap();
-
-        // ArmyBase splits into 3 sub-buildings while keeping the compound yard outdoors.
-        let army = sites
-            .buildings
-            .iter()
-            .find(|b| b.kind == crate::BuildingKind::ArmyBase)
-            .expect("army base exists");
-        assert!(game.teleport(Tile3D::from_pos(army.entry, 0)).is_some());
-        assert_eq!(game.current_district(), District::MilitaryBase);
-        let sub_buildings: Vec<_> = game
-            .buildings()
-            .iter()
-            .filter(|b| b.style == BuildingStyle::ArmyBarracks)
-            .collect();
-        assert_eq!(sub_buildings.len(), 3);
-        for sb in sub_buildings {
-            assert_eq!(sb.floors, 1);
-        }
 
         // Breaching an F0 load-bearing wall in 3F Apartments collapses F1 and F2 overhang onto F0.
         let apt = sites

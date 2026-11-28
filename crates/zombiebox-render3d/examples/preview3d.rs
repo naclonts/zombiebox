@@ -693,7 +693,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             SceneChoice::CountyGasStation => {
                 World::with_fixture(seed, CountyFixture::GasStationLot)
             }
-            _ => World::new(42),
+            _ => World::new(seed),
         };
         let mut county = ActionGame::county_with_world(world.clone());
         let mut mgr = SceneManager::new();

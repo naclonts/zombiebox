@@ -66,13 +66,24 @@ pub(super) fn reserve(
         .collect();
     for (road, cell) in town.raster() {
         let class = town.roads[cell.road_index].class;
-        let (use_hint, envelopes): (FrontageUse, &[(i32, i32)]) = if class == RoadClass::Arterial {
-            // The gas compound needs 28×28. The 20×22 grocery also fits
-            // the smaller envelope with its two-tile service setbacks.
-            (FrontageUse::Commercial, &[(28, 28), (24, 26)])
-        } else {
-            (FrontageUse::Residential, &[(16, 18), (12, 14)])
-        };
+        // Prefer regional roads, but a local-road commercial frontage can
+        // rescue constrained terrain when no larger corridor reserve fits.
+        let envelopes: &[(FrontageUse, i32, i32)] =
+            if matches!(class, RoadClass::Arterial | RoadClass::Collector) {
+                &[
+                    (FrontageUse::Commercial, 28, 28),
+                    (FrontageUse::Commercial, 24, 26),
+                    (FrontageUse::Commercial, 20, 22),
+                ]
+            } else {
+                &[
+                    (FrontageUse::Commercial, 28, 28),
+                    (FrontageUse::Commercial, 24, 26),
+                    (FrontageUse::Commercial, 20, 22),
+                    (FrontageUse::Residential, 16, 18),
+                    (FrontageUse::Residential, 12, 14),
+                ]
+            };
         for side in [
             CardinalDir::North,
             CardinalDir::East,
@@ -91,7 +102,7 @@ pub(super) fn reserve(
             {
                 continue;
             }
-            for (rank, &(width, depth)) in envelopes.iter().enumerate() {
+            for (rank, &(use_hint, width, depth)) in envelopes.iter().enumerate() {
                 for gap in 1..=4 {
                     let frontage = Position::new(road.x + gap * dx, road.y + gap * dy);
                     let a =
@@ -160,6 +171,9 @@ pub(super) fn reserve(
         };
         a_rank
             .cmp(b_rank)
+            .then_with(|| {
+                (a.road_class != RoadClass::Arterial).cmp(&(b.road_class != RoadClass::Arterial))
+            })
             .then_with(|| score(b).total_cmp(&score(a)))
             .then_with(|| a.id.cmp(&b.id))
     });

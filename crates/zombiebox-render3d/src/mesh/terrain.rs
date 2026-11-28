@@ -1550,10 +1550,39 @@ mod tests {
             mesh_e.validate().expect("mesh_e valid");
             mesh_s.validate().expect("mesh_s valid");
 
+            // Raised sidewalk and tiled interior previews replace portions of the
+            // base grid. Compare the full grid separately across material tags.
+            let base_config = TerrainMeshConfig {
+                emit_sidewalk_curbs: false,
+                emit_interior_floor_preview: false,
+                ..TerrainMeshConfig::default()
+            };
+            let base_a = build_chunk_terrain_mesh_with_config(&a, &base_config);
+            let base_e = build_chunk_terrain_mesh_with_config(&b_east, &base_config);
+            let base_s = build_chunk_terrain_mesh_with_config(&b_south, &base_config);
+            let assert_base_edge = |other: &MeshBuffer, lx, ly| {
+                let (position, normal) = grid_vertex_pos_and_normal(&a.terrain, lx, ly, 0, 0, 0.0);
+                for mesh in [&base_a, other] {
+                    assert!(
+                        mesh.vertices.iter().any(|vertex| {
+                            vertex.position.map(f32::to_bits)
+                                == position.to_array().map(f32::to_bits)
+                                && vertex.normal.map(f32::to_bits)
+                                    == normal.to_array().map(f32::to_bits)
+                        }),
+                        "missing terrain seam corner at {position:?} with normal {normal:?} near {focus:?}"
+                    );
+                }
+            };
+            let edge = CHUNK_SIZE as usize;
+            for along in 0..=edge {
+                assert_base_edge(&base_e, edge, along);
+                assert_base_edge(&base_s, along, edge);
+            }
+
             let seam_x = (fc.cx + 1) as f32 * CHUNK_SIZE as f32 - 0.5;
             let map_a_e = collect_seam_vertices(&mesh_a, true, seam_x);
             let map_e = collect_seam_vertices(&mesh_e, true, seam_x);
-            let mut checked_ew = 0usize;
             for (k, verts_a) in &map_a_e {
                 let along = f32::from_bits(k.1);
                 let is_grid_corner = (along + 0.5).fract().abs() < 1e-5;
@@ -1579,7 +1608,6 @@ mod tests {
                                     verts_e.iter().any(|ve| ve.0 == va.0 && ve.1 == va.1),
                                     "E-W grid seam mismatch at key {k:?}: {va:?} vs {verts_e:?}"
                                 );
-                                checked_ew += 1;
                                 continue;
                             }
                         }
@@ -1590,12 +1618,10 @@ mod tests {
                     }
                 }
             }
-            assert!(checked_ew >= 16);
 
             let seam_z = (fc.cy + 1) as f32 * CHUNK_SIZE as f32 - 0.5;
             let map_a_s = collect_seam_vertices(&mesh_a, false, seam_z);
             let map_s = collect_seam_vertices(&mesh_s, false, seam_z);
-            let mut checked_ns = 0usize;
             for (k, verts_a) in &map_a_s {
                 let along = f32::from_bits(k.1);
                 let is_grid_corner = (along + 0.5).fract().abs() < 1e-5;
@@ -1621,7 +1647,6 @@ mod tests {
                                     verts_s.iter().any(|vs| vs.0 == va.0 && vs.1 == va.1),
                                     "N-S grid seam mismatch at key {k:?}: {va:?} vs {verts_s:?}"
                                 );
-                                checked_ns += 1;
                                 continue;
                             }
                         }
@@ -1632,7 +1657,6 @@ mod tests {
                     }
                 }
             }
-            assert!(checked_ns >= 16);
         }
     }
 

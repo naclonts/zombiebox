@@ -38,7 +38,9 @@ use std::sync::Arc;
 pub const CHUNK_SIZE: i32 = 16;
 pub const CHUNKS_PER_SIDE: i32 = 32;
 pub const WORLD_SIZE: i32 = CHUNK_SIZE * CHUNKS_PER_SIDE;
-pub const GENERATOR_VERSION: u32 = 3;
+pub use town_planner::{BridgeSpan, RoadClass, RoadJunction, TownMorphology};
+
+pub const GENERATOR_VERSION: u32 = 4;
 const LEGACY_WORLD_NOISE_VERSION: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -202,11 +204,6 @@ impl World {
         Self::with_fixture(seed, CountyFixture::ResidentialStreet)
     }
 
-    /// Explicitly build the pre-Phase-3 baseline for regression comparisons.
-    pub fn legacy(seed: u64) -> Self {
-        Self::with_fixture(seed, CountyFixture::None)
-    }
-
     /// Select the generation fixture explicitly. `ResidentialStreet` uses
     /// highway-ribbon geography. Individual building fixtures and `None`
     /// keep the legacy geography for repeatable comparisons.
@@ -216,7 +213,7 @@ impl World {
 
     fn generate(seed: u64, fixture: CountyFixture, ribbon: bool) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
-        let (landmarks, lots, meta, ribbon) = if ribbon {
+        let (landmarks, mut lots, meta, ribbon) = if ribbon {
             let (landmarks, lots, meta, natural, mut town) =
                 geography::generate_ribbon(seed, &mut tiles);
             town.frontages = frontage::reserve(seed, &town, &natural, &tiles, &lots);
@@ -225,12 +222,63 @@ impl World {
             let (landmarks, lots, meta) = geography::generate_with_meta(seed, &mut tiles, false);
             (landmarks, lots, meta, None)
         };
+        let mut retail_lots = Vec::new();
+        if let Some((_, town)) = &ribbon {
+            for fixture in [CountyFixture::GasStationLot, CountyFixture::GroceryLot] {
+                for slot in town
+                    .frontages
+                    .iter()
+                    .filter(|s| s.use_hint == frontage::FrontageUse::Commercial)
+                {
+                    if retail_lots.iter().any(|(lot, _): &(Lot, CountyFixture)| {
+                        blueprint::GridRect::new(lot.min, lot.max).intersects(slot.bounds)
+                    }) {
+                        continue;
+                    }
+                    let lot = Lot {
+                        min: slot.bounds.min,
+                        max: slot.bounds.max,
+                        district: District::City,
+                        front: slot.connector.frontage,
+                    };
+                    let context = archetypes::ParcelContext {
+                        seed,
+                        bounds: slot.bounds,
+                        frontage: blueprint::Frontage {
+                            side: slot.side,
+                            access: slot.connector.frontage,
+                        },
+                        zone: blueprint::ZoneKind::Commercial,
+                    };
+                    if archetypes::plan_fixture(fixture, &context).is_err() {
+                        continue;
+                    }
+                    let a = slot.connector.road;
+                    let b = slot.connector.frontage;
+                    for y in a.y.min(b.y)..=a.y.max(b.y) {
+                        for x in a.x.min(b.x)..=a.x.max(b.x) {
+                            let pos = Position::new(x, y);
+                            if pos == b {
+                                continue;
+                            } // Parcel paving owns the frontage tile.
+                            let tile = &mut tiles[pos.index().unwrap()];
+                            if !tile.ground.is_road() {
+                                tile.ground = Ground::Trail;
+                            }
+                        }
+                    }
+                    lots.push(lot);
+                    retail_lots.push((lot, fixture));
+                    break;
+                }
+            }
+        }
         let spawn = landmarks
             .iter()
             .find(|l| l.kind == LandmarkKind::Residential)
             .expect("county has a residential entrance")
             .entrance;
-        let mut parcels = Parcels::new(seed, lots, spawn, fixture, &tiles);
+        let mut parcels = Parcels::new(seed, lots, spawn, fixture, &tiles, &retail_lots);
         let planned = parcels.planned_pads(seed, &tiles);
         let pads: Vec<_> = planned.iter().map(|(_, pad)| *pad).collect();
         let (terrain, foundations, town) = if let Some((natural, mut town)) = ribbon {

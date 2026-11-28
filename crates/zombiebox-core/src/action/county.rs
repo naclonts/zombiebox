@@ -24,11 +24,10 @@ use super::block::{
 };
 use super::types::{
     BuildingId, BuildingInfo, BuildingStyle, BuildingUid, COUNTY_FLOORS, CacheId, CacheKind,
-    CacheLoot, CacheView, CombatWorld, CustomCellSpec, DamageKind, DoorAxis, DynamicFlashView,
-    Floor, LightKind, LightSourceView, MAX_COMPACT_BUILDING_ID, MAX_COUNTY_FLOORS, Material,
-    PropKind, SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction,
-    TileRenderInfo, TileVisibility, Vec2, WallOrientation, Weapon, WingRect, mix64,
-    pack_chunk_slot_id,
+    CacheLoot, CacheView, CombatWorld, CustomCellSpec, DamageKind, DynamicFlashView, Floor,
+    LightKind, LightSourceView, MAX_COMPACT_BUILDING_ID, MAX_COUNTY_FLOORS, Material, PropKind,
+    SpatialCell, Surface, Tile3D, TileDamageResult, TileKind, TileObstruction, TileRenderInfo,
+    TileVisibility, Vec2, WallOrientation, Weapon, WingRect, mix64, pack_chunk_slot_id,
 };
 
 pub const ACTIVE_CHUNK_RADIUS: i32 = 3;
@@ -89,17 +88,8 @@ struct WindowLightCache {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ArmySubBox {
-    id: BuildingId,
-    min: Position,
-    max: Position,
-    room_kind: RoomKind,
-}
-
-#[derive(Clone, Copy, Debug)]
 enum BuildingReg {
     Single(BuildingId),
-    ArmySub([ArmySubBox; 3]),
 }
 
 pub struct CountyStage {
@@ -459,56 +449,7 @@ impl CountyStage {
             return reg;
         }
 
-        let reg = if b.kind == BuildingKind::ArmyBase && b.layout.len() == 3 {
-            let mut boxes = [ArmySubBox {
-                id: 0,
-                min: Position::new(0, 0),
-                max: Position::new(0, 0),
-                room_kind: RoomKind::Barracks,
-            }; 3];
-            for (idx, room) in b.layout.iter().enumerate() {
-                let sub_min = Position::new(room.min.x - 1, room.min.y - 1);
-                let sub_max = Position::new(room.max.x + 1, room.max.y + 1);
-                let door = find_subbox_door(b, sub_min, sub_max);
-                let id = self.next_building_id();
-                let uid = BuildingUid::from_coords(sub_min.x, sub_min.y, idx as u16 + 1);
-                let (wings, wing_count) = BuildingInfo::single_wing_array(
-                    sub_min.x,
-                    sub_min.y,
-                    sub_max.x - sub_min.x + 1,
-                    sub_max.y - sub_min.y + 1,
-                    1,
-                );
-                let name = match room.kind {
-                    RoomKind::Barracks => "Army Barracks",
-                    RoomKind::Armory => "Army Armory",
-                    RoomKind::MotorPool => "Motor Pool",
-                    _ => "Army Building",
-                };
-                self.all_buildings.push(BuildingInfo {
-                    id,
-                    uid,
-                    name,
-                    x: sub_min.x,
-                    y: sub_min.y,
-                    width: sub_max.x - sub_min.x + 1,
-                    height: sub_max.y - sub_min.y + 1,
-                    floors: 1,
-                    style: BuildingStyle::ArmyBarracks,
-                    front_door: door,
-                    foundation_z: b.foundation_z,
-                    wings,
-                    wing_count,
-                });
-                boxes[idx] = ArmySubBox {
-                    id,
-                    min: sub_min,
-                    max: sub_max,
-                    room_kind: room.kind,
-                };
-            }
-            BuildingReg::ArmySub(boxes)
-        } else {
+        let reg = {
             let id = self.next_building_id();
             let uid = uid_key;
             let floors = b.floors.min(MAX_COUNTY_FLOORS as u8);
@@ -841,135 +782,6 @@ impl CountyStage {
             let y1 = b.max.y.min(base_y + CHUNK_SIZE - 1);
 
             match reg {
-                BuildingReg::ArmySub(sub_boxes) => {
-                    for wy in y0..=y1 {
-                        let ly = (wy - base_y) as usize;
-                        for wx in x0..=x1 {
-                            let lx = (wx - base_x) as usize;
-                            let p = Position::new(wx, wy);
-                            let feat = b.feature_at(p, 0).unwrap_or(Feature::Empty);
-                            if let Some(sub) = sub_boxes.iter().find(|s| {
-                                p.x >= s.min.x && p.x <= s.max.x && p.y >= s.min.y && p.y <= s.max.y
-                            }) {
-                                let on_x = p.x == sub.min.x || p.x == sub.max.x;
-                                let on_y = p.y == sub.min.y || p.y == sub.max.y;
-                                let on_perimeter = on_x || on_y;
-                                let is_corner = on_x && on_y;
-                                let (kind, wall_mat, door_axis) = match feat {
-                                    Feature::Wall(_) => (
-                                        if is_corner {
-                                            TileKind::Pillar
-                                        } else if on_perimeter {
-                                            TileKind::ExteriorWall
-                                        } else {
-                                            TileKind::InteriorWall
-                                        },
-                                        b.material,
-                                        None,
-                                    ),
-                                    Feature::Window => (
-                                        if is_corner {
-                                            TileKind::Pillar
-                                        } else {
-                                            TileKind::Window
-                                        },
-                                        b.material,
-                                        None,
-                                    ),
-                                    Feature::Door => {
-                                        if on_perimeter {
-                                            chunk.lights.push(CountyLight {
-                                                wx,
-                                                wy,
-                                                floor: 0,
-                                                radius: PORCH_LIGHT_RADIUS,
-                                                intensity: PORCH_LIGHT_INTENSITY,
-                                                active: true,
-                                                kind: LightKind::Porch,
-                                            });
-                                        }
-                                        (
-                                            TileKind::Door {
-                                                open: false,
-                                                exterior: on_perimeter,
-                                            },
-                                            Material::WoodDoor,
-                                            b.door_axis_at(p, 0).or(Some(if on_y {
-                                                DoorAxis::AlongX
-                                            } else {
-                                                DoorAxis::AlongY
-                                            })),
-                                        )
-                                    }
-                                    Feature::Furniture => (
-                                        TileKind::Prop(prop_for_room(Some(sub.room_kind), p)),
-                                        Material::None,
-                                        None,
-                                    ),
-                                    _ => (TileKind::Empty, Material::None, None),
-                                };
-                                let cell = &mut chunk.floors[0][ly][lx];
-                                cell.building_id = sub.id;
-                                cell.indoor = !on_perimeter;
-                                cell.surface = Surface::Driveway;
-                                cell.set_kind(kind, wall_mat);
-                                cell.door_axis = door_axis;
-                                cell.load_bearing = false;
-                            } else {
-                                // Open ArmyBase compound yard.
-                                let on_compound_perim = wx == b.min.x
-                                    || wx == b.max.x
-                                    || wy == b.min.y
-                                    || wy == b.max.y;
-                                let has_site =
-                                    sites.loot.iter().any(|s| s.floor == 0 && s.position == p)
-                                        || sites
-                                            .infected
-                                            .iter()
-                                            .any(|s| s.floor == 0 && s.position == p);
-                                let cell = &mut chunk.floors[0][ly][lx];
-                                cell.building_id = 0;
-                                cell.indoor = false;
-                                if p == b.entry || feat == Feature::Gate {
-                                    cell.surface = Surface::Driveway;
-                                    cell.set_kind(
-                                        TileKind::Door {
-                                            open: true,
-                                            exterior: true,
-                                        },
-                                        Material::WoodDoor,
-                                    );
-                                    cell.door_axis = b.door_axis_at(p, 0).or(Some(
-                                        if wy == b.min.y || wy == b.max.y {
-                                            DoorAxis::AlongX
-                                        } else {
-                                            DoorAxis::AlongY
-                                        },
-                                    ));
-                                    chunk.lights.push(CountyLight {
-                                        wx,
-                                        wy,
-                                        floor: 0,
-                                        radius: PORCH_LIGHT_RADIUS,
-                                        intensity: PORCH_LIGHT_INTENSITY,
-                                        active: true,
-                                        kind: LightKind::Porch,
-                                    });
-                                } else if on_compound_perim && !has_site {
-                                    cell.surface = Surface::Gravel;
-                                    cell.set_kind(TileKind::Prop(PropKind::Fence), Material::None);
-                                } else {
-                                    cell.surface = if wx == b.entry.x || wy == b.entry.y {
-                                        Surface::Driveway
-                                    } else {
-                                        Surface::Gravel
-                                    };
-                                    cell.set_kind(TileKind::Empty, Material::None);
-                                }
-                            }
-                        }
-                    }
-                }
                 BuildingReg::Single(bid) => {
                     let max_fl = (b.floors as usize).clamp(1, MAX_COUNTY_FLOORS);
                     for floor in 0..max_fl {
@@ -1125,12 +937,14 @@ impl CountyStage {
                     target.stair_dir = structure
                         .transform
                         .world_stair_dir(blueprint_cell.stair_dir);
-                    target.door_axis =
-                        if matches!(blueprint_cell.kind, crate::BlueprintKind::Door { .. } | crate::BlueprintKind::GarageDoor { .. }) {
-                            structure.door_axis_at(local)
-                        } else {
-                            None
-                        };
+                    target.door_axis = if matches!(
+                        blueprint_cell.kind,
+                        crate::BlueprintKind::Door { .. } | crate::BlueprintKind::GarageDoor { .. }
+                    ) {
+                        structure.door_axis_at(local)
+                    } else {
+                        None
+                    };
                     target.set_kind(blueprint_cell.kind.to_tile_kind(), blueprint_cell.material);
                 }
             }
@@ -1746,8 +1560,10 @@ impl CountyStage {
         let Some(cell) = self.cell_at_world(Tile3D::new(wx, wy, fl)) else {
             return WallOrientation::AlongX;
         };
-        if matches!(cell.kind, TileKind::Door { .. } | TileKind::GarageDoor { .. })
-            && let Some(axis) = cell.door_axis
+        if matches!(
+            cell.kind,
+            TileKind::Door { .. } | TileKind::GarageDoor { .. }
+        ) && let Some(axis) = cell.door_axis
         {
             return axis.to_wall_orientation();
         }
@@ -1840,7 +1656,13 @@ impl CountyStage {
                     let fl = light.floor;
                     let src_closed_door = self
                         .cell_at_world(Tile3D::new(light.wx, light.wy, fl))
-                        .is_some_and(|c| matches!(c.kind, TileKind::Door { open: false, .. } | TileKind::GarageDoor { open: false, .. }));
+                        .is_some_and(|c| {
+                            matches!(
+                                c.kind,
+                                TileKind::Door { open: false, .. }
+                                    | TileKind::GarageDoor { open: false, .. }
+                            )
+                        });
 
                     for wy in min_y..=max_y {
                         for wx in min_x..=max_x {
@@ -2747,7 +2569,9 @@ impl CombatWorld for CountyStage {
         let (new_kind, sound_radius, light_changed) = match old_kind {
             TileKind::Window => (TileKind::BrokenWindow, 8.5, false),
             TileKind::Streetlight => (TileKind::BrokenStreetlight, 9.5, true),
-            TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } => (TileKind::Rubble, 7.5, !open),
+            TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } => {
+                (TileKind::Rubble, 7.5, !open)
+            }
             TileKind::Prop(prop) => (
                 TileKind::Rubble,
                 7.5,
@@ -2804,14 +2628,24 @@ impl CombatWorld for CountyStage {
             return None;
         }
         let cell = self.cell_mut_world(tile)?;
-        let TileKind::Door { open, exterior } = cell.kind else {
-            return None;
+        let (now_open, kind) = match cell.kind {
+            TileKind::Door { open, exterior } => (
+                !open,
+                TileKind::Door {
+                    open: !open,
+                    exterior,
+                },
+            ),
+            TileKind::GarageDoor { open, segment } => (
+                !open,
+                TileKind::GarageDoor {
+                    open: !open,
+                    segment,
+                },
+            ),
+            _ => return None,
         };
-        let now_open = !open;
-        cell.kind = TileKind::Door {
-            open: now_open,
-            exterior,
-        };
+        cell.kind = kind;
         self.terrain_version += 1;
         Some(now_open)
     }
@@ -2861,20 +2695,6 @@ fn any_8_neighbor<F: FnMut(Position) -> bool>(p: Position, mut f: F) -> bool {
         }
     }
     false
-}
-
-fn find_subbox_door(b: &Building, sub_min: Position, sub_max: Position) -> Position {
-    for y in sub_min.y..=sub_max.y {
-        for x in sub_min.x..=sub_max.x {
-            if x == sub_min.x || x == sub_max.x || y == sub_min.y || y == sub_max.y {
-                let p = Position::new(x, y);
-                if b.feature_at(p, 0) == Some(Feature::Door) {
-                    return p;
-                }
-            }
-        }
-    }
-    Position::new((sub_min.x + sub_max.x) / 2, sub_max.y)
 }
 
 fn building_style_and_name(b: &Building, seed: u64) -> (BuildingStyle, &'static str) {
@@ -3133,8 +2953,8 @@ fn roll_cache_loot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CountyFixture;
     use crate::spatial::{Aabb3, ColliderKind, FLOOR_H, Vec3};
+    use crate::{CountyFixture, DoorAxis};
 
     #[test]
     fn generated_doors_and_gates_pass_runtime_bilateral_capsule_sweep() {
@@ -3532,7 +3352,21 @@ mod tests {
         let seed = 42;
         let world = World::new(seed);
         assert_eq!(world.fixture(), CountyFixture::ResidentialStreet);
-        assert_eq!(world.fixture_plans().len(), 5);
+        let plans = world.fixture_plans();
+        assert_eq!(
+            plans
+                .iter()
+                .filter(|p| p.zone == crate::ZoneKind::Residential)
+                .count(),
+            5
+        );
+        assert_eq!(
+            plans
+                .iter()
+                .filter(|p| p.zone == crate::ZoneKind::Commercial)
+                .count(),
+            2
+        );
         let plan = world.fixture_plan().expect("default fixture plan");
         let fridge = plan.structures[0]
             .props_world()
@@ -3543,8 +3377,15 @@ mod tests {
             World::with_fixture(seed, CountyFixture::BlueprintLot).fixture(),
             CountyFixture::BlueprintLot
         );
-        assert_eq!(World::legacy(seed).fixture(), CountyFixture::None);
-        assert!(World::legacy(seed).fixture_plan().is_none());
+        assert_eq!(
+            World::with_fixture(seed, CountyFixture::None).fixture(),
+            CountyFixture::None
+        );
+        assert!(
+            World::with_fixture(seed, CountyFixture::None)
+                .fixture_plan()
+                .is_none()
+        );
 
         let mut game = crate::action::ActionGame::county(seed);
         game.teleport(Tile3D::from_pos(plan.frontage.access, 0))
@@ -3574,28 +3415,52 @@ mod tests {
     fn assert_blueprint_door_sweep(stage: &mut CountyStage, structure: &PlacedStructure) {
         use crate::spatial::SpatialWorld;
         use crate::spatial::collision::sweep_circle_rect_2d;
-        for door in &structure.blueprint.doors {
-            let door_pos = structure.transform.local_to_world(door.cell);
+        let mut door_cells: Vec<_> = structure
+            .blueprint
+            .doors
+            .iter()
+            .map(|door| door.cell)
+            .collect();
+        door_cells.extend(structure.world_cells().filter_map(|(local, _, cell)| {
+            matches!(
+                cell.kind,
+                crate::BlueprintKind::GarageDoor { segment: 0 | 2 }
+            )
+            .then_some(local)
+        }));
+        for local in door_cells {
+            let door_pos = structure.transform.local_to_world(local);
             let axis = structure
-                .door_axis_at(door.cell)
+                .door_axis_at(local)
                 .expect("world door axis for authored intent");
-            let tile = Tile3D::from_pos(door_pos, door.cell.floor);
+            let tile = Tile3D::from_pos(door_pos, local.floor);
             let cell = *stage.cell_at_world(tile).expect("materialized door cell");
-            let TileKind::Door { exterior, .. } = cell.kind else {
-                panic!("authored door at {door_pos:?} became {:?}", cell.kind);
-            };
+            assert!(
+                matches!(
+                    cell.kind,
+                    TileKind::Door { .. } | TileKind::GarageDoor { .. }
+                ),
+                "authored door at {door_pos:?} became {:?}",
+                cell.kind
+            );
             assert_eq!(cell.door_axis, Some(axis));
             let info = stage.building_by_id(cell.building_id).expect("door owner");
             assert_eq!(info.uid, BuildingUid(structure.id.0));
-            let base = info.foundation_z + f32::from(door.cell.floor) * FLOOR_H;
+            let base = info.foundation_z + f32::from(local.floor) * FLOOR_H;
             let normal = axis.normal();
             let direction = Vec2::new(normal.0 as f32, normal.1 as f32);
             let center = tile.center();
             for open in [true, false] {
-                stage
-                    .cell_mut_world(tile)
-                    .unwrap()
-                    .set_kind(TileKind::Door { open, exterior }, Material::WoodDoor);
+                stage.cell_mut_world(tile).unwrap().set_kind(
+                    match cell.kind {
+                        TileKind::Door { exterior, .. } => TileKind::Door { open, exterior },
+                        TileKind::GarageDoor { segment, .. } => {
+                            TileKind::GarageDoor { open, segment }
+                        }
+                        _ => unreachable!(),
+                    },
+                    Material::WoodDoor,
+                );
                 let query = Aabb3::new(
                     center.extend(base) - Vec3::new(1.5, 1.5, 0.01),
                     center.extend(base + crate::action::PLAYER_HEIGHT) + Vec3::new(1.5, 1.5, 0.01),
@@ -3819,7 +3684,20 @@ mod tests {
         for seed in [42, 63] {
             let world = World::new(seed);
             let plans = world.fixture_plans();
-            assert_eq!(plans.len(), 5);
+            assert_eq!(
+                plans
+                    .iter()
+                    .filter(|p| p.zone == crate::ZoneKind::Residential)
+                    .count(),
+                5
+            );
+            assert_eq!(
+                plans
+                    .iter()
+                    .filter(|p| p.zone == crate::ZoneKind::Commercial)
+                    .count(),
+                2
+            );
             let mut chunks: Vec<_> = plans
                 .iter()
                 .flat_map(|plan| plan.structures.iter())
@@ -4376,8 +4254,49 @@ mod tests {
     #[test]
     fn gas_canopy_registers_outdoor_cells_and_roof_owner() {
         use crate::spatial::SpatialWorld;
-        let world = World::with_fixture(42, CountyFixture::GasStationLot);
-        let plan = world.fixture_plan().unwrap();
+        let world = World::new(42);
+        let plans = world.fixture_plans();
+        let plan = plans
+            .iter()
+            .find(|p| p.structures.iter().any(|s| s.archetype == "gas_canopy"))
+            .expect("default gas station");
+        let slot = world
+            .town_plan()
+            .unwrap()
+            .frontages
+            .iter()
+            .find(|s| s.bounds == plan.bounds)
+            .expect("reserved commercial frontage");
+        assert!(world.tile_at(slot.connector.road).unwrap().ground.is_road());
+        assert!(
+            world
+                .tile_at(slot.connector.frontage)
+                .unwrap()
+                .ground
+                .walkable()
+        );
+        assert_eq!(
+            plan.structures[0].foundation_z,
+            plan.structures[1].foundation_z
+        );
+        let road = slot.connector.road;
+        let front = slot.connector.frontage;
+        let (dx, dy) = ((front.x - road.x).signum(), (front.y - road.y).signum());
+        let mut pos = road;
+        while pos != front {
+            let next = Position::new(pos.x + dx, pos.y + dy);
+            let height = world
+                .elevation_at(Vec2::new(pos.x as f32, pos.y as f32))
+                .unwrap();
+            let next_height = world
+                .elevation_at(Vec2::new(next.x as f32, next.y as f32))
+                .unwrap();
+            assert!(
+                (height - next_height).abs() <= 0.25,
+                "gas access grade from {pos:?} to {next:?}: {height} to {next_height}"
+            );
+            pos = next;
+        }
         let canopy = &plan.structures[1];
         let (mut stage, _, _) = CountyStage::new(&world, 42);
         for &(cx, cy) in &fixture_chunks(canopy) {

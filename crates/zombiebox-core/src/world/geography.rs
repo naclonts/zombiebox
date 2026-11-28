@@ -606,14 +606,6 @@ pub(super) fn generate_with_meta(
             }
         }
     }
-    let base_w = 30 + (noise(seed, 8, 0, 0) % 5) as i32;
-    plan.lot(
-        tiles,
-        &mut lots,
-        (base_x, base_y + 3, base_x + base_w, base_y + 32),
-        District::MilitaryBase,
-        (base_x + 10, base_y + 3),
-    );
     // Cabin clearings remain surrounded by actual woodland even where the
     // regional noise happens to favor grass. Additional lanes keep their
     // parcels well east of the lake and the main clearing.
@@ -663,13 +655,6 @@ pub(super) fn generate_with_meta(
             District::Police,
             police_x,
             ys[1],
-        ),
-        plan.landmark(
-            tiles,
-            LandmarkKind::ArmyBase,
-            District::MilitaryBase,
-            base_x + 10,
-            base_y,
         ),
         plan.landmark(tiles, LandmarkKind::Cabin, District::Woods, cabin_x, 225),
         plan.landmark(tiles, LandmarkKind::Lake, District::Woods, shore_x, lake_y),
@@ -759,6 +744,40 @@ pub(super) fn generate_ribbon(
         })
         .expect("a dry valley shelf fits the ribbon road plan");
     let (town_x0, town_y0) = meta.town_min;
+    use super::town_planner::{RoadClass, TownMorphology};
+    town_plan.requested_morphology = match noise(seed, 93, 0, 0) % 4 {
+        0 => TownMorphology::HighwayRibbon,
+        1 => TownMorphology::Crossroads,
+        2 => TownMorphology::SplitBank,
+        _ => TownMorphology::Lakeshore,
+    };
+    // The opposite side of the collector creates a second arterial approach.
+    // Candidates are checked against the same terrain and raster constraints.
+    if town_plan.requested_morphology == TownMorphology::Crossroads {
+        let j = town_plan.collector_junction;
+        let end = town_plan.local_junction;
+        let dx = (j.x - end.x).signum();
+        let dy = (j.y - end.y).signum();
+        let sample_index = town_plan.junctions[0].parent_sample;
+        let world_bounds = GridRect::new(
+            Position::new(2, 2),
+            Position::new(WORLD_SIZE - 3, WORLD_SIZE - 3),
+        );
+        for length in [70, 60, 50, 40] {
+            let tip = Position::new(j.x + dx * length, j.y + dy * length);
+            if town_plan.add_dry_branch(
+                RoadClass::Arterial,
+                0,
+                sample_index,
+                tip,
+                world_bounds,
+                &|p| natural_field.sample(p),
+            ) {
+                town_plan.morphology = TownMorphology::Crossroads;
+                break;
+            }
+        }
+    }
 
     for (p, cell) in town_plan.raster() {
         if let Some(i) = p.index() {
@@ -772,7 +791,9 @@ pub(super) fn generate_ribbon(
             };
             tile.ground = if tile.water.is_some() {
                 Ground::Bridge
-            } else if cell.road_index == 0 {
+            } else if town_plan.roads[cell.road_index].class
+                == super::town_planner::RoadClass::Arterial
+            {
                 Ground::Road
             } else {
                 Ground::Street
@@ -787,7 +808,6 @@ pub(super) fn generate_ribbon(
     let cabin_x = 412 + (noise(seed, 21, 0, 0) % 21) as i32;
     let base_x = 90 + (noise(seed, 22, 0, 0) % 3) as i32;
     let base_y = 330 + (noise(seed, 23, 0, 0) % 22) as i32;
-    let base = plan.point(base_x + 10, base_y);
     let arterial_y = town_y0 + 75;
     plan.extension_line(
         tiles,
@@ -795,15 +815,6 @@ pub(super) fn generate_ribbon(
         (base_x + 10, base_y),
         Ground::Road,
     );
-    let base_w = 30 + (noise(seed, 8, 0, 0) % 5) as i32;
-    plan.lot(
-        tiles,
-        &mut lots,
-        (base_x, base_y + 3, base_x + base_w, base_y + 32),
-        District::MilitaryBase,
-        (base_x + 10, base_y + 3),
-    );
-
     let trail_y = pass_y - 20;
     let spine = 25 + field(seed, 12, 0, trail_y, 57) / 5;
     let mountain_edge = spine * ((trail_y - pass_y).abs() - 5).clamp(0, 32) / 32;
@@ -863,6 +874,8 @@ pub(super) fn generate_ribbon(
         .unwrap_or(river_west)
         - 2;
     let bridge_east = river_east + 2;
+    let equal_bank_rows = (crossing_y - 2..=crossing_y + 2)
+        .all(|y| river_interval(y) == Some((river_west, river_east)));
     plan.extension_line(
         tiles,
         (town_x0 + 215, arterial_y),
@@ -900,8 +913,211 @@ pub(super) fn generate_ribbon(
     plan.extension_line(tiles, (480, crossing_y), (480, lake_y), Ground::Trail);
     plan.extension_line(tiles, (480, lake_y), (shore_x, lake_y), Ground::Trail);
 
-    let arterial = &town_plan.roads[0].centerline;
-    let local = &town_plan.roads[2].centerline;
+    // Candidate geometry and its distant residential parcel commit together.
+    let variant_tiles = tiles.to_vec();
+    let variant_plan = town_plan.clone();
+    let mut distant_parcel_rejected = false;
+    // Promote the surveyed river approach into the town graph only when all
+    // five bridge rows have identical banks and the remaining pavement is dry.
+    if town_plan.requested_morphology == TownMorphology::SplitBank && equal_bank_rows {
+        let mut points = Vec::new();
+        let vertices = [
+            (town_x0 + 215, arterial_y),
+            (approach_west, arterial_y),
+            (approach_west, crossing_y),
+            (bridge_east, crossing_y),
+            (bridge_east + 36, crossing_y),
+        ];
+        let mut bridge_first = 0;
+        let mut bridge_last = 0;
+        for (segment, pair) in vertices.windows(2).enumerate() {
+            let (a, b) = (pair[0], pair[1]);
+            let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs());
+            if segment == 2 {
+                bridge_first = points.len().saturating_sub(1);
+            }
+            for i in 0..=steps {
+                if segment > 0 && i == 0 {
+                    continue;
+                }
+                let p = if steps == 0 {
+                    a
+                } else {
+                    (a.0 + (b.0 - a.0) * i / steps, a.1 + (b.1 - a.1) * i / steps)
+                };
+                points.push(plan.point(p.0, p.1));
+            }
+            if segment == 2 {
+                bridge_last = points.len().saturating_sub(1);
+            }
+        }
+        let mut candidate = town_plan.clone();
+        let parent_sample = candidate.roads[0].continuous_centerline.len() - 1;
+        let road_index = candidate.roads.len();
+        let added = candidate.add_surveyed_route(
+            RoadClass::Collector,
+            0,
+            parent_sample,
+            points,
+            Some(super::town_planner::BridgeSpan {
+                first_sample: bridge_first,
+                last_sample: bridge_last,
+            }),
+            true,
+        );
+        let allowed: std::collections::HashSet<_> = (crossing_y - 2..=crossing_y + 2)
+            .flat_map(|y| (river_west..=river_east).map(move |x| plan.point(x, y)))
+            .collect();
+        if added
+            && candidate
+                .raster()
+                .filter(|(_, c)| c.road_index == road_index)
+                .all(|(p, _)| {
+                    p.index().is_some_and(|i| {
+                        tiles[i].water.is_none()
+                            || (tiles[i].water == Some(Water::River) && allowed.contains(&p))
+                    })
+                })
+        {
+            candidate.morphology = TownMorphology::SplitBank;
+            town_plan = candidate;
+            for (p, _cell) in town_plan
+                .raster()
+                .filter(|(_, c)| c.road_index == road_index)
+            {
+                if let Some(i) = p.index() {
+                    tiles[i].ground = if tiles[i].water.is_some() {
+                        Ground::Bridge
+                    } else {
+                        Ground::Street
+                    };
+                    tiles[i].district = District::Residential;
+                }
+            }
+        }
+    }
+    if town_plan.requested_morphology == TownMorphology::Lakeshore {
+        // Follow the lake's western shore at a dry public setback. The
+        // approach and the contour share the normal town raster and grading.
+        let mut contour = Vec::new();
+        for y in lake_y - 20..=lake_y + 20 {
+            if let Some(west) = (lake_x - rx - 12..=lake_x)
+                .find(|&x| tiles[plan.index(x, y)].water == Some(Water::Lake))
+            {
+                if let Some(x) = (west - 15..=west - 5).rev().find(|&x| {
+                    natural_field
+                        .sample(plan.point(x, y))
+                        .is_some_and(|s| (6.0..=8.0).contains(&s.water_distance))
+                }) {
+                    contour.push((x, y));
+                }
+            }
+        }
+        if contour.len() >= 30 {
+            let first = contour[0];
+            let mut vertices = vec![
+                (town_x0 + 215, arterial_y),
+                (first.0 - 8, arterial_y),
+                (first.0 - 8, first.1),
+                first,
+            ];
+            vertices.extend(contour.into_iter().skip(1));
+            let mut points = Vec::new();
+            let mut contour_start = 0;
+            for (segment, pair) in vertices.windows(2).enumerate() {
+                let (a, b) = (pair[0], pair[1]);
+                let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs());
+                for i in 0..=steps {
+                    if segment > 0 && i == 0 {
+                        continue;
+                    }
+                    let p = if steps == 0 {
+                        a
+                    } else {
+                        (a.0 + (b.0 - a.0) * i / steps, a.1 + (b.1 - a.1) * i / steps)
+                    };
+                    let p = plan.point(p.0, p.1);
+                    if points.last() != Some(&p) {
+                        points.push(p);
+                    }
+                }
+                if segment == 2 {
+                    contour_start = points.len().saturating_sub(1);
+                }
+            }
+            let shore_valid = points[contour_start..].iter().all(|&p| {
+                natural_field
+                    .sample(p)
+                    .is_some_and(|s| (5.0..=9.0).contains(&s.water_distance))
+            });
+            let mut candidate = town_plan.clone();
+            let parent_sample = candidate.roads[0].continuous_centerline.len() - 1;
+            let road_index = candidate.roads.len();
+            if candidate.add_surveyed_route(
+                RoadClass::Collector,
+                0,
+                parent_sample,
+                points,
+                None,
+                true,
+            ) && shore_valid
+                && candidate
+                    .raster()
+                    .filter(|(_, c)| c.road_index == road_index)
+                    .all(|(p, _)| {
+                        natural_field
+                            .sample(p)
+                            .is_some_and(|s| s.water_distance > 0.0)
+                    })
+            {
+                candidate.morphology = TownMorphology::Lakeshore;
+                town_plan = candidate;
+                for (p, _) in town_plan
+                    .raster()
+                    .filter(|(_, c)| c.road_index == road_index)
+                {
+                    if let Some(i) = p.index() {
+                        tiles[i].ground = Ground::Street;
+                        tiles[i].district = District::Residential;
+                    }
+                }
+            }
+        }
+    }
+    // Provide a destination on the far bank or along the lakeshore, not
+    // merely a scenic extension of the network. Keep these parcels separate
+    // from the guaranteed starter neighborhood.
+    if matches!(
+        town_plan.morphology,
+        TownMorphology::SplitBank | TownMorphology::Lakeshore
+    ) {
+        let road = &town_plan.roads[3];
+        let start = road.bridge.map_or_else(
+            || road.centerline.len().saturating_sub(45),
+            |b| (b.last_sample + 5).min(road.centerline.len() - 1),
+        );
+        let neighborhood = &road.centerline[start..];
+        if infill_street(
+            tiles,
+            &mut lots,
+            &[],
+            neighborhood,
+            55,
+            9,
+            District::Residential,
+        )
+        .is_none()
+        {
+            tiles.copy_from_slice(&variant_tiles);
+            town_plan = variant_plan;
+            distant_parcel_rejected = true;
+        }
+    }
+
+    let arterial_line = town_plan.roads[0].centerline.clone();
+    let local_line = town_plan.roads[2].centerline.clone();
+    let arterial = &arterial_line;
+    let local = &local_line;
     let normal = if local[0].x == local.last().unwrap().x {
         (1, 0)
     } else {
@@ -927,7 +1143,8 @@ pub(super) fn generate_ribbon(
             }
         }
     }
-    let collector = &town_plan.roads[1].centerline;
+    let collector_line = town_plan.roads[1].centerline.clone();
+    let collector = &collector_line;
     for _ in starter_count..5 {
         [collector, arterial]
             .into_iter()
@@ -943,8 +1160,78 @@ pub(super) fn generate_ribbon(
     // Scout buildable blocks before infill consumes the larger envelopes.
     // Protect the whole public connector alongside each selected block, then
     // let the final frontage pass fill gaps between the materialized parcels.
-    let candidates = super::frontage::reserve(seed, &town_plan, &natural_field, tiles, &lots);
+    let mut candidates = super::frontage::reserve(seed, &town_plan, &natural_field, tiles, &lots);
     use super::frontage::FrontageUse;
+    let gas_capable = |slots: &[super::frontage::FrontageSlot]| {
+        slots.iter().any(|slot| {
+            slot.use_hint == FrontageUse::Commercial
+                && slot.bounds.width() >= 28
+                && slot.bounds.height() >= 28
+        })
+    };
+    if !gas_capable(&candidates) {
+        // Scarce sites can use a short, dry access street. Survey it and
+        // its gas frontage together before modifying the real town.
+        let bounds = GridRect::new(
+            Position::new(2, 2),
+            Position::new(WORLD_SIZE - 3, WORLD_SIZE - 3),
+        );
+        let parent = 2;
+        let sample_index = town_plan.roads[parent].continuous_centerline.len() - 1;
+        let start = *town_plan.roads[parent].centerline.last().unwrap();
+        'survey: for length in [60, 80, 40, 100] {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let end = Position::new(start.x + dx * length, start.y + dy * length);
+                let mut candidate = town_plan.clone();
+                if !candidate.add_dry_branch(
+                    RoadClass::Collector,
+                    parent,
+                    sample_index,
+                    end,
+                    bounds,
+                    &|p| natural_field.sample(p),
+                ) {
+                    continue;
+                }
+                let road_index = candidate.roads.len() - 1;
+                if candidate.roads[road_index]
+                    .centerline
+                    .iter()
+                    .skip(6)
+                    .any(|&p| town_plan.road_at(p).is_some())
+                {
+                    continue;
+                }
+                if candidate
+                    .raster()
+                    .filter(|(_, c)| c.road_index == road_index)
+                    .any(|(p, _)| {
+                        lots.iter()
+                            .any(|lot| GridRect::new(lot.min, lot.max).contains(p))
+                    })
+                {
+                    continue;
+                }
+                let mut trial_tiles = tiles.to_vec();
+                for (p, _) in candidate
+                    .raster()
+                    .filter(|(_, c)| c.road_index == road_index)
+                {
+                    let tile = &mut trial_tiles[p.index().unwrap()];
+                    tile.ground = Ground::Street;
+                    tile.district = District::Residential;
+                }
+                let slots =
+                    super::frontage::reserve(seed, &candidate, &natural_field, &trial_tiles, &lots);
+                if gas_capable(&slots) {
+                    tiles.copy_from_slice(&trial_tiles);
+                    town_plan = candidate;
+                    candidates = slots;
+                    break 'survey;
+                }
+            }
+        }
+    }
     for use_hint in [FrontageUse::Commercial, FrontageUse::Residential] {
         town_plan.frontages.extend(
             candidates
@@ -1048,10 +1335,6 @@ pub(super) fn generate_ribbon(
             entrance: police,
         },
         Landmark {
-            kind: LandmarkKind::ArmyBase,
-            entrance: base,
-        },
-        Landmark {
             kind: LandmarkKind::Cabin,
             entrance: cabin,
         },
@@ -1075,6 +1358,13 @@ pub(super) fn generate_ribbon(
             entrance: plan.point(cx, route_y),
         });
     }
+    if town_plan.morphology != town_plan.requested_morphology {
+        town_plan.fallback_reason = Some(if distant_parcel_rejected {
+            "no usable distant residential parcel"
+        } else {
+            "no eligible dry route or validated crossing"
+        });
+    }
     (landmarks, lots, meta, natural_field, town_plan)
 }
 
@@ -1082,6 +1372,51 @@ pub(super) fn generate_ribbon(
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn unavailable_morphology_records_fallback() {
+        let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
+        let (_, _, _, _, town) = generate_ribbon(24, &mut tiles);
+        assert_eq!(
+            town.requested_morphology,
+            super::super::town_planner::TownMorphology::SplitBank
+        );
+        assert_eq!(
+            town.morphology,
+            super::super::town_planner::TownMorphology::HighwayRibbon
+        );
+        assert!(town.fallback_reason.is_some());
+    }
+
+    #[test]
+    fn shoreline_and_far_bank_have_residential_destinations() {
+        for seed in [0, 2, 4, 20] {
+            let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
+            let (_, lots, _, natural, town) = generate_ribbon(seed, &mut tiles);
+            let road = town.roads.last().unwrap();
+            if town.morphology == super::super::town_planner::TownMorphology::Lakeshore {
+                for &p in road.centerline.iter().rev().take(30) {
+                    let d = natural.sample(p).unwrap().water_distance;
+                    assert!(
+                        (5.0..=9.0).contains(&d),
+                        "seed {seed}: shore setback {d} at {p:?}"
+                    );
+                }
+            }
+            assert!(matches!(
+                town.morphology,
+                super::super::town_planner::TownMorphology::SplitBank
+                    | super::super::town_planner::TownMorphology::Lakeshore
+            ));
+            let end = *road.centerline.last().unwrap();
+            assert!(
+                lots.iter()
+                    .filter(|lot| lot.district == District::Residential)
+                    .any(|lot| lot.front.distance(end) < 40),
+                "seed {seed} has no shore destination"
+            );
+        }
+    }
 
     #[test]
     fn county_roads_frontages_and_natural_landmarks_across_seeds() {
@@ -1128,14 +1463,14 @@ mod tests {
                     );
                 }
             }
-            let base = lots
-                .iter()
-                .find(|lot| lot.district == District::MilitaryBase)
-                .unwrap();
             assert!(
                 lots.iter()
-                    .filter(|lot| lot.district == District::City)
-                    .all(|lot| gap(base, lot) > 16)
+                    .all(|lot| lot.district != District::MilitaryBase)
+            );
+            assert!(
+                landmarks
+                    .iter()
+                    .all(|landmark| landmark.kind != LandmarkKind::ArmyBase)
             );
             for (i, lot) in lots.iter().enumerate() {
                 for other in &lots[i + 1..] {

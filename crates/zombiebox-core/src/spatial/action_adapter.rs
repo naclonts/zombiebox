@@ -684,7 +684,7 @@ fn emit_tile_floor_colliders<S: SpatialStageSource + ?Sized>(
                 );
             }
         }
-        TileKind::Door { open, .. } => {
+        TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } => {
             let along_y = cell.orientation == WallOrientation::AlongY;
             let (full_x0, full_x1, full_y0, full_y1) = if along_y {
                 (
@@ -729,7 +729,7 @@ fn emit_tile_floor_colliders<S: SpatialStageSource + ?Sized>(
                         material: Material::WoodDoor,
                     },
                 );
-            } else {
+            } else if matches!(cell.kind, TileKind::Door { .. }) {
                 // Two slim 0.05 jamb posts framing the 0.90-wide open doorway.
                 for (a0, a1) in [(-0.5_f32, -0.45_f32), (0.45, 0.5)] {
                     let (jx0, jx1, jy0, jy1) = if along_y {

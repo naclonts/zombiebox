@@ -211,7 +211,7 @@ fn kind(d: District, n: u64) -> BuildingKind {
         ][(n % 3) as usize],
         District::Hospital => BuildingKind::Hospital,
         District::Police => BuildingKind::Precinct,
-        District::MilitaryBase => BuildingKind::ArmyBase,
+        District::MilitaryBase => unreachable!("military parcels are retired"),
         District::Farm => BuildingKind::Barn,
         District::Woods => BuildingKind::Cabin,
     }
@@ -761,92 +761,12 @@ fn floorplan(
         }
         features.push(map);
     }
-    if k == BuildingKind::ArmyBase && w >= 15 && h >= 15 {
-        // Three separate buildings face a shared open compound and gate.
-        let map = &mut features[0];
-        map.fill(Feature::Floor);
-        layout.clear();
-        let blocks = [
-            (
-                Position::new(min.x + 1, min.y + 1),
-                Position::new(midx - 2, midy - 2),
-                RoomKind::Barracks,
-            ),
-            (
-                Position::new(midx + 2, min.y + 1),
-                Position::new(max.x - 1, midy - 2),
-                RoomKind::Armory,
-            ),
-            (
-                Position::new(min.x + 1, midy + 2),
-                Position::new(max.x - 1, max.y - 1),
-                RoomKind::MotorPool,
-            ),
-        ];
-        for (a, b, room) in blocks {
-            for y in a.y..=b.y {
-                for x in a.x..=b.x {
-                    if x == a.x || x == b.x || y == a.y || y == b.y {
-                        set(map, min, w, Position::new(x, y), Feature::Wall(mat));
-                    }
-                }
-            }
-            let door = if room == RoomKind::MotorPool {
-                Position::new((a.x + b.x) / 2, a.y)
-            } else {
-                Position::new((a.x + b.x) / 2, b.y)
-            };
-            set(map, min, w, door, Feature::Door);
-            set(
-                map,
-                min,
-                w,
-                Position::new(a.x + 1, a.y + 1),
-                Feature::Furniture,
-            );
-            layout.push(Room {
-                min: Position::new(a.x + 1, a.y + 1),
-                max: Position::new(b.x - 1, b.y - 1),
-                floor: 0,
-                kind: room,
-            });
-        }
-        set(map, min, w, entry, Feature::Gate);
-    }
     let wings = vec![crate::action::WingRect::new(
         min.x, min.y, max.x, max.y, floors,
     )];
     let mut door_axes = Vec::new();
     for (floor, map) in features.iter_mut().enumerate() {
-        // ArmyBase's three sub-buildings already stamp their own entrances;
-        // running the generic connector through the shared compound yard can
-        // add a second door directly behind a stamped door.
-        if !(k == BuildingKind::ArmyBase && floor == 0) {
-            connect_floor(map, min, max, if floor == 0 { entry } else { stair });
-        }
-        if k == BuildingKind::ArmyBase && floor == 0 {
-            // The stamped sub-building fronts can meet on consecutive tiles;
-            // retain the first opening and turn the duplicate into apron floor
-            // so a closed neighboring leaf can never seal its passage.
-            let width = max.x - min.x + 1;
-            for y in min.y..=max.y {
-                for x in min.x..=max.x {
-                    let i = ((y - min.y) * width + x - min.x) as usize;
-                    if map[i] != Feature::Door {
-                        continue;
-                    }
-                    for (dx, dy) in [(0, 1), (1, 0)] {
-                        let q = Position::new(x + dx, y + dy);
-                        if q.x <= max.x && q.y <= max.y {
-                            let qi = ((q.y - min.y) * width + q.x - min.x) as usize;
-                            if map[qi] == Feature::Door {
-                                map[qi] = Feature::Floor;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        connect_floor(map, min, max, if floor == 0 { entry } else { stair });
         door_axes.extend(normalize_doors(map, min, max, floor as u8));
     }
     Building {
@@ -866,30 +786,11 @@ fn floorplan(
 }
 
 fn place_building(lot: &Lot, building: &Building, tiles: &mut ParcelTiles) {
-    let (min, max, entry, k) = (building.min, building.max, building.entry, building.kind);
+    let (min, max, entry) = (building.min, building.max, building.entry);
     for y in min.y..=max.y {
         for x in min.x..=max.x {
             let p = Position::new(x, y);
             tiles[p].feature = building.feature_at(p, 0).unwrap();
-        }
-    }
-    if k == BuildingKind::ArmyBase {
-        for y in lot.min.y..=lot.max.y {
-            for x in lot.min.x..=lot.max.x {
-                if x == lot.min.x || x == lot.max.x || y == lot.min.y || y == lot.max.y {
-                    let p = Position::new(x, y);
-                    if !road(tiles[p].ground) {
-                        // The compound's explicit entry gate is stamped on the
-                        // building apron. Do not add a second lot-front gate one
-                        // tile ahead of it; that external leaf can seal the
-                        // entry's 3x3 passage and has no building metadata for
-                        // axis lookup. Leave the frontage open for the approach.
-                        if p != lot.front {
-                            tiles[p].feature = Feature::Fence;
-                        }
-                    }
-                }
-            }
         }
     }
     // The short walk from lot frontage to door remains unobstructed.
@@ -988,13 +889,14 @@ fn populate(
         .collect();
     let mut loot_candidates = candidates.clone();
     let loot_count = match lot.district {
-        District::Hospital | District::Police | District::MilitaryBase => 24,
+        District::Hospital | District::Police => 24,
         District::City => 10,
         _ => 2,
     };
     let variant = loot_variant(seed, lot);
     for i in 0..loot_count {
         let kind = match lot.district {
+            District::MilitaryBase => unreachable!("military parcels are retired"),
             District::Hospital => {
                 if i < 20 {
                     LootKind::Medkit
@@ -1002,7 +904,7 @@ fn populate(
                     LootKind::Tools
                 }
             }
-            District::Police | District::MilitaryBase => {
+            District::Police => {
                 if i % 2 == 0 {
                     LootKind::Firearm
                 } else {
@@ -1037,7 +939,7 @@ fn populate(
         };
         let preferred: &[RoomKind] = match lot.district {
             District::Hospital => &[RoomKind::Pharmacy, RoomKind::Ward],
-            District::Police | District::MilitaryBase => &[RoomKind::Armory],
+            District::Police => &[RoomKind::Armory],
             District::City => &[RoomKind::Shop, RoomKind::Storage, RoomKind::Office],
             _ => &[RoomKind::Kitchen, RoomKind::Storage, RoomKind::Living],
         };
@@ -1062,7 +964,7 @@ fn populate(
     }
     candidates.retain(|&(p, f)| !sites.loot.iter().any(|s| s.position == p && s.floor == f));
     let count = match lot.district {
-        District::Hospital | District::Police | District::MilitaryBase => 24,
+        District::Hospital | District::Police => 24,
         District::City => 16,
         District::Farm | District::Woods => 1,
         _ => 2,
@@ -1076,7 +978,7 @@ fn populate(
                     MonsterKind::Shambler
                 }
             }
-            District::Police | District::MilitaryBase => {
+            District::Police => {
                 if i * 4 < count * 3 {
                     MonsterKind::Shooter
                 } else {
@@ -1099,9 +1001,7 @@ fn populate(
         };
         let preferred: &[RoomKind] = match lot.district {
             District::Hospital => &[RoomKind::Ward, RoomKind::Pharmacy],
-            District::Police | District::MilitaryBase => {
-                &[RoomKind::Armory, RoomKind::Cells, RoomKind::Lobby]
-            }
+            District::Police => &[RoomKind::Armory, RoomKind::Cells, RoomKind::Lobby],
             District::City => &[RoomKind::Shop, RoomKind::Office, RoomKind::Apartment],
             _ => &[RoomKind::Living, RoomKind::Bedroom],
         };
@@ -1372,7 +1272,7 @@ mod tests {
                 .iter()
                 .filter(|s| world.district_at(s.position) == Some(District::Residential))
                 .count();
-            for district in [District::Hospital, District::Police, District::MilitaryBase] {
+            for district in [District::Hospital, District::Police] {
                 let b = sites
                     .buildings
                     .iter()
@@ -1457,6 +1357,7 @@ mod tests {
                 let in_roles =
                     |p, f, roles: &[RoomKind]| room_at(b, p, f).is_some_and(|r| roles.contains(&r));
                 match b.district {
+                    District::MilitaryBase => panic!("retired military parcel"),
                     District::Hospital => {
                         assert!(loot.iter().filter(|s| s.kind == LootKind::Medkit).count() >= 20);
                         assert!(
@@ -1490,7 +1391,7 @@ mod tests {
                                 >= infected.len()
                         );
                     }
-                    District::Police | District::MilitaryBase => {
+                    District::Police => {
                         assert!(loot.iter().filter(|s| s.kind == LootKind::Firearm).count() >= 12);
                         assert!(loot.iter().filter(|s| s.kind == LootKind::Ammo).count() >= 12);
                         assert!(

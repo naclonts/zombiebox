@@ -9,6 +9,28 @@ use super::frontage::FrontageSlot;
 use super::{GridRect, Position, relief::NaturalTerrainSample};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TownMorphology {
+    HighwayRibbon,
+    Crossroads,
+    SplitBank,
+    Lakeshore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RoadJunction {
+    pub road: usize,
+    pub sample: usize,
+    pub parent_road: usize,
+    pub parent_sample: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BridgeSpan {
+    pub first_sample: usize,
+    pub last_sample: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoadClass {
     Arterial,
     Collector,
@@ -18,6 +40,8 @@ pub enum RoadClass {
 #[derive(Clone, Debug)]
 pub struct Road {
     pub class: RoadClass,
+    pub turnaround: Option<Position>,
+    pub bridge: Option<BridgeSpan>,
     /// Consecutive raster samples at most one tile apart on either world axis.
     pub centerline: Vec<Position>,
     /// Unquantized centerline samples, in world tile coordinates.
@@ -32,6 +56,11 @@ pub struct RoadCell {
 
 #[derive(Clone, Debug)]
 pub struct TownPlan {
+    pub morphology: TownMorphology,
+    pub requested_morphology: TownMorphology,
+    /// Why the requested layout fell back to the ribbon, if it did.
+    pub fallback_reason: Option<&'static str>,
+    pub junctions: Vec<RoadJunction>,
     pub roads: Vec<Road>,
     pub frontages: Vec<FrontageSlot>,
     pub core_anchor: Position,
@@ -191,21 +220,44 @@ impl TownPlan {
                 let roads = vec![
                     Road {
                         class: RoadClass::Arterial,
+                        turnaround: None,
+                        bridge: None,
                         centerline: arterial.clone(),
                         continuous_centerline: continuous.clone(),
                     },
                     Road {
                         class: RoadClass::Collector,
+                        turnaround: None,
+                        bridge: None,
                         continuous_centerline: straight(&collector),
                         centerline: collector,
                     },
                     Road {
                         class: RoadClass::Local,
+                        turnaround: Some(turnaround),
+                        bridge: None,
                         continuous_centerline: straight(&local),
                         centerline: local,
                     },
                 ];
                 let mut plan = Self {
+                    morphology: TownMorphology::HighwayRibbon,
+                    requested_morphology: TownMorphology::HighwayRibbon,
+                    fallback_reason: None,
+                    junctions: vec![
+                        RoadJunction {
+                            road: 1,
+                            sample: 0,
+                            parent_road: 0,
+                            parent_sample: continuous.len() / 2,
+                        },
+                        RoadJunction {
+                            road: 2,
+                            sample: 0,
+                            parent_road: 1,
+                            parent_sample: roads[1].continuous_centerline.len() - 1,
+                        },
+                    ],
                     roads,
                     frontages: Vec::new(),
                     core_anchor: junction,
@@ -231,7 +283,14 @@ impl TownPlan {
         // around a continuous segment. Earlier road classes take
         // priority at intersections; within a road the closest segment wins.
         let mut distances = BTreeMap::<(i32, i32), f32>::new();
-        for (road_index, road) in self.roads.iter().enumerate() {
+        let mut road_order: Vec<_> = (0..self.roads.len()).collect();
+        road_order.sort_by_key(|&i| match self.roads[i].class {
+            RoadClass::Arterial => 0,
+            RoadClass::Collector => 1,
+            RoadClass::Local => 2,
+        });
+        for road_index in road_order {
+            let road = &self.roads[road_index];
             let radius: f32 = if road.class == RoadClass::Arterial {
                 2.5
             } else {
@@ -270,24 +329,95 @@ impl TownPlan {
                 }
             }
         }
-        // Explicit square bulb at the dead end, assigned to the final local
-        // segment for terrain grading and road identity.
-        let road_index = self
-            .roads
-            .iter()
-            .position(|road| {
-                road.class == RoadClass::Local && road.centerline.last() == Some(&self.turnaround)
-            })
-            .expect("turnaround belongs to the local street");
-        let segment_index = self.roads[road_index].continuous_centerline.len() - 2;
-        for y in self.turnaround.y - 2..=self.turnaround.y + 2 {
-            for x in self.turnaround.x - 2..=self.turnaround.x + 2 {
-                self.raster.entry((x, y)).or_insert(RoadCell {
-                    road_index,
-                    segment_index,
-                });
+        // Each dead-end road owns its own paved turnaround.
+        for (road_index, road) in self.roads.iter().enumerate() {
+            let Some(turnaround) = road.turnaround else {
+                continue;
+            };
+            let segment_index = road.continuous_centerline.len() - 2;
+            for y in turnaround.y - 2..=turnaround.y + 2 {
+                for x in turnaround.x - 2..=turnaround.x + 2 {
+                    self.raster.entry((x, y)).or_insert(RoadCell {
+                        road_index,
+                        segment_index,
+                    });
+                }
             }
         }
+    }
+
+    /// Add a connected branch after checking its complete dry road envelope.
+    pub fn add_dry_branch(
+        &mut self,
+        class: RoadClass,
+        parent_road: usize,
+        parent_sample: usize,
+        end: Position,
+        bounds: GridRect,
+        sample: &impl Fn(Position) -> Option<NaturalTerrainSample>,
+    ) -> bool {
+        let start = self.roads[parent_road].continuous_centerline[parent_sample];
+        if start[0].fract() != 0.0 || start[1].fract() != 0.0 {
+            return false;
+        }
+        let start = Position::new(start[0] as i32, start[1] as i32);
+        let points = line(start, end);
+        if points.len() < 2 || score_path(&points, bounds, sample).is_none() {
+            return false;
+        }
+        let road = self.roads.len();
+        self.junctions.push(RoadJunction {
+            road,
+            sample: 0,
+            parent_road,
+            parent_sample,
+        });
+        self.roads.push(Road {
+            class,
+            turnaround: Some(end),
+            bridge: None,
+            continuous_centerline: points.iter().map(|p| [p.x as f32, p.y as f32]).collect(),
+            centerline: points,
+        });
+        self.raster.clear();
+        self.rasterize();
+        true
+    }
+
+    /// Append a surveyed route whose crossings have been validated by geography.
+    pub fn add_surveyed_route(
+        &mut self,
+        class: RoadClass,
+        parent_road: usize,
+        parent_sample: usize,
+        points: Vec<Position>,
+        bridge: Option<BridgeSpan>,
+        turnaround: bool,
+    ) -> bool {
+        if points.len() < 2 {
+            return false;
+        }
+        let parent = self.roads[parent_road].continuous_centerline[parent_sample];
+        if parent != [points[0].x as f32, points[0].y as f32] {
+            return false;
+        }
+        let index = self.roads.len();
+        self.junctions.push(RoadJunction {
+            road: index,
+            sample: 0,
+            parent_road,
+            parent_sample,
+        });
+        self.roads.push(Road {
+            class,
+            turnaround: turnaround.then(|| *points.last().unwrap()),
+            bridge,
+            continuous_centerline: points.iter().map(|p| [p.x as f32, p.y as f32]).collect(),
+            centerline: points,
+        });
+        self.raster.clear();
+        self.rasterize();
+        true
     }
 
     pub fn road_at(&self, p: Position) -> Option<RoadCell> {
@@ -342,8 +472,31 @@ impl TownPlan {
             add(&p.x.to_le_bytes());
             add(&p.y.to_le_bytes());
         }
+        add(&[self.morphology as u8, self.requested_morphology as u8]);
+        if let Some(reason) = self.fallback_reason {
+            add(reason.as_bytes());
+        }
+        for j in &self.junctions {
+            for n in [j.road, j.sample, j.parent_road, j.parent_sample] {
+                add(&(n as u64).to_le_bytes());
+            }
+        }
         for road in &self.roads {
             add(&[road.class as u8]);
+            if let Some(p) = road.turnaround {
+                add(&[1]);
+                add(&p.x.to_le_bytes());
+                add(&p.y.to_le_bytes());
+            } else {
+                add(&[0]);
+            }
+            if let Some(b) = road.bridge {
+                add(&[1]);
+                add(&(b.first_sample as u64).to_le_bytes());
+                add(&(b.last_sample as u64).to_le_bytes());
+            } else {
+                add(&[0]);
+            }
             add(&(road.continuous_centerline.len() as u64).to_le_bytes());
             for p in &road.continuous_centerline {
                 add(&p[0].to_bits().to_le_bytes());

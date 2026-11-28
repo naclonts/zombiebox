@@ -1,11 +1,18 @@
 use std::collections::{HashSet, VecDeque};
 
 use zombiebox_core::{
-    ActionGame, ActionInput, ControlMode, InteractPrompt, LandmarkKind, MotorcycleInput, Position,
-    RideInput, Tile3D, Vec2, VehicleId, VehicleView, World, world_to_tile_coord,
+    ActionGame, ActionInput, ControlMode, Ground, InteractPrompt, LandmarkKind, MotorcycleInput,
+    Position, RideInput, RoadClass, Tile3D, TownMorphology, Vec2, VehicleId, VehicleView, World,
+    world_to_tile_coord,
 };
 
-const REVIEW_SEEDS: [u64; 6] = [0, 1, 42, 641, 93513, u64::MAX];
+const REVIEW_SEEDS: [u64; 8] = [0, 1, 2, 7, 42, 641, 93513, u64::MAX];
+const MORPHOLOGY_FIXTURES: [(u64, TownMorphology); 4] = [
+    (7, TownMorphology::HighwayRibbon),
+    (1, TownMorphology::Crossroads),
+    (2, TownMorphology::SplitBank),
+    (0, TownMorphology::Lakeshore),
+];
 
 fn is_public_road(world: &World, p: Position) -> bool {
     world.tile_at(p).is_some_and(|tile| tile.ground.is_road())
@@ -30,30 +37,105 @@ fn road_component(world: &World, start: Position) -> HashSet<Position> {
 }
 
 fn center_height(world: &World, p: Position) -> f32 {
-    world
-        .elevation_at(Vec2::new(p.x as f32, p.y as f32))
-        .expect("in-bounds road sample")
+    road_height(world, Vec2::new(p.x as f32, p.y as f32))
+}
+
+fn road_height(world: &World, point: Vec2) -> f32 {
+    world.bridge_deck_at(point).map_or_else(
+        || world.elevation_at(point).expect("in-bounds road sample"),
+        |deck| deck.z,
+    )
 }
 
 #[test]
-fn default_world_has_a_repeatable_highway_ribbon_plan() {
+fn fixed_morphology_seeds_keep_distinct_road_shapes() {
+    let mut hashes = HashSet::new();
+    for (seed, expected) in MORPHOLOGY_FIXTURES {
+        let world = World::new(seed);
+        let plan = world.town_plan().unwrap();
+        assert_eq!(plan.morphology, expected, "review seed {seed}");
+        assert!(
+            hashes.insert(plan.road_hash()),
+            "review seed {seed} road hash"
+        );
+    }
+}
+
+#[test]
+fn default_world_has_repeatable_town_topology() {
+    let mut morphologies = Vec::new();
     for seed in (0..64).chain([u64::MAX]) {
         let world = World::new(seed);
         let replay = World::new(seed);
-        let plan = world.town_plan().expect("default world has ribbon plan");
-        let replay_plan = replay.town_plan().expect("replayed default ribbon plan");
+        let plan = world.town_plan().expect("default world has a town plan");
+        let replay_plan = replay.town_plan().expect("replayed default town plan");
         assert_eq!(world.landmarks(), replay.landmarks(), "seed {seed}");
         assert_eq!(
             plan.canonical_hash(),
             replay_plan.canonical_hash(),
             "seed {seed}"
         );
-        assert_eq!(plan.roads.len(), 3, "seed {seed}");
-        assert_eq!(plan.roads[0].class as u8, 0, "seed {seed}: arterial");
-        assert_eq!(plan.roads[1].class as u8, 1, "seed {seed}: collector");
-        assert_eq!(plan.roads[2].class as u8, 2, "seed {seed}: local");
+        assert_eq!(plan.road_hash(), replay_plan.road_hash(), "seed {seed}");
+        let seen = road_component(&world, world.wake_position());
+        for road in &plan.roads {
+            for sample in &road.centerline {
+                assert!(
+                    seen.contains(sample),
+                    "seed {seed}: disconnected road at {sample:?}"
+                );
+            }
+            if let Some(turnaround) = road.turnaround {
+                assert_eq!(
+                    road.centerline.last(),
+                    Some(&turnaround),
+                    "seed {seed}: turnaround"
+                );
+            }
+        }
+        for junction in &plan.junctions {
+            assert!(
+                junction.parent_road < junction.road,
+                "seed {seed}: junction order"
+            );
+            assert_eq!(
+                plan.roads[junction.road].centerline[junction.sample],
+                plan.roads[junction.parent_road].centerline[junction.parent_sample],
+                "seed {seed}: junction must meet at a shared centerline sample"
+            );
+        }
+        let arterials = plan
+            .roads
+            .iter()
+            .filter(|road| road.class == RoadClass::Arterial)
+            .count();
+        let bridges = plan
+            .roads
+            .iter()
+            .filter(|road| road.bridge.is_some())
+            .count();
+        match plan.morphology {
+            TownMorphology::HighwayRibbon => {
+                assert_eq!(plan.roads.len(), 3, "seed {seed}");
+                assert_eq!(plan.roads[0].class, RoadClass::Arterial, "seed {seed}");
+                assert_eq!(plan.roads[1].class, RoadClass::Collector, "seed {seed}");
+                assert_eq!(plan.roads[2].class, RoadClass::Local, "seed {seed}");
+            }
+            TownMorphology::Crossroads => {
+                assert!(arterials >= 2, "seed {seed}: crossing arterials")
+            }
+            TownMorphology::SplitBank => assert!(bridges >= 1, "seed {seed}: crossing span"),
+            TownMorphology::Lakeshore => assert_eq!(bridges, 0, "seed {seed}: dry shore road"),
+        }
+        if !morphologies.contains(&plan.morphology) {
+            morphologies.push(plan.morphology);
+        }
         assert!(plan.frontages.len() >= 4, "seed {seed}: frontage slots");
     }
+    assert_eq!(
+        morphologies.len(),
+        4,
+        "observed town morphologies: {morphologies:?}"
+    );
 }
 
 #[test]
@@ -103,8 +185,8 @@ fn public_road_raster_is_dry_connected_and_reaches_town_anchors() {
                 "seed {seed}: planned road {p:?} missing"
             );
             assert!(
-                tile.water.is_none(),
-                "seed {seed}: wet road raster at {p:?}"
+                tile.water.is_none() || tile.ground == Ground::Bridge,
+                "seed {seed}: wet road raster lacks a bridge at {p:?}"
             );
             let class = plan.roads[cell.road_index].class as u8;
             if class == 0 {
@@ -139,7 +221,7 @@ fn road_grades_meet_class_caps_at_full_and_half_steps() {
                     (zb - za).abs() / length
                 );
                 let midpoint = Vec2::new(a.x as f32 + dx * 0.5, a.y as f32 + dy * 0.5);
-                let zm = world.elevation_at(midpoint).unwrap();
+                let zm = road_height(&world, midpoint);
                 let half_length = length * 0.5;
                 for grade in [(zm - za).abs() / half_length, (zb - zm).abs() / half_length] {
                     assert!(
@@ -268,6 +350,54 @@ fn arterial_is_sweeping_and_keeps_a_motorcycle_width() {
     }
 }
 
+#[test]
+fn split_bank_bridge_connects_live_foot_approaches() {
+    let world = World::new(2);
+    let plan = world.town_plan().unwrap();
+    assert_eq!(plan.morphology, TownMorphology::SplitBank);
+    let (road, span) = plan
+        .roads
+        .iter()
+        .find_map(|road| road.bridge.map(|span| (road, span)))
+        .expect("split bank has a planned bridge");
+    let first = span.first_sample.saturating_sub(4);
+    let last = (span.last_sample + 4).min(road.centerline.len() - 1);
+    let route = road.centerline[first..=last].to_vec();
+    for &bank in &[route[0], *route.last().unwrap()] {
+        let tile = world.tile_at(bank).unwrap();
+        assert!(
+            tile.ground.is_road() && tile.water.is_none(),
+            "dry bank {bank:?}"
+        );
+    }
+    assert!(route.iter().any(|&point| {
+        let tile = world.tile_at(point).unwrap();
+        tile.ground == Ground::Bridge && tile.water.is_some()
+    }));
+
+    let mut game = ActionGame::county_with_world(world);
+    let start = Tile3D::from_pos(route[0], 0);
+    assert_eq!(game.teleport(start), Some(start));
+    for point in route.into_iter().skip(1) {
+        let target = Tile3D::from_pos(point, 0).center();
+        for _ in 0..90 {
+            let difference = target - game.player_pose().position;
+            if difference.length() < 0.2 {
+                break;
+            }
+            game.step(ActionInput {
+                movement: difference.normalized(),
+                ..Default::default()
+            });
+        }
+        assert!(
+            game.player_pose().position.distance(target) < 0.2,
+            "bridge foot approach blocked at {point:?}, player {:?}",
+            game.player_pose().position
+        );
+    }
+}
+
 fn starter_bike(game: &ActionGame) -> (VehicleId, Vec2) {
     game.vehicle_views()
         .find_map(|(id, view)| match view {
@@ -280,8 +410,7 @@ fn starter_bike(game: &ActionGame) -> (VehicleId, Vec2) {
 }
 
 fn wrap_angle(angle: f32) -> f32 {
-    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-        - std::f32::consts::PI
+    (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 fn mounted_heading(game: &ActionGame, id: VehicleId) -> f32 {
@@ -302,7 +431,10 @@ fn reverse_to_waypoint(game: &mut ActionGame, id: VehicleId, target: Position) -
         let distance = delta.length();
         closest = closest.min(distance);
         let Some(mounted) = game.hud().mounted else {
-            eprintln!("lost bike before waypoint {target:?} at {:?}", game.player_pose().position);
+            eprintln!(
+                "lost bike before waypoint {target:?} at {:?}",
+                game.player_pose().position
+            );
             break;
         };
         let speed = mounted.speed_mph_x10;
@@ -330,7 +462,7 @@ fn reverse_to_waypoint(game: &mut ActionGame, id: VehicleId, target: Position) -
 }
 
 #[test]
-fn mounted_bike_can_enter_and_follow_the_seed_42_ribbon() {
+fn mounted_bike_can_enter_and_follow_the_seed_42_residential_road() {
     let mut game = ActionGame::county(42);
     let (id, bike) = starter_bike(&game);
     let world = World::new(42);
@@ -366,7 +498,7 @@ fn mounted_bike_can_enter_and_follow_the_seed_42_ribbon() {
     assert!(game.hud().mounted.unwrap().speed_mph_x10 > before.speed_mph_x10);
     assert!(
         paved_steps >= 80,
-        "bike should follow the nearby paved ribbon: {paved_steps}/100 road samples"
+        "bike should follow the nearby paved road: {paved_steps}/100 road samples"
     );
     assert!(matches!(
         game.hud().interact_prompt,
@@ -458,9 +590,15 @@ fn mounted_bike_reaches_the_local_turnaround_on_seed_42() {
     );
 
     let local_return = reverse_to_waypoint(&mut game, id, plan.local_junction);
-    assert!(local_return <= 5.0, "bike should return to local junction: {local_return:.1}");
+    assert!(
+        local_return <= 5.0,
+        "bike should return to local junction: {local_return:.1}"
+    );
     let collector_return = reverse_to_waypoint(&mut game, id, plan.collector_junction);
-    assert!(collector_return <= 5.0, "bike should follow collector to arterial: {collector_return:.1}");
+    assert!(
+        collector_return <= 5.0,
+        "bike should follow collector to arterial: {collector_return:.1}"
+    );
 
     let arterial = &plan.roads[0].centerline;
     let junction_index = arterial
@@ -473,18 +611,23 @@ fn mounted_bike_reaches_the_local_turnaround_on_seed_42() {
         arterial[junction_index - 20]
     };
     let arterial_return = reverse_to_waypoint(&mut game, id, arterial_target);
-    assert!(arterial_return <= 5.0, "bike should turn onto arterial: {arterial_return:.1}");
+    assert!(
+        arterial_return <= 5.0,
+        "bike should turn onto arterial: {arterial_return:.1}"
+    );
     assert_eq!(game.control_mode(), ControlMode::Motorcycle);
     assert_eq!(game.mounted_vehicle(), Some(id));
     assert!(
-        world.tile_at(Position::new(
-            world_to_tile_coord(game.player_pose().position.x),
-            world_to_tile_coord(game.player_pose().position.y),
-        )).is_some_and(|tile| tile.ground.is_road()),
+        world
+            .tile_at(Position::new(
+                world_to_tile_coord(game.player_pose().position.x),
+                world_to_tile_coord(game.player_pose().position.y),
+            ))
+            .is_some_and(|tile| tile.ground.is_road()),
         "bike should finish on the connected arterial"
     );
     eprintln!(
-        "ribbon return: heading {heading_before_turn:.2} -> {:.2}, local {local_return:.1}, collector {collector_return:.1}, arterial {arterial_return:.1}",
+        "town road return: heading {heading_before_turn:.2} -> {:.2}, local {local_return:.1}, collector {collector_return:.1}, arterial {arterial_return:.1}",
         mounted_heading(&game, id)
     );
 }

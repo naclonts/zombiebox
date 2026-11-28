@@ -75,6 +75,7 @@ impl Parcels {
         spawn: Position,
         fixture: CountyFixture,
         terrain: &[Tile],
+        retail_lots: &[(Lot, CountyFixture)],
     ) -> Self {
         let mut owner = vec![0; (WORLD_SIZE * WORLD_SIZE) as usize];
         let mut parcels = Vec::with_capacity(lots.len());
@@ -122,6 +123,33 @@ impl Parcels {
                         )
                     });
                 Self::select_additional_houses(&mut parcels, &candidates);
+                for &(lot, fixture) in retail_lots {
+                    let parcel = parcels
+                        .iter_mut()
+                        .find(|p| p.lot.min == lot.min && p.lot.max == lot.max)
+                        .expect("reserved retail lot");
+                    parcel.plan = Some(
+                        plan_fixture(fixture, &parcel_context(seed, lot))
+                            .expect("validated retail lot"),
+                    );
+                    parcel.planned_outdoors = true;
+                }
+                // A constrained natural corridor may not have both reserve
+                // envelopes. Use a suitable existing city frontage as fallback.
+                for fixture in [CountyFixture::GasStationLot, CountyFixture::GroceryLot] {
+                    if !retail_lots.iter().any(|(_, selected)| *selected == fixture) {
+                        Self::select_fixture_parcel(seed, &mut parcels, spawn, fixture);
+                    }
+                }
+                // Recycle the downtown families after a retail fallback takes
+                // a city parcel, retaining the full legacy downtown roster.
+                for (ordinal, parcel) in parcels
+                    .iter_mut()
+                    .filter(|p| p.lot.district == District::City && p.plan.is_none())
+                    .enumerate()
+                {
+                    parcel.template = ordinal as u64;
+                }
                 // The furnished houses have their own archetypes. Cycle the legacy
                 // templates across the remaining houses so selection cannot skip
                 // a family when its original parcel becomes furnished.
@@ -271,6 +299,9 @@ impl Parcels {
         let mut fallback = None;
         for index in candidates {
             let lot = parcels[index].lot;
+            if parcels[index].plan.is_some() {
+                continue;
+            }
             if fixture.furnished_lot() && lot.district != District::Residential {
                 continue;
             }
@@ -327,13 +358,23 @@ impl Parcels {
         let mut pads = Vec::new();
         for (idx, parcel) in self.parcels.iter().enumerate() {
             if let Some(plan) = &parcel.plan {
-                for structure in &plan.structures {
+                if let Some(first) = plan.structures.first() {
+                    // A compound shares one elevation across its buildings and
+                    // forecourt; separate pads can produce a step under pumps.
+                    let mut min = first.bounds.min;
+                    let mut max = first.bounds.max;
+                    for structure in &plan.structures[1..] {
+                        min.x = min.x.min(structure.bounds.min.x);
+                        min.y = min.y.min(structure.bounds.min.y);
+                        max.x = max.x.max(structure.bounds.max.x);
+                        max.y = max.y.max(structure.bounds.max.y);
+                    }
                     pads.push((
                         idx,
                         sites::PlannedPad {
-                            min: structure.bounds.min,
-                            max: structure.bounds.max,
-                            entry: structure.front_door,
+                            min,
+                            max,
+                            entry: first.front_door,
                             front: plan.frontage.access,
                         },
                     ));
@@ -580,7 +621,14 @@ mod reference_street_tests {
             let first = World::new(seed);
             let second = World::with_fixture(seed, CountyFixture::ResidentialStreet);
             let plans = first.fixture_plans();
-            assert_eq!(plans.len(), 5, "seed {seed} needs all five house families");
+            assert_eq!(
+                plans
+                    .iter()
+                    .filter(|p| p.zone == crate::ZoneKind::Residential)
+                    .count(),
+                5,
+                "seed {seed} needs all five house families"
+            );
             assert_eq!(plans, second.fixture_plans(), "seed {seed}");
             let county = first.county.as_ref().unwrap();
             let distances = road_distances(&county.tiles, first.wake_position());
@@ -609,7 +657,14 @@ mod reference_street_tests {
         for seed in (0..64).chain([u64::MAX]) {
             let world = World::new(seed);
             let plans = world.fixture_plans();
-            assert_eq!(plans.len(), 5, "seed {seed}");
+            assert_eq!(
+                plans
+                    .iter()
+                    .filter(|p| p.zone == crate::ZoneKind::Residential)
+                    .count(),
+                5,
+                "seed {seed}"
+            );
             let county = world.county.as_ref().unwrap();
             let distances = road_distances(&county.tiles, world.wake_position());
             for prefix in ["split_level_", "duplex_"] {
