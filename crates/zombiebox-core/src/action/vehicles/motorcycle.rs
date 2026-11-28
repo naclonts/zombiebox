@@ -414,10 +414,8 @@ pub(crate) fn step_motorcycle(
     let steer_yank = (raw_steer - bike.last_raw_steer).abs() > STEER_YANK_DELTA;
     bike.last_raw_steer = raw_steer;
 
-    let high_speed_crash = steer_yank
-        && speed_mph > EJECT_YANK_MPH
-        && bike.is_operable()
-        && bike.recovery_ticks == 0;
+    let high_speed_crash =
+        steer_yank && speed_mph > EJECT_YANK_MPH && bike.is_operable() && bike.recovery_ticks == 0;
 
     if high_speed_crash {
         bike.phase = MotorcyclePhase::Skidding;

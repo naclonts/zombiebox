@@ -4,11 +4,17 @@
 pub mod ai;
 pub mod block;
 pub mod county;
+pub mod prop_catalog;
+pub mod props;
+pub mod readables;
 pub mod types;
 pub mod vehicles;
 pub mod weapons;
 
 pub use ai::{MonsterSpec, monster_spec};
+pub use prop_catalog::{PropCover, PropDef, PropId};
+pub use props::{CellAttachment, PropAnchor, PropFacing, PropSpan, PropState, PropView};
+pub use readables::{ReadableId, readable_text};
 pub use types::*;
 pub use vehicles::{
     ControlMode, MotorcycleCrashKind, MotorcycleInput, MotorcyclePhase, MotorcycleView, MountedHud,
@@ -55,6 +61,8 @@ const DUSK_LEVEL: f32 = 0.72;
 #[derive(Clone, Copy, Debug)]
 enum InteractAction {
     Search(CacheId, Tile3D),
+    SearchProp(u64, Tile3D),
+    Read(ReadableId, Tile3D),
     ToggleDoor(Tile3D, bool), // bool = true if currently closed (so prompt is OpenDoor)
     DropWindow(Tile3D, Tile3D),
     ClimbWindow(Tile3D, Tile3D),
@@ -67,7 +75,8 @@ enum InteractAction {
 impl InteractAction {
     const fn prompt(self) -> InteractPrompt {
         match self {
-            Self::Search(..) => InteractPrompt::Search,
+            Self::Search(..) | Self::SearchProp(..) => InteractPrompt::Search,
+            Self::Read(..) => InteractPrompt::Read,
             Self::ToggleDoor(_, true) => InteractPrompt::OpenDoor,
             Self::ToggleDoor(_, false) => InteractPrompt::CloseDoor,
             Self::DropWindow(..) => InteractPrompt::DropWindow,
@@ -83,6 +92,8 @@ impl InteractAction {
     const fn tile(self) -> Tile3D {
         match self {
             Self::Search(_, t)
+            | Self::SearchProp(_, t)
+            | Self::Read(_, t)
             | Self::ToggleDoor(t, _)
             | Self::DropWindow(t, _)
             | Self::ClimbWindow(t, _)
@@ -175,6 +186,13 @@ impl Stage {
         match self {
             Self::Residential(b) => b.tile_kind(tile),
             Self::County(c) => c.tile_kind(tile),
+        }
+    }
+
+    fn tile_visibility(&self, tile: Tile3D) -> Option<TileVisibility> {
+        match self {
+            Self::Residential(b) => b.tile_visibility(tile),
+            Self::County(c) => c.tile_visibility(tile),
         }
     }
 
@@ -440,6 +458,186 @@ struct ActiveBlast {
     total_ticks: u8,
 }
 
+/// Combat-facing view that overlays sparse fixture props on the generated stage.
+struct StageWithProps<'a> {
+    stage: &'a mut Stage,
+    anchors: &'a [PropAnchor],
+    tile_index: &'a std::collections::HashMap<Tile3D, u64>,
+    hp: &'a mut std::collections::HashMap<u64, u16>,
+    terrain_version: &'a mut u64,
+}
+
+impl SpatialWorld for StageWithProps<'_> {
+    fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        self.stage.terrain_at(xy)
+    }
+    fn supports_at(&self, xy: Vec2, out: &mut Vec<crate::spatial::SupportSurface>) {
+        self.stage.supports_at(xy, out)
+    }
+    fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+        self.stage.colliders_in(bounds, out);
+        for a in self.anchors {
+            if self.hp.get(&a.anchor_uid).is_some_and(|hp| *hp == 0) {
+                continue;
+            }
+            let d = a.id.def();
+            let (sx, sy) = if matches!(a.facing, PropFacing::East | PropFacing::West) {
+                (d.collision_max.y, d.collision_max.x)
+            } else {
+                (d.collision_max.x, d.collision_max.y)
+            };
+            let z = resolve_tile_support(self.stage, a.tile).0;
+            let p = a.pivot(z);
+            let c = Collider {
+                bounds: Aabb3::new(
+                    Vec3::new(p.x - sx, p.y - sy, p.z),
+                    Vec3::new(p.x + sx, p.y + sy, p.z + d.collision_max.z),
+                ),
+                kind: crate::spatial::ColliderKind::Prop {
+                    tile: a.tile,
+                    prop: None,
+                },
+                material: d.material,
+            };
+            if c.bounds.intersects(bounds) {
+                out.push(c);
+            }
+        }
+    }
+    fn surface_quads_in(&self, min: Position, max: Position, out: &mut Vec<SurfaceQuad>) {
+        self.stage.surface_quads_in(min, max, out)
+    }
+}
+
+impl CombatWorld for StageWithProps<'_> {
+    fn bounds(&self) -> (Position, Position, u8) {
+        self.stage.bounds()
+    }
+    fn terrain_version(&self) -> u64 {
+        self.stage.terrain_version()
+    }
+    fn obstruction(&self, tile: Tile3D) -> TileObstruction {
+        if let Some(uid) = self.tile_index.get(&tile)
+            && !self.hp.get(uid).is_some_and(|hp| *hp == 0)
+            && let Some(a) = self.anchors.iter().find(|a| a.anchor_uid == *uid)
+        {
+            return match a.id.def().cover {
+                PropCover::None => TileObstruction::Open,
+                PropCover::Low => TileObstruction::LowProp(a.id.def().material),
+                PropCover::HighBlocker => TileObstruction::Wall(a.id.def().material),
+            };
+        }
+        self.stage.obstruction(tile)
+    }
+    fn has_floor(&self, tile: Tile3D) -> bool {
+        self.stage.has_floor(tile)
+    }
+    fn is_walkable(&self, tile: Tile3D, v: bool) -> bool {
+        if let Some(uid) = self.tile_index.get(&tile)
+            && !self.hp.get(uid).is_some_and(|hp| *hp == 0)
+            && let Some(a) = self.anchors.iter().find(|a| a.anchor_uid == *uid)
+            && !matches!(a.id.def().cover, PropCover::None)
+        {
+            return false;
+        }
+        self.stage.is_walkable(tile, v)
+    }
+    fn building_id(&self, tile: Tile3D) -> BuildingId {
+        self.stage.building_id(tile)
+    }
+    fn stair_link(&self, tile: Tile3D) -> Option<(Tile3D, (i8, i8))> {
+        self.stage.stair_link(tile)
+    }
+    fn stair_links(&self, tile: Tile3D) -> ([Option<(Tile3D, (i8, i8))>; 2], usize) {
+        self.stage.stair_links(tile)
+    }
+    fn window_drop_target(&self, tile: Tile3D) -> Option<Tile3D> {
+        self.stage.window_drop_target(tile)
+    }
+    fn window_vault_target(&self, a: Tile3D, b: Tile3D) -> Option<Tile3D> {
+        self.stage.window_vault_target(a, b)
+    }
+    fn light_level(&self, tile: Tile3D) -> f32 {
+        self.stage.light_level(tile)
+    }
+    fn damage_tile(&mut self, tile: Tile3D, kind: DamageKind) -> Option<TileDamageResult> {
+        let Some(uid) = self.tile_index.get(&tile) else {
+            return self.stage.damage_tile(tile, kind);
+        };
+        let Some(a) = self.anchors.iter().find(|a| a.anchor_uid == *uid) else {
+            return self.stage.damage_tile(tile, kind);
+        };
+        let d = a.id.def();
+        let hp = self.hp.entry(a.anchor_uid).or_insert(d.durability);
+        if *hp == 0 {
+            return None;
+        }
+        let amount = block::damage_against(d.material, kind);
+        if amount == 0 {
+            return None;
+        }
+        *hp = hp.saturating_sub(amount);
+        *self.terrain_version = self.terrain_version.wrapping_add(1);
+        Some(TileDamageResult {
+            damaged: true,
+            destroyed: *hp == 0,
+            material: d.material,
+            old_kind: TileKind::Prop(PropKind::Crate),
+            new_kind: if *hp == 0 {
+                TileKind::Rubble
+            } else {
+                TileKind::Prop(PropKind::Crate)
+            },
+            sound_radius: 7.5,
+            light_changed: false,
+            collapsed_cells: 0,
+        })
+    }
+    fn toggle_door(&mut self, tile: Tile3D) -> Option<bool> {
+        self.stage.toggle_door(tile)
+    }
+    fn register_dynamic_flash(&mut self, pos: Vec3, floor: Floor, r: f32, i: u8, ttl: u8) {
+        self.stage.register_dynamic_flash(pos, floor, r, i, ttl)
+    }
+}
+
+fn readable_fixtures(spawn: Tile3D, county: bool) -> Vec<(ReadableId, PropAnchor)> {
+    [
+        (
+            if county {
+                ReadableId::CountyDirectory
+            } else {
+                ReadableId::BirchDirectory
+            },
+            spawn.y - 1,
+        ),
+        (ReadableId::MaintenanceNote, spawn.y - 2),
+        (ReadableId::SurvivorJournal, spawn.y - 3),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(slot, (id, y))| {
+        (
+            id,
+            PropAnchor {
+                anchor_uid: 0x5244_0000_0000_0000 | slot as u64,
+                tile: Tile3D::new(spawn.x, y, spawn.floor),
+                id: match id {
+                    ReadableId::BirchDirectory => PropId::Sign,
+                    ReadableId::CountyDirectory => PropId::Sign,
+                    ReadableId::MaintenanceNote => PropId::Note,
+                    ReadableId::SurvivorJournal => PropId::Journal,
+                },
+                span: PropSpan::new(1, 1),
+                attachment: CellAttachment::WallMount,
+                facing: PropFacing::South,
+                offset: Vec3::new(0.0, 0.0, 1.1),
+            },
+        )
+    })
+    .collect()
+}
+
 pub struct ActionGame {
     seed: u64,
     world: World,
@@ -472,6 +670,14 @@ pub struct ActionGame {
     events: Vec<ActionEvent>,
     noises: Vec<NoiseEvent>,
     outcome: ActionOutcome,
+    prop_anchors: Vec<PropAnchor>,
+    prop_opened: std::collections::HashSet<u64>,
+    prop_hp: std::collections::HashMap<u64, u16>,
+    prop_tile_index: std::collections::HashMap<Tile3D, u64>,
+    prop_revision: u64,
+    readable_fixtures: Vec<(ReadableId, PropAnchor)>,
+    readable_id: ReadableId,
+    read_open: bool,
 }
 
 impl ActionGame {
@@ -517,10 +723,13 @@ impl ActionGame {
             (z, support)
         });
 
+        let stage = Stage::County(Box::new(county));
+        let readable = readable_fixtures(spawn, true);
+        let prop_anchors = readable.iter().map(|(_, anchor)| *anchor).collect();
         Self {
             seed,
             world,
-            stage: Stage::County(Box::new(county)),
+            stage,
             tick: 0,
             player,
             player_body,
@@ -549,6 +758,14 @@ impl ActionGame {
             events: Vec::new(),
             noises: Vec::new(),
             outcome: ActionOutcome::Playing,
+            prop_anchors,
+            prop_opened: Default::default(),
+            prop_hp: Default::default(),
+            prop_tile_index: Default::default(),
+            prop_revision: 0,
+            readable_fixtures: readable,
+            readable_id: ReadableId::CountyDirectory,
+            read_open: false,
         }
     }
 
@@ -578,10 +795,13 @@ impl ActionGame {
 
         block.update_visibility(player.position, player.floor);
 
+        let stage = Stage::Residential(Box::new(block));
+        let readable = readable_fixtures(spawn, false);
+        let prop_anchors = readable.iter().map(|(_, anchor)| *anchor).collect();
         Self {
             seed,
             world,
-            stage: Stage::Residential(Box::new(block)),
+            stage,
             tick: 0,
             player,
             player_body,
@@ -610,6 +830,14 @@ impl ActionGame {
             events: Vec::new(),
             noises: Vec::new(),
             outcome: ActionOutcome::Playing,
+            prop_anchors,
+            prop_opened: Default::default(),
+            prop_hp: Default::default(),
+            prop_tile_index: Default::default(),
+            prop_revision: 0,
+            readable_fixtures: readable,
+            readable_id: ReadableId::BirchDirectory,
+            read_open: false,
         }
     }
 
@@ -753,6 +981,9 @@ impl ActionGame {
     fn step_impl(&mut self, input: ActionInput, vehicle_interactions: bool) {
         self.events.clear();
         self.noises.clear();
+        if self.read_open && !input.interact {
+            self.read_open = false;
+        }
         if self.outcome != ActionOutcome::Playing {
             return;
         }
@@ -841,8 +1072,15 @@ impl ActionGame {
             && self.control_mode() == ControlMode::OnFoot
             && input.fire
         {
+            let mut combat = StageWithProps {
+                stage: &mut self.stage,
+                anchors: &self.prop_anchors,
+                tile_index: &self.prop_tile_index,
+                hp: &mut self.prop_hp,
+                terrain_version: &mut self.prop_revision,
+            };
             try_fire_or_swing_3d(
-                &mut self.stage,
+                &mut combat,
                 &mut self.inventory,
                 self.player,
                 self.player_body,
@@ -857,8 +1095,15 @@ impl ActionGame {
         }
 
         // 7. Advance active rockets and shooter bolts on every path.
+        let mut combat = StageWithProps {
+            stage: &mut self.stage,
+            anchors: &self.prop_anchors,
+            tile_index: &self.prop_tile_index,
+            hp: &mut self.prop_hp,
+            terrain_version: &mut self.prop_revision,
+        };
         step_projectiles_3d(
-            &mut self.stage,
+            &mut combat,
             &mut self.projectiles,
             self.player,
             self.player_body,
@@ -875,16 +1120,25 @@ impl ActionGame {
         self.process_collapses();
 
         // 9. Propagate player/combat noises to monsters.
-        propagate_noise(
-            &self.stage,
-            &mut self.monsters,
-            &self.noises,
-            &mut self.events,
-        );
+        let combat = StageWithProps {
+            stage: &mut self.stage,
+            anchors: &self.prop_anchors,
+            tile_index: &self.prop_tile_index,
+            hp: &mut self.prop_hp,
+            terrain_version: &mut self.prop_revision,
+        };
+        propagate_noise(&combat, &mut self.monsters, &self.noises, &mut self.events);
 
         // 10. Advance sight/sound-reactive AI, 3D pathfinding, and monster attacks.
+        let mut combat = StageWithProps {
+            stage: &mut self.stage,
+            anchors: &self.prop_anchors,
+            tile_index: &self.prop_tile_index,
+            hp: &mut self.prop_hp,
+            terrain_version: &mut self.prop_revision,
+        };
         self.ai.step_monsters_3d(
-            &mut self.stage,
+            &mut combat,
             &mut self.monsters,
             self.player,
             self.player_body,
@@ -1067,7 +1321,7 @@ impl ActionGame {
             body.facing_xy()
         };
         let tile = Tile3D::from_vec2(body.position.xy() + direction * 0.70, 0);
-        let Some(result) = self.stage.damage_tile(tile, DamageKind::VehicleImpact) else {
+        let Some(result) = self.damage_tile(tile, DamageKind::VehicleImpact) else {
             return;
         };
         if !result.damaged {
@@ -1435,7 +1689,7 @@ impl ActionGame {
             || !self.stage.has_floor(prev_tile)
         {
             let move_res = move_kinematic_with_horizontal_vel(
-                &self.stage,
+                &self.spatial(),
                 PLAYER_SHAPE,
                 self.player_body,
                 horiz_vel,
@@ -1706,6 +1960,29 @@ impl ActionGame {
         let floor = self.player.floor;
         let facing = self.player.facing.normalized();
 
+        // Read fixtures are immediately discoverable at the seeded spawn.
+        for (id, anchor) in &self.readable_fixtures {
+            let read_center = anchor.tile.center();
+            let read_delta = read_center - p;
+            let read_dist = read_delta.length();
+            let front = match anchor.facing {
+                PropFacing::North => Vec2::new(0.0, -1.0),
+                PropFacing::East => Vec2::new(1.0, 0.0),
+                PropFacing::South => Vec2::new(0.0, 1.0),
+                PropFacing::West => Vec2::new(-1.0, 0.0),
+            };
+            let (support_z, _, _) = resolve_tile_support(&self.stage, anchor.tile);
+            if anchor.tile.floor == floor
+                && read_dist <= INTERACT_FEATURE_RADIUS
+                && read_dist > 0.05
+                && read_delta.normalized().dot(facing) >= 0.20
+                && facing.dot(front) <= -0.20
+                && self.has_line_of_sight_to_point(anchor.pivot(support_z))
+            {
+                return Some(InteractAction::Read(*id, anchor.tile));
+            }
+        }
+
         // Priority 1: Unopened supply cache within reach.
         let mut best_cache: Option<(f32, CacheId, Tile3D)> = None;
         for c in self.stage.caches() {
@@ -1719,6 +1996,13 @@ impl ActionGame {
         }
         if let Some((_, id, pos)) = best_cache {
             return Some(InteractAction::Search(id, pos));
+        }
+
+        if let Some(prop) = self.searchable_prop() {
+            return Some(InteractAction::SearchProp(
+                prop.anchor_uid,
+                prop.anchor.tile,
+            ));
         }
 
         let center_tile = Tile3D::from_vec2(p, floor);
@@ -1832,6 +2116,40 @@ impl ActionGame {
         None
     }
 
+    fn searchable_prop(&self) -> Option<PropView> {
+        let eye = self.player_eye_position();
+        self.prop_views()
+            .into_iter()
+            .filter_map(|prop| {
+                if prop.floor != self.player.floor
+                    || prop.visibility == TileVisibility::Hidden
+                    || prop.state == PropState::Opened
+                    || prop.id.def().loot.is_none()
+                {
+                    return None;
+                }
+                let extent = prop.id.def().collision_max;
+                let (width, depth) = match prop.facing {
+                    PropFacing::North | PropFacing::South => (extent.x, extent.y),
+                    PropFacing::East | PropFacing::West => (extent.y, extent.x),
+                };
+                let local = eye - prop.world_pivot;
+                let face = prop.world_pivot
+                    + Vec3::new(
+                        local.x.clamp(-width, width),
+                        local.y.clamp(-depth, depth),
+                        local.z.clamp(0.0, extent.z),
+                    );
+                let dist = (face - eye).length();
+                if dist > INTERACT_CACHE_RADIUS || !self.has_line_of_sight_from(eye, face) {
+                    return None;
+                }
+                Some((dist, prop))
+            })
+            .min_by(|(a, lhs), (b, rhs)| a.total_cmp(b).then(lhs.anchor_uid.cmp(&rhs.anchor_uid)))
+            .map(|(_, prop)| prop)
+    }
+
     fn resolve_interact(&mut self, vehicle_interactions: bool) {
         let Some(action) = self.compute_interact_action(vehicle_interactions) else {
             return;
@@ -1844,6 +2162,29 @@ impl ActionGame {
                     self.events.push(ActionEvent::Looted {
                         at,
                         pos: at.center().extend(lz),
+                        loot,
+                    });
+                }
+            }
+            InteractAction::Read(id, _) => {
+                self.read_open = true;
+                self.readable_id = id;
+            }
+            InteractAction::SearchProp(uid, at) => {
+                let Some(prop) = self
+                    .prop_views()
+                    .into_iter()
+                    .find(|prop| prop.anchor_uid == uid)
+                else {
+                    return;
+                };
+                if let Some(loot) = prop.id.def().loot
+                    && self.prop_opened.insert(uid)
+                {
+                    self.inventory.collect_loot(loot, &mut self.events);
+                    self.events.push(ActionEvent::Looted {
+                        at,
+                        pos: prop.world_pivot,
                         loot,
                     });
                 }
@@ -2157,7 +2498,41 @@ impl ActionGame {
     }
 
     pub fn damage_tile(&mut self, tile: Tile3D, kind: DamageKind) -> Option<TileDamageResult> {
+        if let Some(anchor) = self.prop_anchor_at(tile) {
+            let def = anchor.id.def();
+            let hp = self
+                .prop_hp
+                .entry(anchor.anchor_uid)
+                .or_insert(def.durability);
+            if *hp == 0 {
+                return None;
+            }
+            let dmg = block::damage_against(def.material, kind);
+            if dmg == 0 {
+                return None;
+            }
+            *hp = hp.saturating_sub(dmg);
+            self.prop_revision = self.prop_revision.wrapping_add(1);
+            return Some(TileDamageResult {
+                damaged: true,
+                destroyed: *hp == 0,
+                material: def.material,
+                old_kind: TileKind::Prop(crate::action::types::PropKind::Crate),
+                new_kind: if *hp == 0 {
+                    TileKind::Rubble
+                } else {
+                    TileKind::Prop(crate::action::types::PropKind::Crate)
+                },
+                sound_radius: if *hp == 0 { 7.5 } else { 3.5 },
+                light_changed: false,
+                collapsed_cells: 0,
+            });
+        }
         self.stage.damage_tile(tile, kind)
+    }
+
+    pub const fn prop_revision(&self) -> u64 {
+        self.prop_revision
     }
 
     pub(crate) fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
@@ -2223,6 +2598,135 @@ impl ActionGame {
         )
     }
 
+    /// Snapshot of persistent prop anchors in the active stage. Visibility is read from
+    /// the anchor tile, so a multi-cell prop remains seam-safe and room-shroud-safe.
+    pub fn prop_views(&self) -> Vec<PropView> {
+        self.prop_anchors
+            .iter()
+            .filter_map(|anchor| {
+                if self
+                    .prop_hp
+                    .get(&anchor.anchor_uid)
+                    .is_some_and(|hp| *hp == 0)
+                {
+                    return None;
+                }
+                let visibility = self.stage.tile_visibility(anchor.tile)?;
+                let (z, _, _) = resolve_tile_support(&self.stage, anchor.tile);
+                Some(PropView {
+                    id: anchor.id,
+                    anchor: *anchor,
+                    world_pivot: anchor.pivot(z),
+                    floor: anchor.tile.floor,
+                    facing: anchor.facing,
+                    state: if self.prop_opened.contains(&anchor.anchor_uid) {
+                        PropState::Opened
+                    } else {
+                        PropState::Closed
+                    },
+                    anchor_uid: anchor.anchor_uid,
+                    visibility,
+                })
+            })
+            .collect()
+    }
+
+    /// Adds a deliberately controlled prop fixture to the snapshot registry. This is
+    /// intended for gallery/reference scenes; procedural generation does not call it.
+    pub fn add_prop_fixture(&mut self, anchor: PropAnchor) -> bool {
+        if self
+            .prop_anchors
+            .iter()
+            .any(|a| a.anchor_uid == anchor.anchor_uid)
+        {
+            return false;
+        }
+        let def = anchor.id.def();
+        let rotated = matches!(anchor.facing, PropFacing::East | PropFacing::West);
+        let expected = if rotated {
+            PropSpan::new(def.span.height, def.span.width)
+        } else {
+            def.span
+        };
+        if anchor.span != expected {
+            return false;
+        }
+        if anchor
+            .span
+            .covered_tiles(anchor.tile)
+            .any(|t| self.prop_tile_index.contains_key(&t))
+        {
+            let same_layer = anchor.span.covered_tiles(anchor.tile).any(|t| {
+                self.prop_anchor_at(t)
+                    .is_some_and(|a| a.attachment == anchor.attachment)
+            });
+            if same_layer {
+                return false;
+            }
+        }
+        if anchor.span.covered_tiles(anchor.tile).any(|t| {
+            !self.stage.is_walkable(t, false)
+                || matches!(
+                    self.stage.tile_kind(t),
+                    TileKind::Door { .. }
+                        | TileKind::StairsUp
+                        | TileKind::StairsDown
+                        | TileKind::StairsBoth
+                )
+        }) {
+            return false;
+        }
+        self.prop_anchors.push(anchor);
+        for tile in anchor.span.covered_tiles(anchor.tile) {
+            self.prop_tile_index.insert(tile, anchor.anchor_uid);
+        }
+        self.prop_revision = self.prop_revision.wrapping_add(1);
+        true
+    }
+
+    /// Returns the sparse anchor owning a covered tile, including anchors that cross
+    /// chunk boundaries. The registry intentionally contains fixtures only.
+    pub fn prop_anchor_at(&self, tile: Tile3D) -> Option<PropAnchor> {
+        let uid = *self.prop_tile_index.get(&tile)?;
+        self.prop_anchors
+            .iter()
+            .copied()
+            .find(|a| a.anchor_uid == uid)
+    }
+
+    pub(crate) fn prop_colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
+        for anchor in &self.prop_anchors {
+            if self
+                .prop_hp
+                .get(&anchor.anchor_uid)
+                .is_some_and(|hp| *hp == 0)
+            {
+                continue;
+            }
+            let def = anchor.id.def();
+            let (sx, sy) = if matches!(anchor.facing, PropFacing::East | PropFacing::West) {
+                (def.collision_max.y, def.collision_max.x)
+            } else {
+                (def.collision_max.x, def.collision_max.y)
+            };
+            let pivot = anchor.pivot(resolve_tile_support(&self.stage, anchor.tile).0);
+            let c = Collider {
+                bounds: Aabb3::new(
+                    Vec3::new(pivot.x - sx, pivot.y - sy, pivot.z + def.collision_min.z),
+                    Vec3::new(pivot.x + sx, pivot.y + sy, pivot.z + def.collision_max.z),
+                ),
+                kind: crate::spatial::ColliderKind::Prop {
+                    tile: anchor.tile,
+                    prop: None,
+                },
+                material: def.material,
+            };
+            if c.bounds.intersects(bounds) {
+                out.push(c);
+            }
+        }
+    }
+
     pub fn has_cache_at(&self, p: Position) -> bool {
         self.stage.caches().iter().any(|c| {
             !c.opened && c.pos.x == p.x && c.pos.y == p.y && c.pos.floor == self.player.floor
@@ -2232,7 +2736,7 @@ impl ActionGame {
     pub fn near_loot(&self) -> bool {
         matches!(
             self.compute_interact_action(true),
-            Some(InteractAction::Search(..))
+            Some(InteractAction::Search(..) | InteractAction::SearchProp(..))
         )
     }
 
@@ -2393,6 +2897,12 @@ impl ActionGame {
             caches_found,
             caches_total,
             interact_prompt,
+            read_open: self.read_open,
+            read_id: if self.read_open {
+                self.readable_id as u8
+            } else {
+                0
+            },
             objective_kind,
             rocket_danger_close: equipped == Some(Weapon::RocketLauncher)
                 && is_rocket_danger_close_3d(
@@ -2755,6 +3265,25 @@ mod tests {
         assert_eq!(game.hud().zombie_count, 0);
         assert_eq!(game.outcome(), ActionOutcome::Won);
         assert!(game.events().contains(&ActionEvent::Won));
+    }
+
+    #[test]
+    fn readable_spawn_fixture_requires_facing_and_opens_authoritative_text() {
+        let mut game = ActionGame::residential(42);
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::Read);
+        let sign = game.readable_fixtures[0].1.tile;
+        game.player.position = Vec2::new(sign.x as f32, sign.y as f32 + 0.72);
+        game.player.facing = Vec2::new(0.0, -1.0);
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::Read);
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        let hud = game.hud();
+        assert!(hud.read_open);
+        assert_eq!(hud.read_id, ReadableId::BirchDirectory as u8);
+        game.player.facing = Vec2::new(0.0, 1.0);
+        assert_ne!(game.hud().interact_prompt, InteractPrompt::Read);
     }
 
     #[test]
@@ -3227,5 +3756,35 @@ mod tests {
             "expected >= 3 damage from 6.5u drop, got {damage}"
         );
         assert_eq!(game.hud().health, start_hp.saturating_sub(damage));
+    }
+
+    #[test]
+    fn fixture_prop_collides_and_damage_is_uid_owned_across_span() {
+        let mut game = ActionGame::residential(7);
+        let tile = Tile3D::from_vec2(game.player.position, game.player.floor);
+        let anchor = PropAnchor {
+            anchor_uid: 0xfeed,
+            tile,
+            id: PropId::Sofa,
+            span: PropSpan::new(2, 1),
+            attachment: CellAttachment::Floor,
+            facing: PropFacing::North,
+            offset: Vec3::ZERO,
+        };
+        assert!(game.add_prop_fixture(anchor));
+        assert!(
+            game.prop_anchor_at(Tile3D::new(tile.x + 1, tile.y, tile.floor))
+                .is_some()
+        );
+        let hp = anchor.id.def().durability;
+        let first = game.damage_tile(tile, DamageKind::Axe).unwrap();
+        assert!(first.damaged && !first.destroyed);
+        let second = game
+            .damage_tile(
+                Tile3D::new(tile.x + 1, tile.y, tile.floor),
+                DamageKind::RocketBlast,
+            )
+            .unwrap();
+        assert!(second.destroyed || hp > 0);
     }
 }

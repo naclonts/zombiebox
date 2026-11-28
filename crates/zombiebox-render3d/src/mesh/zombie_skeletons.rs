@@ -21,8 +21,15 @@ pub fn all_zombie_skeletons() -> [(&'static str, ZombieSkeleton); 5] {
 }
 
 fn parse(bytes: &[u8]) -> ZombieSkeleton {
-    assert!(bytes.len() >= 8 && &bytes[..4] == b"ZBJS", "invalid generated zombie skeleton");
-    assert_eq!(u16_at(bytes, 4), 1, "unsupported generated zombie skeleton version");
+    assert!(
+        bytes.len() >= 8 && &bytes[..4] == b"ZBJS",
+        "invalid generated zombie skeleton"
+    );
+    assert_eq!(
+        u16_at(bytes, 4),
+        1,
+        "unsupported generated zombie skeleton version"
+    );
     let count = usize::from(u16_at(bytes, 6));
     let mut cursor = 8;
     let mut joints = Vec::with_capacity(count);
@@ -43,7 +50,11 @@ fn parse(bytes: &[u8]) -> ZombieSkeleton {
             inverse_bind,
         });
     }
-    assert_eq!(cursor, bytes.len(), "trailing data in generated zombie skeleton");
+    assert_eq!(
+        cursor,
+        bytes.len(),
+        "trailing data in generated zombie skeleton"
+    );
     ZombieSkeleton { joints }
 }
 

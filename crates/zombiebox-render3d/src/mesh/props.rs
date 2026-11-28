@@ -2,6 +2,7 @@
 use super::{GeometryTag, MaterialFlags, MeshBuffer, MeshBuilder, VertexMeta};
 use crate::coords::ground_align_quat;
 use crate::materials::MaterialRegistry;
+use crate::mesh::library::PropMeshLibrary;
 use crate::scene::snapshot::{CacheSnapshot, ChunkSnapshot};
 use glam::{Mat4, Quat, Vec3};
 use zombiebox_core::{
@@ -13,6 +14,7 @@ const WOOD_L: [f32; 4] = [0.68, 0.47, 0.27, 1.];
 const METAL: [f32; 4] = [0.31, 0.36, 0.39, 1.];
 const LEAF: [f32; 4] = [0.16, 0.39, 0.19, 1.];
 const META: VertexMeta = VertexMeta::DEFAULT.with_tag(GeometryTag::Prop);
+
 fn bx(b: &mut MeshBuilder, a: Vec3, z: Vec3, c: [f32; 4]) {
     crate::mesh::primitives::emit_box_min_max(b, a, z, super::FaceMask::ALL, c, META);
 }
@@ -393,6 +395,34 @@ pub fn build_chunk_props_mesh(chunk: &ChunkSnapshot) -> MeshBuffer {
                 out.append_transformed(&mesh, Mat4::from_rotation_translation(rotation, position));
             }
         }
+    }
+    // New catalog props are owned by the chunk snapshot. Searchable/container
+    // props are omitted here and emitted as dynamic instances by Presentation.
+    let library = PropMeshLibrary::shared();
+    for view in &chunk.static_props {
+        let Some(mesh) = library.get(view.id, view.state) else {
+            continue;
+        };
+        let mut mesh = mesh.clone();
+        let tile = chunk.world_tile(view.anchor.tile.pos());
+        let mut meta = META.with_floor(view.floor);
+        if let Some(cell) = tile.and_then(|t| t.floor(view.floor)) {
+            if cell.building_id != 0 {
+                let slot = chunk
+                    .building(cell.building_id)
+                    .map_or(cell.building_id, |b| {
+                        b.info.cutaway_slot_at(view.anchor.tile.pos(), view.floor)
+                    });
+                meta = meta.with_building(slot, 0);
+                if cell.indoor {
+                    meta = meta.with_flags(MaterialFlags::INDOOR_AMBIENT);
+                }
+            }
+        }
+        for vertex in &mut mesh.vertices {
+            vertex.meta = meta.pack();
+        }
+        out.append_transformed(&mesh, PropMeshLibrary::transform(view));
     }
     out
 }

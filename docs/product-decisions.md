@@ -31,6 +31,10 @@ The user confirmed that the 3D build works on a physical Android handset. The de
 
 Host QA for skeletal infected rendering passed Birch Street outside, breach, inside, and stairs; all 31 visible horde actors rendered across the four LOD bands. Chrome passed the five camera modes and seed `42` deploy. Android APK build passed. Physical-device pacing and close-up combat/death review remain open.
 
+Phase 2 renderer evidence: two fresh conversion builds produced byte-identical output for all 34 prototypes, with source/output hashes and offline geometry checks passing. Chrome 156 reviewed gallery cards in five camera views with bounds and palette toggles. Renderer GPU tests passed (89 library/integration tests), and headless Vulkan/llvmpipe `check3d` exercised 18,482–86,793 triangles, 15–42 instances, and 8–11 of 25 chunks. Android/Web `Read` checks, the furnished-chunk/EventDriven benchmark, and physical handset validation remain open; these results do not change the handset completion status.
+
+Phase 2 integration follow-up: EventDriven prop ownership and zero-rebuild container persistence pass, three `living_props` tests pass, and the browser sign open/close/immediate-reread harness passes. The optimized static fixture build measured 6 props / 1,278 triangles at p50 36µs and p95 39µs, and 32 / 4,138 at p50 102µs and p95 114µs; this host microbenchmark does not replace furnished live-scene or handset pacing. The Android emulator booted and installed the APK twice but froze at “System UI isn’t responding” before gameplay; no handset was connected, so Android and handset checks remain open and the gallery remains gated.
+
 The seed 42 browser action playtest verified movement, pause and resume, same-run atlas teleport to the hospital, and Birch Street selection. The visual review covered the residential spawn, downtown, hospital, police precinct, army base, and woods across browser and host renderer captures. The legacy browser encounter also passed a full clear and replay. [Android and host rendering results](../apps/mobile/README.md#verification)
 
 ## Planned milestones and completion checks

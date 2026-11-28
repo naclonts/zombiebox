@@ -27,6 +27,10 @@
   const STATUS_CAN_HEAL = 1 << 4;
   const STATUS_LOW_AMMO = 1 << 5;
   const STATUS_DANGER_CLOSE = 1 << 7;
+  // Set only after a Read interaction succeeds (the prompt itself must not
+  // steal focus or pause play).
+  const STATUS_READ_OPEN = 1 << 8;
+  const INTERACT_READ = 11;
 
   const DISTRICTS = [
     "BIRCH STREET",
@@ -114,6 +118,7 @@
     dead: false,
     controlMode: 0,
     mountedIsometric: false,
+    readId: 0,
   };
 
   const input = {
@@ -514,6 +519,8 @@
         return "[E] DISMOUNT";
       case 10:
         return "[E] RIGHT MOTORCYCLE";
+      case 11:
+        return "[E] READ";
       default:
         return "";
     }
@@ -701,6 +708,11 @@
       modalCopy.textContent =
         "Every infected threat on Birch Street is down. Start another run or explore the procedural county.";
       btnPrimary.textContent = "Play again";
+    } else if (kind === "read") {
+      modalEyebrow.textContent = "READABLE";
+      modalTitle.textContent = customCopy?.title || "Readable note";
+      modalCopy.textContent = customCopy?.body || "";
+      btnPrimary.textContent = "Close";
     } else if (kind === "dead") {
       modalEyebrow.textContent =
         state.runMode === "county"
@@ -718,6 +730,16 @@
       btnPrimary.textContent = "Try again";
     }
     btnPrimary.focus();
+  }
+
+  async function openReadable(id) {
+    try {
+      const response = await fetch(`/api/action/readable/${id}`);
+      if (!response.ok) throw new Error("readable unavailable");
+      openModal("read", await response.json());
+    } catch {
+      openModal("read", {title: "Readable note", body: "The writing is too faded to make out."});
+    }
   }
 
   function closeModalAndPlay() {
@@ -882,6 +904,7 @@
       engineLoad: isV3 ? view.getUint8(68) : 0,
       ridingFlags: isV3 ? view.getUint8(69) : 0,
       conditionPct: isV3 ? view.getUint8(70) : 0,
+      readId: isV3 ? view.getUint8(71) : 0,
     };
     return hud;
   }
@@ -1006,6 +1029,11 @@
             openModal("dead");
           } else if (newlyWon) {
             openModal("won");
+          } else if ((hud.statusFlags & STATUS_READ_OPEN) !== 0 && hud.readId && hud.readId !== state.readId) {
+            state.readId = hud.readId;
+            void openReadable(hud.readId);
+          } else if (hud.interactKind !== INTERACT_READ) {
+            state.readId = 0;
           }
         }
       }
@@ -1593,6 +1621,12 @@
 
   btnPrimary.addEventListener("click", async () => {
     ensureAudio();
+    if (state.modalKind === "read") {
+      state.readId = 0;
+      closeModalAndPlay();
+      requestFrame(false);
+      return;
+    }
     if (state.modalKind === "paused" && state.runId) {
       closeModalAndPlay();
       return;

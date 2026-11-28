@@ -1007,7 +1007,6 @@ impl GpuRenderer {
             prototype_batches_drawn += skinned_batches;
             instances_drawn += skinned_instances;
             triangles_submitted += skinned_triangles;
-
         }
 
         self.last_stats = FrameStats {
@@ -1280,7 +1279,6 @@ impl GpuRenderer {
             prototype_batches_drawn += skinned_batches;
             instances_drawn += skinned_instances;
             triangles_submitted += skinned_triangles;
-
         }
 
         self.last_stats = FrameStats {

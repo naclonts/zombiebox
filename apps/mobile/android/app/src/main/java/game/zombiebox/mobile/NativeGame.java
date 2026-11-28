@@ -25,4 +25,6 @@ final class NativeGame {
         float moveX, float moveY, float aimX, float aimY,
         int actionFlags, int selectWeapon, int controlKind,
         float steer, float throttle, float brake, float lean, boolean mountedIsometric, int[] outState);
+    static native String readableTitle(int id);
+    static native String readableBody(int id);
 }

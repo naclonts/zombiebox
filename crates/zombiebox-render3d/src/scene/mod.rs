@@ -50,6 +50,8 @@ pub struct SceneManager {
     cache: SceneCache,
     last_world_identity: Option<(ActionMode, u64)>,
     last_observed_tick: Option<u64>,
+    last_prop_revision: Option<u64>,
+    static_prop_owners: HashMap<u64, ChunkCoord>,
     pending_events: Vec<ActionEvent>,
     cutaways: HashMap<BuildingId, f32>,
     snap_cutaways_next_frame: bool,
@@ -79,6 +81,8 @@ impl SceneManager {
             cache,
             last_world_identity: None,
             last_observed_tick: None,
+            last_prop_revision: None,
+            static_prop_owners: HashMap::new(),
             pending_events: Vec::new(),
             cutaways: HashMap::new(),
             snap_cutaways_next_frame: true,
@@ -100,6 +104,8 @@ impl SceneManager {
         self.cutaways.clear();
         self.last_world_identity = None;
         self.last_observed_tick = None;
+        self.last_prop_revision = None;
+        self.static_prop_owners.clear();
         self.snap_cutaways_next_frame = true;
     }
 
@@ -120,6 +126,42 @@ impl SceneManager {
                 .is_some_and(|prev| tick < prev || (tick == 0 && prev > 0))
         {
             self.reset();
+        }
+
+        // Static prop mutations have their own revision: a fixture can be
+        // inserted for a reference scene without advancing simulation time,
+        // and destroyed props must disappear in EventDriven mode.  Compare
+        // owner chunks rather than invalidating halo duplicates.
+        if self.last_prop_revision != Some(game.prop_revision()) {
+            let owners: HashMap<_, _> = game
+                .prop_views()
+                .into_iter()
+                .filter(|prop| prop.id.def().loot.is_none())
+                .map(|prop| {
+                    (
+                        prop.anchor_uid,
+                        ChunkCoord::from_pos(prop.anchor.tile.pos()),
+                    )
+                })
+                .collect();
+            // Initial cache construction already dirties every active chunk;
+            // only later mutations need an EventDriven invalidation.
+            if self.last_prop_revision.is_some() {
+                for (uid, owner) in &self.static_prop_owners {
+                    if owners.get(uid) == Some(owner) {
+                        continue;
+                    }
+                    self.cache.invalidate_chunk(*owner);
+                }
+                for (uid, owner) in &owners {
+                    if self.static_prop_owners.get(uid) == Some(owner) {
+                        continue;
+                    }
+                    self.cache.invalidate_chunk(*owner);
+                }
+            }
+            self.static_prop_owners = owners;
+            self.last_prop_revision = Some(game.prop_revision());
         }
 
         if self.last_observed_tick == Some(tick) {
@@ -290,6 +332,7 @@ impl SceneManager {
                 visibility: local_visibility.visibility_at(c.pos),
             })
             .collect();
+        let props = game.prop_views();
 
         let lights = game
             .light_sources()
@@ -349,6 +392,7 @@ impl SceneManager {
             monsters: game.monster_views(),
             projectiles: game.projectiles(),
             caches,
+            props,
             lights,
             dynamic_flashes,
             blasts,

@@ -1333,6 +1333,11 @@ internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: I
         putInt("speedMphX10", words[10] and 0xffff)
         putInt("bikeCondition", words[10] ushr 16)
         putInt("fps", fps)
+        val readId = (words[10] ushr 24) and 0xff
+        putBoolean("readOpen", (flags and (1 shl 8)) != 0 && readId != 0)
+        putInt("readId", readId)
+        putString("readTitle", if (readId != 0) NativeGame.readableTitle(readId) else "")
+        putString("readBody", if (readId != 0) NativeGame.readableBody(readId) else "")
     }
 
     companion object {

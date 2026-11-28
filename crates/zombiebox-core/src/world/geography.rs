@@ -90,7 +90,8 @@ impl Plan {
                 let t = &mut tiles[self.index(x, y)];
                 t.district = district;
                 t.ground = Ground::Grass;
-                let lot_rolling = (((x as f32) / 14.0).sin() * 8.0) as i32 + field(self.seed, 6, x, y, 32) / 10;
+                let lot_rolling =
+                    (((x as f32) / 14.0).sin() * 8.0) as i32 + field(self.seed, 6, x, y, 32) / 10;
                 t.elevation = (80 + lot_rolling).clamp(55, 115) as u8;
             }
         }
@@ -285,7 +286,8 @@ pub(super) fn generate_with_meta(
                 District::Residential
             };
             t.ground = Ground::Grass;
-            let town_rolling = (((x as f32) / 14.0).sin() * 8.0) as i32 + field(seed, 6, x, y, 32) / 10;
+            let town_rolling =
+                (((x as f32) / 14.0).sin() * 8.0) as i32 + field(seed, 6, x, y, 32) / 10;
             t.elevation = (80 + town_rolling).clamp(55, 115) as u8;
             debug_assert!(t.water.is_none(), "town shelf must be above water");
         }

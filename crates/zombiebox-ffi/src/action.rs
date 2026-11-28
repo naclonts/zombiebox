@@ -28,6 +28,7 @@ const ZB_V2_CAN_HEAL: u16 = 1 << 4;
 const ZB_V2_LOW_AMMO: u16 = 1 << 5;
 const ZB_V2_INDOORS: u16 = 1 << 6;
 const ZB_V2_DANGER_CLOSE: u16 = 1 << 7;
+const ZB_V2_READ_OPEN: u16 = 1 << 8;
 
 const ZB_SFX_AXE_SWING: u64 = 1 << 0;
 const ZB_SFX_AXE_HIT_FLESH: u64 = 1 << 1;
@@ -304,6 +305,11 @@ impl ZbAction {
                 accept_input = false;
                 self.clear_latches();
             }
+            // A readable modal is an explicit frontend pause boundary. Do not
+            // consume additional fixed ticks in the same render frame.
+            if self.game.hud().read_open {
+                break;
+            }
             frame_audio |= events_to_sfx_mask(self.game.events());
             #[cfg(target_os = "android")]
             if let Some(gpu) = &mut self.gpu {
@@ -345,6 +351,9 @@ impl ZbAction {
         }
         if hud.rocket_danger_close {
             status_flags |= ZB_V2_DANGER_CLOSE;
+        }
+        if hud.read_open {
+            status_flags |= ZB_V2_READ_OPEN;
         }
 
         ZbActionFrameOutput {
@@ -398,7 +407,7 @@ impl ZbAction {
                 0
             },
             condition_pct: mounted.map_or(0, |hud| hud.condition_pct),
-            reserved: 0,
+            reserved: self.game.hud().read_id,
         }
     }
 }
@@ -781,5 +790,11 @@ mod tests {
         assert_ne!(mask & ZB_SFX_MONSTER_DOWN, 0);
         assert_ne!(mask & ZB_SFX_STAIRS_STEP, 0);
         assert_ne!(mask & ZB_SFX_WIN, 0);
+    }
+
+    #[test]
+    fn legacy_frame_output_size_stays_reserved_compatible() {
+        assert_eq!(std::mem::size_of::<ZbActionFrameOutput>(), 40);
+        assert_eq!(std::mem::size_of::<ZbActionFrameOutputV3>(), 48);
     }
 }

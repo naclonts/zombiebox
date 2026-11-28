@@ -26,7 +26,7 @@ const DEFAULT_SEED = '42';
 const MAX_U64 = BigInt('18446744073709551615');
 
 type Hud = Parameters<NonNullable<NativeProps['onHudChanged']>>[0]['nativeEvent'];
-type Menu = 'start' | 'paused' | 'won' | 'dead';
+type Menu = 'start' | 'paused' | 'won' | 'dead' | 'read';
 type ScenarioId = 'county' | 'birch';
 type ControlSchemeId = 'tap_stick' | 'outer_ring' | 'release_fire';
 type CameraMode = 'isometric' | 'overhead' | 'orbit' | 'chase' | 'first_person';
@@ -79,6 +79,8 @@ function getInteractLabel(interactKind: number, floor: number): string | null {
       return 'DISMOUNT';
     case 10:
       return 'RIGHT BIKE';
+    case 11:
+      return 'READ';
     default:
       return null;
   }
@@ -148,6 +150,7 @@ const menuContentByScenario: Record<
       description: 'The infected overwhelmed you in the county.',
       action: 'Try again',
     },
+    read: {title: 'Read', description: null, action: 'Close'},
   },
   birch: {
     start: {
@@ -171,6 +174,7 @@ const menuContentByScenario: Record<
       description: 'The infected overwhelmed you on Birch Street.',
       action: 'Try again',
     },
+    read: {title: 'Read', description: null, action: 'Close'},
   },
 };
 
@@ -196,8 +200,16 @@ function Game() {
   const [aimLookAhead, setAimLookAhead] = useState<boolean>(true);
   const [cameraMode, setCameraMode] = useState<CameraMode>('isometric');
 
+  // Read payloads are additive to the native HUD contract. Keeping this
+  // narrowing here lets older APKs continue to render their normal HUD.
+  const readHud = hud as (Hud & {
+    readOpen?: boolean;
+    readTitle?: string;
+    readBody?: string;
+  }) | null;
+  const readOpen = !!readHud?.readOpen;
   const activeMenu: Menu | null =
-    menu ?? (hud?.won ? 'won' : hud?.dead ? 'dead' : null);
+    menu ?? (readOpen ? 'read' : hud?.won ? 'won' : hud?.dead ? 'dead' : null);
   const simPaused = activeMenu !== null || settingsOpen;
   const usableHeight = height - insets.top - insets.bottom;
   const usableWidth = width - insets.left - insets.right;
@@ -207,6 +219,13 @@ function Game() {
 
   const playClick = () => {
     if (surface.current) Commands.playUiClick(surface.current);
+  };
+
+  // A Read modal is dismissed through the same path as pause: this clears
+  // held touch/keyboard input in the native surface before play resumes.
+  const dismissRead = () => {
+    playClick();
+    setMenu(null);
   };
 
   useEffect(() => {
@@ -221,6 +240,11 @@ function Game() {
       if (settingsOpen) {
         playClick();
         setSettingsOpen(false);
+        return true;
+      }
+      if (activeMenu === 'read') {
+        playClick();
+        setMenu(null);
         return true;
       }
       if (activeMenu === null || activeMenu === 'paused') {
@@ -751,7 +775,7 @@ function Game() {
       )}
 
       {/* Start / Pause / Won / Dead Menu Overlay */}
-      {content && activeMenu && !settingsOpen && (
+      {content && activeMenu && !settingsOpen && activeMenu !== 'read' && (
         <View
           accessibilityViewIsModal
           style={[
@@ -899,6 +923,39 @@ function Game() {
                   <Text style={styles.secondaryText}>Restart run</Text>
                 </Pressable>
               )}
+            </View>
+          </View>
+        </View>
+      )}
+
+      {activeMenu === 'read' && !settingsOpen && (
+        <View
+          accessibilityViewIsModal
+          style={[
+            styles.scrim,
+            {
+              paddingLeft: insets.left + 20,
+              paddingRight: insets.right + 20,
+              paddingTop: insets.top + 12,
+              paddingBottom: insets.bottom + 12,
+            },
+          ]}>
+          <View style={[styles.menu, {width: menuWidth}, compact && styles.menuCompact]}>
+            <Text style={styles.location}>READ</Text>
+            <Text accessibilityRole="header" style={[styles.title, compact && styles.titleCompact]}>
+              {readHud?.readTitle || 'Unreadable note'}
+            </Text>
+            <ScrollView style={styles.readBody}>
+              <Text style={styles.description}>{readHud?.readBody || ''}</Text>
+            </ScrollView>
+            <View style={styles.menuActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Dismiss reading"
+                onPress={dismissRead}
+                style={({pressed}) => [styles.primary, pressed && styles.controlPressed]}>
+                <Text style={styles.primaryText}>CLOSE</Text>
+              </Pressable>
             </View>
           </View>
         </View>
@@ -1463,6 +1520,7 @@ const styles = StyleSheet.create({
   },
   instructionText: {color: muted, fontSize: 11, lineHeight: 15},
   menuActions: {flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 7},
+  readBody: {maxHeight: 260, marginTop: 8, marginBottom: 8},
   primary: {
     alignItems: 'center',
     justifyContent: 'center',

@@ -14,6 +14,7 @@ use crate::gpu::{
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
 use crate::mesh::buildings::build_chunk_building_shell;
 use crate::mesh::doors::{AnimatedDoor, door_leaf_mesh, door_leaves};
+use crate::mesh::library::PropMeshLibrary;
 use crate::mesh::motorcycle::{
     MotorcycleLocator, MotorcyclePart, motorcycle_locator, motorcycle_part_mesh_with_appearance,
 };
@@ -43,6 +44,8 @@ pub struct Presentation {
     zombie_bounds: [crate::RenderAabb; 5],
     last_zombie_lod_counts: [u32; 4],
     cache_prototypes: [PrototypeMeshId; 2],
+    prop_library: &'static PropMeshLibrary,
+    prop_prototypes: Vec<(String, PrototypeMeshId)>,
     motorcycle_prototypes: [Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
     door_prototype: PrototypeMeshId,
     doors: BTreeMap<ChunkCoord, Vec<AnimatedDoor>>,
@@ -70,7 +73,8 @@ struct MotorcyclePrototypeSet {
 const CACHE_BATCH_COUNT: usize = 2;
 const MOTORCYCLE_BATCH_COUNT: usize = MOTORCYCLE_SLOT_COUNT * MOTORCYCLE_PARTS.len();
 const DOOR_BATCH: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
-const BATCH_COUNT: usize = DOOR_BATCH + 1;
+const PROP_BATCH_BASE: usize = DOOR_BATCH + 1;
+const BATCH_COUNT: usize = PROP_BATCH_BASE + 64;
 
 struct PreparedZombie {
     mesh: SkinnedPrototypeMeshId,
@@ -141,6 +145,16 @@ impl Presentation {
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
         ];
         let door_prototype = renderer.register_prototype(ctx, "door_leaf", &door_leaf_mesh());
+        let prop_library = PropMeshLibrary::shared();
+        let prop_prototypes = prop_library
+            .iter()
+            .map(|(name, prototype)| {
+                (
+                    name.to_owned(),
+                    renderer.register_prototype(ctx, name, &prototype.mesh),
+                )
+            })
+            .collect();
         let motorcycle_prototypes = [None; MOTORCYCLE_SLOT_COUNT];
         Self {
             camera: CameraRig::new(width, height),
@@ -158,6 +172,8 @@ impl Presentation {
             zombie_bounds,
             last_zombie_lod_counts: [0; 4],
             cache_prototypes,
+            prop_library,
+            prop_prototypes,
             motorcycle_prototypes,
             door_prototype,
             doors: BTreeMap::new(),
@@ -464,6 +480,48 @@ impl Presentation {
             instances[ActorPart::MESH_COUNT + usize::from(cache.opened)]
                 .push(InstanceRaw::from_transform(cache.transform).with_tint(cache.tint));
         }
+        // Furnishing and retail props are dynamic instances. Their state and
+        // shroud visibility can change without touching resident chunk meshes.
+        for view in &frame.dynamic.props {
+            // Non-container furnishing is resident in the static chunk mesh;
+            // only searchable props are emitted as dynamic batches.
+            if view.id.def().loot.is_none() {
+                continue;
+            }
+            let Some(_) = self.prop_library.get(view.id, view.state) else {
+                continue;
+            };
+            let transform = PropMeshLibrary::transform(view);
+            let key = PropMeshLibrary::asset_key(view.id, view.state);
+            let Some(index) = self
+                .prop_prototypes
+                .iter()
+                .position(|(name, _)| name == &key)
+            else {
+                continue;
+            };
+            let batch = PROP_BATCH_BASE + index;
+            if batch < BATCH_COUNT {
+                let mut instance = InstanceRaw::from_transform(transform);
+                if let Some(info) = game.tile_render_info(view.anchor.tile.pos(), view.floor) {
+                    let cutaway = game
+                        .buildings()
+                        .iter()
+                        .find(|b| b.id == info.building_id)
+                        .map_or(info.building_id, |b| {
+                            b.cutaway_slot_at(view.anchor.tile.pos(), view.floor)
+                        });
+                    let mut meta = crate::mesh::VertexMeta::DEFAULT
+                        .with_floor(view.floor)
+                        .with_building(cutaway, 0);
+                    if info.indoor {
+                        meta = meta.with_flags(crate::mesh::MaterialFlags::INDOOR_AMBIENT);
+                    }
+                    instance = instance.with_meta_override(meta);
+                }
+                instances[batch].push(instance);
+            }
+        }
         let door_dt = if dt.is_finite() {
             dt.clamp(0.0, 0.1)
         } else {
@@ -516,6 +574,7 @@ impl Presentation {
         cache_prototypes: [PrototypeMeshId; 2],
         motorcycle_prototypes: &[Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
         door_prototype: PrototypeMeshId,
+        prop_prototypes: &[(String, PrototypeMeshId)],
         instances: &'a [Vec<InstanceRaw>; BATCH_COUNT],
     ) -> Vec<InstanceBatch<'a>> {
         let mut batches = Vec::with_capacity(BATCH_COUNT);
@@ -553,6 +612,16 @@ impl Presentation {
             mesh: door_prototype,
             instances: &instances[DOOR_BATCH],
         });
+        for (index, (_, mesh)) in prop_prototypes.iter().enumerate() {
+            let batch = PROP_BATCH_BASE + index;
+            if batch >= BATCH_COUNT || instances[batch].is_empty() {
+                continue;
+            }
+            batches.push(InstanceBatch {
+                mesh: *mesh,
+                instances: &instances[batch],
+            });
+        }
         batches
     }
 
@@ -570,6 +639,7 @@ impl Presentation {
             self.cache_prototypes,
             &self.motorcycle_prototypes,
             self.door_prototype,
+            &self.prop_prototypes,
             &instances,
         );
         let prepare_time = started.elapsed();
@@ -650,6 +720,7 @@ impl Presentation {
             self.cache_prototypes,
             &self.motorcycle_prototypes,
             self.door_prototype,
+            &self.prop_prototypes,
             &instances,
         );
         let prepare_time = started.elapsed();

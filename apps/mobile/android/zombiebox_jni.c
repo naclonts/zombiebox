@@ -74,7 +74,8 @@ static void write_frame_output(JNIEnv *env, jintArray out_state, const ZbAction 
     packed[10] = (jint)(uint32_t)(out->audio_events >> 32);
     packed[11] = pack_u8x4(frame->control_kind, frame->grip_use, frame->engine_load,
                            frame->riding_flags);
-    packed[12] = pack_u16x2(frame->speed_mph_x10, frame->condition_pct);
+    packed[12] = pack_u16x2(frame->speed_mph_x10, frame->condition_pct)
+               | ((jint)frame->reserved << 24);
 
     (*env)->SetIntArrayRegion(env, out_state, 0, 13, packed);
 }
@@ -191,4 +192,18 @@ JNIEXPORT jboolean JNICALL Java_game_zombiebox_mobile_NativeGame_frameSurface(
     }
     write_frame_output(env, out_state, run, &out);
     return JNI_TRUE;
+}
+
+JNIEXPORT jstring JNICALL Java_game_zombiebox_mobile_NativeGame_readableTitle(
+    JNIEnv *env, jclass type, jint id) {
+    (void)type;
+    const char *text = zb_action_readable_title((uint8_t)id);
+    return text ? (*env)->NewStringUTF(env, text) : NULL;
+}
+
+JNIEXPORT jstring JNICALL Java_game_zombiebox_mobile_NativeGame_readableBody(
+    JNIEnv *env, jclass type, jint id) {
+    (void)type;
+    const char *text = zb_action_readable_body((uint8_t)id);
+    return text ? (*env)->NewStringUTF(env, text) : NULL;
 }

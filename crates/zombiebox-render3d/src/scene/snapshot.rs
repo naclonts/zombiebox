@@ -1,9 +1,9 @@
 use zombiebox_core::{
     ActionEvent, ActionGame, ActionMode, ActionOutcome, BuildingId, BuildingInfo, BuildingStyle,
     CHUNK_SIZE, CHUNK_VERTICES, CHUNKS_PER_SIDE, CacheView, District, FLOOR_H, Feature, Floor,
-    Ground, LightSourceView, Material, MonsterView, Position, ProjectileView, PropKind, Surface,
-    Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2 as SimVec2, VehicleId, VehicleView,
-    WORLD_SIZE, WallOrientation, World,
+    Ground, LightSourceView, Material, MonsterView, Position, ProjectileView, PropKind, PropView,
+    Surface, Tile3D, TileKind, TileRenderInfo, TileVisibility, Vec2 as SimVec2, VehicleId,
+    VehicleView, WORLD_SIZE, WallOrientation, World,
 };
 
 use crate::coords::{ChunkCoord, RenderAabb, SimVec3};
@@ -222,6 +222,9 @@ pub struct ChunkSnapshot {
     pub tiles: Box<[TileSnapshot; CHUNK_HALO_LEN]>,
     /// Buildings whose horizontal footprint intersects this chunk's `18 × 18` halo, sorted by `info.id`.
     pub buildings: Vec<BuildingSnapshot>,
+    /// Non-searchable props owned by this chunk. Searchable/container props
+    /// stay dynamic and are intentionally excluded from static fingerprints.
+    pub static_props: Vec<PropView>,
     /// `true` if any core `16 × 16` tile has `floor_count > 0` or `terrain.has_terrain`.
     pub has_renderable_content: bool,
     pub min_sim_z: f32,
@@ -394,6 +397,9 @@ pub struct DynamicSceneState {
     pub monsters: Vec<MonsterView>,
     pub projectiles: Vec<ProjectileView>,
     pub caches: Vec<CacheSnapshot>,
+    /// Persistent furnishing/retail props. These remain dynamic instances so
+    /// search/open state never invalidates resident chunk meshes.
+    pub props: Vec<PropView>,
     pub lights: Vec<LightSnapshot>,
     pub dynamic_flashes: Vec<FlashSnapshot>,
     pub blasts: Vec<BlastSnapshot>,
@@ -458,6 +464,11 @@ impl Fnv1a64 {
         for b in v.to_le_bytes() {
             self.write_u8(b);
         }
+    }
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        self.write_u32(v as u32);
+        self.write_u32((v >> 32) as u32);
     }
 
     #[inline]
@@ -787,7 +798,25 @@ pub fn hash_chunk_static_state(snapshot: &ChunkSnapshot) -> u64 {
     for b in &snapshot.buildings {
         hash_building(&mut h, b);
     }
+    h.write_u32(snapshot.static_props.len() as u32);
+    for p in &snapshot.static_props {
+        hash_static_prop(&mut h, p);
+    }
     h.finish()
+}
+
+fn hash_static_prop(h: &mut Fnv1a64, p: &PropView) {
+    h.write_u64(p.anchor_uid);
+    h.write_u16(p.id as u16);
+    h.write_i32(p.anchor.tile.x);
+    h.write_i32(p.anchor.tile.y);
+    h.write_u8(p.floor);
+    h.write_u8(p.anchor.span.width);
+    h.write_u8(p.anchor.span.height);
+    h.write_u8(p.facing as u8);
+    h.write_f32(p.world_pivot.x);
+    h.write_f32(p.world_pivot.y);
+    h.write_f32(p.world_pivot.z);
 }
 
 /// Streams chunk static state directly from `ActionGame` into FNV-1a with zero heap allocations.
@@ -868,6 +897,19 @@ pub fn compute_chunk_fingerprint_from_game(game: &ActionGame, coord: ChunkCoord)
         }
     }
 
+    let mut static_props: Vec<PropView> = game
+        .prop_views()
+        .into_iter()
+        // A seam-spanning prototype belongs to its anchor's core chunk.  The
+        // halo is for sampling surrounding terrain/buildings, never ownership.
+        .filter(|p| p.id.def().loot.is_none() && ChunkCoord::from_pos(p.anchor.tile.pos()) == coord)
+        .collect();
+    static_props.sort_by_key(|p| p.anchor_uid);
+    h.write_u32(static_props.len() as u32);
+    for p in &static_props {
+        hash_static_prop(&mut h, p);
+    }
+
     h.finish()
 }
 
@@ -921,6 +963,13 @@ pub fn build_chunk_snapshot(game: &ActionGame, coord: ChunkCoord, revision: u64)
         max_sim_z = max_sim_z.max(top_z);
     }
 
+    let mut static_props: Vec<PropView> = game
+        .prop_views()
+        .into_iter()
+        .filter(|p| p.id.def().loot.is_none() && ChunkCoord::from_pos(p.anchor.tile.pos()) == coord)
+        .collect();
+    static_props.sort_by_key(|p| p.anchor_uid);
+
     let mut snap = ChunkSnapshot {
         coord,
         revision,
@@ -929,6 +978,7 @@ pub fn build_chunk_snapshot(game: &ActionGame, coord: ChunkCoord, revision: u64)
         terrain,
         tiles: tiles.into_boxed_slice().try_into().unwrap(),
         buildings,
+        static_props,
         has_renderable_content,
         min_sim_z: min_sim_z - 0.5,
         max_sim_z: max_sim_z + 1.0,

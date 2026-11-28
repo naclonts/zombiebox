@@ -1382,6 +1382,7 @@ impl SpatialWorld for ActionSpatialView<'_> {
 
     fn colliders_in(&self, bounds: Aabb3, out: &mut Vec<Collider>) {
         stage_colliders_in(self.game, bounds, out);
+        self.game.prop_colliders_in(bounds, out);
     }
 
     fn surface_quads_in(&self, min_tile: Position, max_tile: Position, out: &mut Vec<SurfaceQuad>) {

@@ -1,0 +1,204 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zombiebox prop gallery</title>
+<style>
+  :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #17191c; }
+  body { margin: 0 auto; max-width: 1200px; padding: 0 1rem 2rem; color: #e7e8e4; }
+  h1, h2, h3 { margin: .65em 0 .4em; }
+  header { position: sticky; top: 0; background: #17191c; padding: .5rem 0; z-index: 1; }
+  form, .tiles { display: grid; gap: .4rem; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  form { grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
+  label { display: flex; gap: .5rem; align-items: center; }
+  figure { margin: 0; background: #24282d; padding: .25rem; }
+  figcaption { font-size: .8rem; padding: .2rem; }
+  canvas { display: block; width: 100%; height: auto; }
+  small { color: #b8c0c2; }
+  a { color: #a5d9e9; }
+  @media (max-width: 640px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+<header>
+  <h1>Zombiebox prop gallery</h1>
+  <form>
+    <label>Camera <select id="camera"></select></label>
+    <label>Palette <select id="palette"></select></label>
+    <label><input id="bounds" type="checkbox"> Gameplay bounds</label>
+    <label>Category <select id="category"><option>All props</option></select></label>
+  </form>
+</header>
+<p id="error" role="alert" hidden></p>
+<main></main>
+
+<script id="gallery-data"></script>
+<script>
+'use strict';
+const main = document.querySelector('main');
+const camera = document.querySelector('#camera');
+const palette = document.querySelector('#palette');
+const bounds = document.querySelector('#bounds');
+const category = document.querySelector('#category');
+const surface = document.createElement('canvas');
+surface.width = 256;
+surface.height = 176;
+const gl = surface.getContext('webgl', { alpha: false, antialias: true, preserveDrawingBuffer: true });
+
+function compile(type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw Error(gl.getShaderInfoLog(shader));
+  return shader;
+}
+
+function program() {
+  const program = gl.createProgram();
+  gl.attachShader(program, compile(gl.VERTEX_SHADER, `
+    attribute vec3 position;
+    attribute vec3 normal;
+    attribute vec4 color;
+    uniform mat4 camera;
+    uniform mat4 facing;
+    uniform vec3 tint;
+    uniform bool wire;
+    varying vec3 shaded;
+    void main() {
+      gl_Position = camera * facing * vec4(position, 1.0);
+      gl_Position.z = 2.0 * gl_Position.z - gl_Position.w;
+      vec3 n = mat3(facing) * normal;
+      float light = 0.55 + 0.45 * max(dot(n, normalize(vec3(-0.4, 0.8, 0.5))), 0.0);
+      shaded = wire ? vec3(1.0, 0.78, 0.23) : color.rgb * tint * mix(light, 1.0, color.a);
+    }
+  `));
+  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, `
+    precision mediump float;
+    varying vec3 shaded;
+    void main() { gl_FragColor = vec4(shaded, 1.0); }
+  `));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw Error(gl.getProgramInfoLog(program));
+  return program;
+}
+
+function upload(target, type, data) {
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(target, buffer);
+  gl.bufferData(target, new type(data), gl.STATIC_DRAW);
+  return buffer;
+}
+
+function vertices(program, buffer) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  for (const [name, count, offset] of [['position', 3, 0], ['normal', 3, 12], ['color', 4, 24]]) {
+    const slot = gl.getAttribLocation(program, name);
+    gl.vertexAttribPointer(slot, count, gl.FLOAT, false, 40, offset);
+    gl.enableVertexAttribArray(slot);
+  }
+}
+
+function boundsVertices([x0, y0, z0, x1, y1, z1]) {
+  const points = [[x0,y0,z0], [x1,y0,z0], [x1,y0,z1], [x0,y0,z1],
+                  [x0,y1,z0], [x1,y1,z0], [x1,y1,z1], [x0,y1,z1]];
+  const edges = [0,1, 1,2, 2,3, 3,0, 4,5, 5,6, 6,7, 7,4, 0,4, 1,5, 2,6, 3,7];
+  return edges.flatMap(i => [...points[i], 0, 1, 0, 0, 0, 0, 0]);
+}
+
+function addOption(select, label) {
+  select.add(new Option(label));
+}
+
+function init() {
+  if (!gl) throw Error('This gallery requires WebGL.');
+  const pipeline = program();
+  gl.useProgram(pipeline);
+  const uniform = name => gl.getUniformLocation(pipeline, name);
+  const cameraUniform = uniform('camera');
+  const facingUniform = uniform('facing');
+  const tintUniform = uniform('tint');
+  const wireUniform = uniform('wire');
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.viewport(0, 0, surface.width, surface.height);
+
+  for (const mode of cameraNames) addOption(camera, mode);
+  for (const name of Object.keys(palettes)) addOption(palette, name);
+  const sections = new Map();
+  const cells = [];
+
+  for (const prop of props) {
+    if (!sections.has(prop.category)) {
+      const section = main.appendChild(document.createElement('section'));
+      section.appendChild(document.createElement('h2')).textContent = prop.category;
+      sections.set(prop.category, section);
+      addOption(category, prop.category);
+    }
+    const row = sections.get(prop.category).appendChild(document.createElement('article'));
+    row.appendChild(document.createElement('h3')).textContent = `${prop.name} · ID ${prop.id}`;
+    const sources = new Map(prop.states.filter(state => state.source)
+      .map(state => [state.source.source, state.source]));
+    for (const source of sources.values()) {
+      const info = row.appendChild(document.createElement('div')).appendChild(document.createElement('small'));
+      const link = info.appendChild(document.createElement('a'));
+      link.href = source.url;
+      link.rel = 'noreferrer';
+      link.textContent = source.author;
+      info.append(` · ${source.license} · ${source.source}`);
+    }
+    const grid = row.appendChild(document.createElement('div'));
+    grid.className = 'tiles';
+    // Keep opened/closed variants adjacent at every facing so drawer and door
+    // travel can be reviewed without scanning across the whole row.
+    for (const [dir, rotation] of Object.entries(facings)) {
+      for (const state of prop.states) {
+        const vertexBuffer = upload(gl.ARRAY_BUFFER, Float32Array, state.vertices);
+        const indexBuffer = upload(gl.ELEMENT_ARRAY_BUFFER, Uint16Array, state.indices);
+        const boundsBuffer = prop.bounds && upload(gl.ARRAY_BUFFER, Float32Array, boundsVertices(prop.bounds));
+        const figure = grid.appendChild(document.createElement('figure'));
+        const canvas = figure.appendChild(document.createElement('canvas'));
+        canvas.width = surface.width;
+        canvas.height = surface.height;
+        figure.appendChild(document.createElement('figcaption')).textContent =
+          `${dir} · ${state.name || state.id} · ${state.indices.length / 3} tris`;
+        canvas.setAttribute('aria-label', `${prop.name}, ${state.name}, facing ${dir}`);
+        cells.push({ canvas, rotation, prop, state, vertexBuffer, indexBuffer, boundsBuffer });
+      }
+    }
+  }
+
+  function redraw() {
+    for (const [name, section] of sections) {
+      section.hidden = category.selectedIndex > 0 && name !== category.value;
+    }
+    gl.uniform3fv(tintUniform, palettes[palette.value]);
+    for (const {canvas, rotation, prop, state, vertexBuffer, indexBuffer, boundsBuffer} of cells) {
+      if (sections.get(prop.category).hidden) continue;
+      gl.clearColor(0.12, 0.14, 0.16, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      gl.uniformMatrix4fv(cameraUniform, false, prop.cameras[camera.selectedIndex]);
+      gl.uniformMatrix4fv(facingUniform, false, rotation);
+      gl.uniform1i(wireUniform, 0);
+      vertices(pipeline, vertexBuffer);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+      gl.drawElements(gl.TRIANGLES, state.indices.length, gl.UNSIGNED_SHORT, 0);
+      if (bounds.checked && boundsBuffer) {
+        gl.uniform1i(wireUniform, 1);
+        gl.disable(gl.DEPTH_TEST);
+        vertices(pipeline, boundsBuffer);
+        gl.drawArrays(gl.LINES, 0, 24);
+        gl.enable(gl.DEPTH_TEST);
+      }
+      canvas.getContext('2d').drawImage(surface, 0, 0);
+    }
+  }
+  document.querySelector('form').addEventListener('change', redraw);
+  redraw();
+}
+
+try {
+  init();
+} catch (error) {
+  const status = document.querySelector('#error');
+  status.textContent = error.message;
+  status.hidden = false;
+  throw error;
+}
+</script>

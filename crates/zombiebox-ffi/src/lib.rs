@@ -3,6 +3,20 @@ mod action;
 
 pub use action::{ZbAction, ZbActionFrameInput, ZbActionFrameOutput, ZbActionLocation};
 
+/// Static authoritative text for a Readable ID. The caller must not free the
+/// returned pointers.
+#[unsafe(no_mangle)]
+pub extern "C" fn zb_action_readable_title(id: u8) -> *const std::ffi::c_char {
+    zombiebox_core::ReadableId::from_u8(id)
+        .map_or(std::ptr::null(), |value| value.title_c().as_ptr())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn zb_action_readable_body(id: u8) -> *const std::ffi::c_char {
+    zombiebox_core::ReadableId::from_u8(id)
+        .map_or(std::ptr::null(), |value| value.body_c().as_ptr())
+}
+
 use zombiebox_core::{Command, Direction, Game, TICKS_PER_SECOND};
 
 pub struct ZbGame(Game);

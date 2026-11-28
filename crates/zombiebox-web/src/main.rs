@@ -226,6 +226,9 @@ impl ActionSession {
             if let Some(renderer) = &mut self.renderer {
                 renderer.observe_tick(&self.game);
             }
+            if self.game.hud().read_open {
+                break;
+            }
         }
         frame_audio
     }
@@ -556,10 +559,19 @@ fn route_conn(
     state: &mut HostState,
     keep_alive: bool,
 ) -> Vec<u8> {
+    let path = path.split('?').next().unwrap_or(path);
+    if method == "GET"
+        && let Some(id) = path
+            .strip_prefix("/api/action/readable/")
+            .and_then(|v| v.parse::<u8>().ok())
+        && let Some((_, title, body)) = zombiebox_core::readable_text(id)
+    {
+        let json = format!("{{\"id\":{id},\"title\":{title:?},\"body\":{body:?}}}");
+        return response_conn(200, "application/json", json.as_bytes(), keep_alive);
+    }
     if method != "POST" {
         return response_conn(405, "text/plain", b"method not allowed\n", keep_alive);
     }
-    let path = path.split('?').next().unwrap_or(path);
     if path == "/api/runs" {
         return handle_legacy_create(body, state, keep_alive);
     }
@@ -1190,6 +1202,9 @@ fn encode_zbf2_frame(
     if hud.rocket_danger_close {
         status_flags |= ZB_V2_DANGER_CLOSE;
     }
+    if hud.read_open {
+        status_flags |= 1 << 8;
+    }
 
     let zombies = hud.zombie_count.min(u16::MAX as usize) as u16;
     let zombies_total = hud.zombies_total.min(u16::MAX as usize) as u16;
@@ -1252,6 +1267,7 @@ fn encode_zbf3_frame(
         ext[4] = hud.engine_load;
         ext[5] = 1; // occupied riding state
         ext[6] = hud.condition_pct;
+        ext[7] = game.hud().read_id;
     }
     ext[0] = u8::from(game.control_mode() == zombiebox_core::ControlMode::Motorcycle);
     // Preserve the v2 header and insert the v3 extension before its RGBA pixels.
@@ -1824,7 +1840,10 @@ mod tests {
             interact: true,
             ..ActionInput::default()
         });
-        assert_eq!(starter.control_mode(), zombiebox_core::ControlMode::Motorcycle);
+        assert_eq!(
+            starter.control_mode(),
+            zombiebox_core::ControlMode::Motorcycle
+        );
         state.action_sessions.insert(1, ActionSession::new(starter));
 
         // First frame initializes GPU renderer and establishes baseline frame time
@@ -1843,7 +1862,12 @@ mod tests {
             let body_str = format!(
                 "w=320&h=180&t_ns=1000000000&mx=0&my=0&ax=0&ay=0&flags=0&weapon=-1&advance=0&frame_version=3&control_kind=1&steer=0&throttle=0&brake=0&lean=0&camera={mode_idx}"
             );
-            let resp = route("POST", "/api/action/1/frame", body_str.as_bytes(), &mut state);
+            let resp = route(
+                "POST",
+                "/api/action/1/frame",
+                body_str.as_bytes(),
+                &mut state,
+            );
             let (head, body) = split_http_response(&resp);
             assert!(head.starts_with("HTTP/1.1 200 OK"));
             assert_eq!(&body[0..4], b"ZBF3");

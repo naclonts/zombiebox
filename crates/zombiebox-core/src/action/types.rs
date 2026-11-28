@@ -662,6 +662,7 @@ pub enum InteractPrompt {
     Mount = 8,
     Dismount = 9,
     RightBike = 10,
+    Read = 11,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1040,6 +1041,8 @@ pub struct ActionHud {
     pub caches_found: u8,
     pub caches_total: u8,
     pub interact_prompt: InteractPrompt,
+    pub read_open: bool,
+    pub read_id: u8,
     pub objective_kind: ObjectiveKind,
     pub rocket_danger_close: bool,
     pub indoors: bool,

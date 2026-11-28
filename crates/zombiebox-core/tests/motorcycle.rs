@@ -1,6 +1,6 @@
 use zombiebox_core::{
     ActionGame, ActionInput, ControlMode, InteractPrompt, MotorcycleInput, Position, RideInput,
-    Tile3D, Vec2, VehicleId, VehicleView, World, WORLD_SIZE,
+    Tile3D, Vec2, VehicleId, VehicleView, WORLD_SIZE, World,
 };
 
 fn motorcycle_views(game: &ActionGame) -> Vec<(VehicleId, VehicleView)> {
@@ -582,7 +582,8 @@ fn slope_gravity_affects_motorcycle_uphill_and_downhill() {
     };
     let uphill_dir = -downhill_dir;
 
-    let up_steer = (uphill_dir.y.atan2(uphill_dir.x) - game_up.player_body().heading).clamp(-1.0, 1.0);
+    let up_steer =
+        (uphill_dir.y.atan2(uphill_dir.x) - game_up.player_body().heading).clamp(-1.0, 1.0);
     for _ in 0..40 {
         game_up.step(ride(0.8, 0.0, up_steer, 0.0));
     }
@@ -594,7 +595,8 @@ fn slope_gravity_affects_motorcycle_uphill_and_downhill() {
         interact: true,
         ..ActionInput::default()
     });
-    let down_steer = (downhill_dir.y.atan2(downhill_dir.x) - game_down.player_body().heading).clamp(-1.0, 1.0);
+    let down_steer =
+        (downhill_dir.y.atan2(downhill_dir.x) - game_down.player_body().heading).clamp(-1.0, 1.0);
     for _ in 0..40 {
         game_down.step(ride(0.8, 0.0, down_steer, 0.0));
     }
@@ -618,11 +620,23 @@ fn slope_affects_walking_speed_uphill_vs_downhill() {
             let p = Position::new(x, y);
             let p_e = Position::new(x + 2, y);
             let p_w = Position::new(x - 2, y);
-            if let (Some(t), Some(te), Some(tw)) = (world.tile_at(p), world.tile_at(p_e), world.tile_at(p_w)) {
-                if t.ground.is_road() && te.ground.is_road() && tw.ground.is_road() && t.water.is_none() {
-                    let z_c = world.elevation_at(Vec2::new(x as f32 + 0.5, y as f32 + 0.5)).unwrap();
-                    let z_e = world.elevation_at(Vec2::new(p_e.x as f32 + 0.5, p_e.y as f32 + 0.5)).unwrap();
-                    let z_w = world.elevation_at(Vec2::new(p_w.x as f32 + 0.5, p_w.y as f32 + 0.5)).unwrap();
+            if let (Some(t), Some(te), Some(tw)) =
+                (world.tile_at(p), world.tile_at(p_e), world.tile_at(p_w))
+            {
+                if t.ground.is_road()
+                    && te.ground.is_road()
+                    && tw.ground.is_road()
+                    && t.water.is_none()
+                {
+                    let z_c = world
+                        .elevation_at(Vec2::new(x as f32 + 0.5, y as f32 + 0.5))
+                        .unwrap();
+                    let z_e = world
+                        .elevation_at(Vec2::new(p_e.x as f32 + 0.5, p_e.y as f32 + 0.5))
+                        .unwrap();
+                    let z_w = world
+                        .elevation_at(Vec2::new(p_w.x as f32 + 0.5, p_w.y as f32 + 0.5))
+                        .unwrap();
                     if z_e > z_c + 0.15 && z_c > z_w + 0.15 {
                         slope_found = Some((p, Vec2::new(1.0, 0.0)));
                         break;
@@ -637,7 +651,8 @@ fn slope_affects_walking_speed_uphill_vs_downhill() {
             break;
         }
     }
-    let (slope_pos, uphill_dir) = slope_found.expect("sloped East-West road exists in hilly county");
+    let (slope_pos, uphill_dir) =
+        slope_found.expect("sloped East-West road exists in hilly county");
     let downhill_dir = -uphill_dir;
     // Test uphill walk
     assert!(game.teleport(Tile3D::from_pos(slope_pos, 0)).is_some());

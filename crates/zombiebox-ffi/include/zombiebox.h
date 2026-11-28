@@ -49,6 +49,10 @@ void zb_survey_v1_free(char *survey);
 /* Action-game run and renderer. Call on one thread for the lifetime of the run. */
 typedef struct ZbAction ZbAction;
 
+/* Static UTF-8 strings for Readable IDs; pointers remain valid for process life. */
+const char *zb_action_readable_title(uint8_t id);
+const char *zb_action_readable_body(uint8_t id);
+
 /* Action v2 interface: multi-weapon hotbar, contextual interact, audio/haptics
  * event bitmask, look-ahead camera toggle, and full multi-level block HUD. */
 enum ZbWeapon {
@@ -125,7 +129,8 @@ enum ZbActionV2Status {
     ZB_V2_CAN_HEAL = 1u << 4,
     ZB_V2_LOW_AMMO = 1u << 5,
     ZB_V2_INDOORS = 1u << 6,
-    ZB_V2_DANGER_CLOSE = 1u << 7
+    ZB_V2_DANGER_CLOSE = 1u << 7,
+    ZB_V2_READ_OPEN = 1u << 8
 };
 
 #define ZB_SFX_AXE_SWING         (UINT64_C(1) << 0)

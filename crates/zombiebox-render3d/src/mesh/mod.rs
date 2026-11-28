@@ -3,10 +3,13 @@
 pub mod actors;
 pub mod buildings;
 pub(crate) mod doors;
+pub mod kit;
+pub mod library;
 pub mod motorcycle;
 pub mod motorcycle_appearance;
 pub mod primitives;
 pub mod props;
+pub mod signage;
 #[allow(clippy::excessive_precision)] // generated authored mesh tables
 pub mod survivor;
 pub mod terrain;

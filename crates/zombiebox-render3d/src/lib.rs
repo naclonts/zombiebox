@@ -11,9 +11,9 @@ pub mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 mod interaction;
+pub mod lod;
 pub mod materials;
 pub mod mesh;
-pub mod lod;
 mod player_rig;
 #[cfg(feature = "gpu")]
 mod presentation;
@@ -31,6 +31,7 @@ pub use camera::{
     weapon_look_ahead_distance,
 };
 pub use coords::{ChunkCoord, FLOOR_H, RenderAabb, RenderVec3, SimAabb3, SimVec3};
+pub use mesh::library::{PropMeshLibrary, Prototype};
 pub use mesh::{
     CardinalDir, EXTERIOR_FLOOR_SENTINEL, FaceMask, GeometryTag, MaterialFlags, MeshBuffer,
     MeshBuilder, MeshValidationError, RidgeAxis, TerrainMeshConfig, VertexMeta, WorldVertex,
@@ -47,9 +48,9 @@ pub use scene::{
 pub use gpu::{
     ChunkGpuSlot, ChunkMeshPool, FrameStats, GpuContext, GpuError, GpuMesh, GpuRenderer,
     InstanceBatch, InstanceRaw, InternalResolutionPolicy, OffscreenTarget, PointLightGpu,
-    PrototypeMeshId, RenderPipelineConfig, SceneLightingUniforms, SurfaceFrameOutcome,
-    SkinnedActorDraw, SkinnedPrototypeMeshId,
-    render_smoke_cube, select_surface_format, write_rgba8_png,
+    PrototypeMeshId, RenderPipelineConfig, SceneLightingUniforms, SkinnedActorDraw,
+    SkinnedPrototypeMeshId, SurfaceFrameOutcome, render_smoke_cube, select_surface_format,
+    write_rgba8_png,
 };
 
 /// Applies `frame.evicted_chunks` and `frame.dirty_chunks` from `SceneManager::prepare`
