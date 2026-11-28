@@ -747,7 +747,7 @@ fn emit_sidewalk_tile(
 
     for (dx, dy, za, zb) in [
         (-1, 0, z00, z01),
-        (1, 0, z11, z10),
+        (1, 0, z10, z11),
         (0, -1, z10, z00),
         (0, 1, z01, z11),
     ] {

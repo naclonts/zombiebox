@@ -725,6 +725,17 @@ body.action-body {
   color:#e8eadb;
   padding-right:4px;
 }
+.fps-readout {
+  min-width:46px;
+  padding-right:2px;
+  font-size:9px;
+  font-weight:700;
+  letter-spacing:.08em;
+  font-variant-numeric:tabular-nums;
+  color:#8da092;
+  text-align:right;
+  user-select:none;
+}
 .hud-pill,
 .hud-icon {
   min-height:30px;
@@ -1118,6 +1129,10 @@ body.action-body {
   .health-seg {
     width:8px;
     height:13px;
+  }
+  .fps-readout {
+    min-width:40px;
+    font-size:8px;
   }
   .weapon-readout {
     min-width:72px;

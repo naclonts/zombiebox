@@ -118,6 +118,12 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     private var pendingSelectWeapon = WEAPON_UNCHANGED
     private var currentInteractKind = 0
 
+    // Presented-frame rate for the subtle HUD readout.
+    private var fpsWindowStartNanos = 0L
+    private var fpsFrameCount = 0
+    private var fpsValue = 0
+    private var lastEmittedFps = -1
+
     // Zero-allocation frame output and HUD diff state.
     private val frameOut = IntArray(13)
     private val lastHudOut = IntArray(11)
@@ -262,6 +268,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             currentInteractKind = 0
             controlKind = CONTROL_ON_FOOT
             recovering = false
+            resetFps()
         }
         updateAudioLifecycle()
         updateFrames()
@@ -324,6 +331,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
                         appliedSeed = seedLong; appliedScenario = "county"; appliedRunId = targetId
                     }
                     runReady = true; hasLastHud = false; currentInteractKind = 0
+                    if (!preserve) resetFps()
                     if (id != NO_ID) UIManagerHelper.getEventDispatcher(reactContext)?.dispatchEvent(
                         AtlasTeleportEvent(UIManagerHelper.getSurfaceId(reactContext), id, seedStr,
                             resolved[0], resolved[1], resolved[2], preserve,
@@ -472,8 +480,34 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
             Runs.post { val handle = Runs.handle(this); if (handle != 0L) NativeGame.resetClockV2(handle) }
             drawing = false
         }
+        resetFpsWindow()
         audioEngine.setRiding(0, 0, 0, false)
         clearInput()
+    }
+
+    private fun resetFpsWindow() {
+        fpsWindowStartNanos = 0L
+        fpsFrameCount = 0
+    }
+
+    private fun resetFps() {
+        resetFpsWindow()
+        fpsValue = 0
+        lastEmittedFps = -1
+    }
+
+    private fun recordPresentedFrame(nowNanos: Long) {
+        if (fpsWindowStartNanos == 0L || nowNanos - fpsWindowStartNanos > 2_000_000_000L) {
+            fpsWindowStartNanos = nowNanos
+            fpsFrameCount = 0
+            return
+        }
+        fpsFrameCount++
+        val elapsed = nowNanos - fpsWindowStartNanos
+        if (elapsed >= 500_000_000L) {
+            fpsValue = ((fpsFrameCount * 1_000_000_000L) / elapsed).toInt().coerceIn(0, 999)
+            resetFpsWindow()
+        }
     }
 
     private fun clearInput() {
@@ -547,6 +581,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
                         recovering = nextRecovering
                     }
                     if (advance && canPlay()) {
+                        recordPresentedFrame(System.nanoTime())
                         val mask = (frameOut[9].toLong() and 0xFFFF_FFFFL) or (frameOut[10].toLong() shl 32)
                         if (mask != 0L) audioEngine.triggerSimEvents(mask)
                         audioEngine.setRiding(
@@ -565,7 +600,10 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
 
     private fun emitHudIfChanged() {
         if (id == NO_ID) return
-        var changed = !hasLastHud || frameOut[11] != lastHudOut[9] || frameOut[12] != lastHudOut[10]
+        var changed = !hasLastHud ||
+            frameOut[11] != lastHudOut[9] ||
+            frameOut[12] != lastHudOut[10] ||
+            fpsValue != lastEmittedFps
         if (!changed) {
             for (i in 0 until 9) {
                 if (frameOut[i] != lastHudOut[i]) {
@@ -580,11 +618,13 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
         lastHudOut[9] = frameOut[11]
         lastHudOut[10] = frameOut[12]
         hasLastHud = true
+        lastEmittedFps = fpsValue
         dispatcher.dispatchEvent(
             HudChangedEvent(
                 UIManagerHelper.getSurfaceId(reactContext),
                 id,
                 lastHudOut.copyOf(),
+                fpsValue,
             ),
         )
     }
@@ -1233,7 +1273,7 @@ internal class ZombieboxSurfaceView(private val reactContext: ThemedReactContext
     }
 }
 
-internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: IntArray) :
+internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: IntArray, private val fps: Int) :
     Event<HudChangedEvent>(surfaceId, viewId) {
     override fun getEventName() = NAME
 
@@ -1292,6 +1332,7 @@ internal class HudChangedEvent(surfaceId: Int, viewId: Int, private val words: I
         putInt("ridingFlags", riding ushr 24)
         putInt("speedMphX10", words[10] and 0xffff)
         putInt("bikeCondition", words[10] ushr 16)
+        putInt("fps", fps)
     }
 
     companion object {

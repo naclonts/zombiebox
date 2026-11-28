@@ -359,6 +359,8 @@ function Game() {
   const recovering = ((hud?.ridingFlags ?? 0) & 1) !== 0;
   const gripWarning = (hud?.gripUse ?? 0) >= 80;
   const ridingSpeed = Math.round((hud?.speedMphX10 ?? 0) / 10);
+  const fps = hud?.fps ?? 0;
+  const fpsLabel = fps > 0 ? `${fps} FPS` : '-- FPS';
   const medkits = hud?.medkits ?? 0;
   const canHeal = !!hud?.canHeal;
   const reloading = !!hud?.reloading;
@@ -562,6 +564,13 @@ function Game() {
                   {scenario === 'county' ? zombies : `${zombies}/${zombiesTotal}`}
                 </Text>
               </View>
+
+              <Text
+                accessibilityLabel={`Frame rate ${fpsLabel}`}
+                pointerEvents="none"
+                style={styles.fps}>
+                {fpsLabel}
+              </Text>
 
               <Pressable
                 accessibilityRole="button"
@@ -1188,6 +1197,16 @@ const styles = StyleSheet.create({
     backgroundColor: glass,
   },
   threatsCompact: {minHeight: 40, paddingHorizontal: 6},
+  fps: {
+    minWidth: 36,
+    fontFamily: 'monospace',
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: muted,
+    opacity: 0.85,
+    textAlign: 'right',
+  },
   threatCount: {
     color: bone,
     fontFamily: 'monospace',

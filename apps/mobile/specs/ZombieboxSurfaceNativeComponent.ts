@@ -43,6 +43,7 @@ type Hud = Readonly<{
   speedMphX10: CodegenTypes.Int32;
   ridingFlags: CodegenTypes.Int32;
   bikeCondition: CodegenTypes.Int32;
+  fps: CodegenTypes.Int32;
 }>;
 
 type AtlasTeleportEvent = Readonly<{

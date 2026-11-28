@@ -55,6 +55,7 @@
   const hudObjective = $("hud-objective");
   const hudCaches = $("hud-caches");
   const hudThreats = $("hud-threats");
+  const hudFps = $("hud-fps");
   const rideReadout = $("ride-readout");
   const rideSpeed = $("ride-speed");
   const rideCondition = $("ride-condition");
@@ -104,6 +105,8 @@
     muted: false,
     lastTNs: 0,
     toastTimer: 0,
+    fpsWindowStart: 0,
+    fpsFrames: 0,
     hud: null,
     playerX: 0,
     playerY: 0,
@@ -417,6 +420,31 @@
     return state.lastTNs;
   }
 
+  function resetFpsWindow() {
+    state.fpsWindowStart = 0;
+    state.fpsFrames = 0;
+  }
+
+  // Measured from frames that were actually drawn from the host, so network or
+  // decode stalls are reflected in the readout.
+  function recordPresentedFrame() {
+    const now = performance.now();
+    if (state.fpsWindowStart === 0) {
+      state.fpsWindowStart = now;
+      return;
+    }
+    const elapsed = now - state.fpsWindowStart;
+    if (elapsed > 2000) {
+      resetFpsWindow();
+      return;
+    }
+    state.fpsFrames += 1;
+    if (elapsed >= 500) {
+      hudFps.textContent = `${Math.round((state.fpsFrames * 1000) / elapsed)} FPS`;
+      resetFpsWindow();
+    }
+  }
+
   function clearHeldInput() {
     input.keysDown.clear();
     input.shiftHeld = false;
@@ -695,6 +723,7 @@
   function closeModalAndPlay() {
     overlayEl.hidden = true;
     state.playing = true;
+    resetFpsWindow();
     state.lastTNs = Math.max(state.lastTNs, Math.round(performance.now() * 1e6));
   }
 
@@ -814,6 +843,7 @@
     if (drawImage) {
       const imageData = new ImageData(pixels, fw, fh);
       ctx.putImageData(imageData, 0, 0);
+      if (state.playing) recordPresentedFrame();
     }
 
     const audioLo = view.getUint32(8, true);
@@ -1025,6 +1055,8 @@
       state.started = true;
       state.dead = false;
       state.hud = null;
+      resetFpsWindow();
+      hudFps.textContent = "-- FPS";
       state.playerX = created.x ?? 0;
       state.playerY = created.y ?? 0;
       state.playerFloor = created.floor ?? 0;

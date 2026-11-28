@@ -930,8 +930,11 @@ pub(crate) fn compute_player_aim_3d(
         if !s.walkable {
             continue;
         }
+        // Pick the walkable surface closest to the player's feet. Do not reject
+        // valid terrain grades just because they drop more than one step over the
+        // lookahead; the pitch itself is clamped below.
         let dz = (s.z - foot_z).abs();
-        if dz <= 0.70 && best_sup.is_none_or(|b| (b - foot_z).abs() > dz) {
+        if best_sup.is_none_or(|b| (b - foot_z).abs() > dz) {
             best_sup = Some(s.z);
         }
     }
