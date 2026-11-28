@@ -252,6 +252,8 @@ WP 3.8 can run in parallel with retail after WP 3.3. Keep housing and retail PRs
 
 ### WP 3.1 — Blueprint-to-county handoff
 
+Handoff: [WP 3.1 handoff](phase3-wp31-handoff.md).
+
 - **Owns** `world.rs`, `world/parcels.rs`, new `world/blueprint.rs`, the registration seam in `world/archetypes/mod.rs`, and `action/county.rs`.
 - **Build** an opt-in existing-lot fixture with one authored blueprint room, one exterior door and one known Phase 2 prop. Add parcel dispatch, a local-to-world transform, and one materialization entry point. Keep the legacy parcel fallback. Connect the blueprint to planned pads, live floor cells, support/roof fields, explicit door axes, and stable prop and building ownership. Start with the data required by this fixture and add shared fields as downstream packages prove their use.
 - **Accept** an asymmetric fixture in all four orientations. Check opening tangent, rotated footprint and pivot, roof/structure ownership, and the runtime bilateral door sweep. Force a seam-crossing prop and reverse the order of streaming the neighboring chunks. Compare owner, footprint and placement IDs. Revisit the fixture and check exactly one prop instance.

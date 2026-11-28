@@ -1,5 +1,7 @@
 //! Immutable, seed-generated county baseline. A chunk is a window onto the
 //! same plan regardless of the order in which a caller visits its neighbors.
+pub mod archetypes;
+pub mod blueprint;
 mod dressing;
 mod geography;
 mod parcels;
@@ -7,6 +9,13 @@ use parcels::{ParcelTiles, Parcels};
 mod relief;
 mod sites;
 mod vehicles;
+pub use archetypes::CountyFixture;
+pub use blueprint::{
+    BlueprintCell, BlueprintGrid, BlueprintKind, BlueprintPropPlacement, CardinalDir,
+    CompoundPlanner, DoorIntent, DoorKind, FitError, Frontage, GridRect, LocalCell, LotTransform,
+    ParcelContext, ParcelId, ParcelPlan, PlacedStructure, PlacementId, PlannedProp, RoomMeta,
+    StructureContext, StructureGenerator, StructureId, ZoneKind,
+};
 pub use sites::*;
 #[cfg(test)]
 pub(crate) use vehicles::MOTORCYCLE_SLOTS;
@@ -152,6 +161,9 @@ struct Lot {
 #[derive(Debug, Default)]
 pub struct ChunkSites<'a> {
     pub buildings: Vec<&'a Building>,
+    /// Authored Phase 3 structures that intersect this chunk but materialize
+    /// through the blueprint path instead of the legacy site path.
+    pub structures: Vec<&'a PlacedStructure>,
     pub loot: Vec<&'a LootSite>,
     pub infected: Vec<&'a InfectedSite>,
 }
@@ -163,6 +175,7 @@ struct County {
     parcels: Parcels,
     terrain: TerrainGrid,
     spawn: Position,
+    fixture: CountyFixture,
 }
 
 #[derive(Clone, Debug)]
@@ -175,20 +188,26 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64) -> Self {
+        Self::with_fixture(seed, CountyFixture::None)
+    }
+
+    /// Opt-in Phase 3 generation fixture. `World::new` stays on the legacy
+    /// baseline until the later cutover package.
+    pub fn with_fixture(seed: u64, fixture: CountyFixture) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
         let (landmarks, lots, valley_meta) = geography::generate_with_meta(seed, &mut tiles);
-        let mut parcels = Parcels::new(lots);
+        let spawn = landmarks
+            .iter()
+            .find(|l| l.kind == LandmarkKind::Residential)
+            .expect("county has a residential entrance")
+            .entrance;
+        let mut parcels = Parcels::new(seed, lots, spawn, fixture);
         let planned = parcels.planned_pads(seed, &tiles);
         let pads: Vec<_> = planned.iter().map(|(_, pad)| *pad).collect();
         let (terrain, foundations) = relief::generate(seed, &tiles, &valley_meta, &pads);
         for ((parcel_idx, _), foundation_z) in planned.into_iter().zip(foundations) {
             parcels.set_foundation(parcel_idx, foundation_z);
         }
-        let spawn = landmarks
-            .iter()
-            .find(|l| l.kind == LandmarkKind::Residential)
-            .expect("county has a residential entrance")
-            .entrance;
         Self {
             seed,
             county: Some(Arc::new(County {
@@ -197,12 +216,24 @@ impl World {
                 parcels,
                 terrain,
                 spawn,
+                fixture,
             })),
         }
     }
 
     pub fn birch_street(seed: u64) -> Self {
         Self { seed, county: None }
+    }
+
+    pub fn fixture(&self) -> CountyFixture {
+        self.county
+            .as_ref()
+            .map_or(CountyFixture::None, |c| c.fixture)
+    }
+
+    /// The opt-in fixture parcel plan. Returns `None` when the fixture is off.
+    pub fn fixture_plan(&self) -> Option<&ParcelPlan> {
+        self.county.as_ref()?.parcels.fixture_plan()
     }
 
     #[inline]

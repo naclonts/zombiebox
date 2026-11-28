@@ -1,6 +1,11 @@
 //! The county fixes all frontages and template choices before a chunk is
 //! visited. Neighbors sharing a building resolve the same immutable parcel.
-use super::{District, Lot, Position, Sites, Tile, WORLD_SIZE, dressing, sites};
+use super::{
+    District, Lot, ParcelPlan, Position, Sites, Tile, WORLD_SIZE,
+    archetypes::{self, CountyFixture, FixtureParcel, ParcelContext},
+    blueprint::{BlueprintKind, CompoundPlanner, Frontage, GridRect, ZoneKind},
+    dressing, sites,
+};
 use std::ops::{Index, IndexMut};
 use std::sync::OnceLock;
 
@@ -47,6 +52,7 @@ struct Parcel {
     lot: Lot,
     template: u64,
     foundation_z: f32,
+    plan: Option<ParcelPlan>,
     detail: OnceLock<(ParcelTiles, Sites)>,
 }
 
@@ -55,11 +61,12 @@ pub(super) struct Parcels {
     parcels: Vec<Parcel>,
     // Zero means open country, other values are one-based parcel indices.
     owner: Vec<u16>,
+    fixture_index: Option<usize>,
     manifest: OnceLock<Sites>,
 }
 
 impl Parcels {
-    pub(super) fn new(lots: Vec<Lot>) -> Self {
+    pub(super) fn new(seed: u64, lots: Vec<Lot>, spawn: Position, fixture: CountyFixture) -> Self {
         let mut owner = vec![0; (WORLD_SIZE * WORLD_SIZE) as usize];
         let mut parcels = Vec::with_capacity(lots.len());
         let (mut residential, mut city) = (0, 0);
@@ -86,14 +93,86 @@ impl Parcels {
                 lot,
                 template,
                 foundation_z: 0.0,
+                plan: None,
                 detail: OnceLock::new(),
             });
+        }
+        let mut fixture_index = None;
+        if fixture == CountyFixture::BlueprintLot {
+            fixture_index = Self::select_fixture_parcel(seed, &mut parcels, spawn);
         }
         Self {
             parcels,
             owner,
+            fixture_index,
             manifest: OnceLock::new(),
         }
+    }
+
+    fn select_fixture_parcel(seed: u64, parcels: &mut [Parcel], spawn: Position) -> Option<usize> {
+        let mut candidates: Vec<usize> = parcels
+            .iter()
+            .enumerate()
+            .filter(|(_, parcel)| {
+                matches!(
+                    parcel.lot.district,
+                    District::Residential | District::City | District::Woods
+                ) && parcel.lot.max.x - parcel.lot.min.x >= 14
+                    && parcel.lot.max.y - parcel.lot.min.y >= 14
+            })
+            .map(|(index, _)| index)
+            .collect();
+        candidates.sort_by_key(|&index| {
+            let lot = parcels[index].lot;
+            let cx = (lot.min.x + lot.max.x) / 2;
+            let cy = (lot.min.y + lot.max.y) / 2;
+            let distance = Position::new(cx, cy).distance(spawn);
+            let district_rank = match lot.district {
+                District::Residential => 0,
+                District::City => 1,
+                _ => 2,
+            };
+            (distance, district_rank, lot.min.y, lot.min.x)
+        });
+        let mut fallback = None;
+        for index in candidates {
+            let lot = parcels[index].lot;
+            let side = archetypes::frontage_side(lot.min, lot.max, lot.front);
+            let context = ParcelContext {
+                seed,
+                bounds: GridRect::new(lot.min, lot.max),
+                frontage: Frontage {
+                    side,
+                    access: lot.front,
+                },
+                zone: zone_for(lot.district),
+            };
+            let Ok(plan) = FixtureParcel.plan(&context) else {
+                continue;
+            };
+            let crosses_seam = plan.structures.iter().any(|structure| {
+                structure.props_world().iter().any(|prop| {
+                    let tiles: Vec<_> = prop.span.covered_tiles(prop.tile).collect();
+                    tiles.iter().any(|a| {
+                        tiles
+                            .iter()
+                            .any(|b| a.x >> 4 != b.x >> 4 || a.y >> 4 != b.y >> 4)
+                    })
+                })
+            });
+            if fallback.is_none() {
+                fallback = Some((index, plan.clone()));
+            }
+            if crosses_seam {
+                parcels[index].plan = Some(plan);
+                return Some(index);
+            }
+        }
+        if let Some((index, plan)) = fallback {
+            parcels[index].plan = Some(plan);
+            return Some(index);
+        }
+        None
     }
 
     pub(super) fn planned_pads(
@@ -101,17 +180,37 @@ impl Parcels {
         seed: u64,
         terrain: &[Tile],
     ) -> Vec<(usize, sites::PlannedPad)> {
-        self.parcels
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, p)| {
-                sites::planned_pad(seed, &p.lot, p.template, terrain).map(|pad| (idx, pad))
-            })
-            .collect()
+        let mut pads = Vec::new();
+        for (idx, parcel) in self.parcels.iter().enumerate() {
+            if let Some(plan) = &parcel.plan {
+                for structure in &plan.structures {
+                    pads.push((
+                        idx,
+                        sites::PlannedPad {
+                            min: structure.bounds.min,
+                            max: structure.bounds.max,
+                            entry: structure.front_door,
+                            front: plan.frontage.access,
+                        },
+                    ));
+                }
+            } else if let Some(pad) =
+                sites::planned_pad(seed, &parcel.lot, parcel.template, terrain)
+            {
+                pads.push((idx, pad));
+            }
+        }
+        pads
     }
 
     pub(super) fn set_foundation(&mut self, parcel_idx: usize, foundation_z: f32) {
-        self.parcels[parcel_idx].foundation_z = foundation_z;
+        let parcel = &mut self.parcels[parcel_idx];
+        parcel.foundation_z = foundation_z;
+        if let Some(plan) = &mut parcel.plan {
+            for structure in &mut plan.structures {
+                structure.set_foundation(foundation_z);
+            }
+        }
     }
 
     fn detail<'a>(
@@ -122,16 +221,26 @@ impl Parcels {
     ) -> &'a (ParcelTiles, Sites) {
         parcel.detail.get_or_init(|| {
             let mut cells = ParcelTiles::new(parcel.lot, terrain);
-            let sites = sites::generate(
-                seed,
-                &parcel.lot,
-                parcel.template,
-                parcel.foundation_z,
-                &mut cells,
-            );
+            let sites = if let Some(plan) = &parcel.plan {
+                apply_plan_ground(plan, &mut cells);
+                Sites::default()
+            } else {
+                sites::generate(
+                    seed,
+                    &parcel.lot,
+                    parcel.template,
+                    parcel.foundation_z,
+                    &mut cells,
+                )
+            };
             dressing::generate(seed, &parcel.lot, &sites, &mut cells);
             (cells, sites)
         })
+    }
+
+    pub(super) fn fixture_plan(&self) -> Option<&ParcelPlan> {
+        let index = self.fixture_index?;
+        self.parcels[index].plan.as_ref()
     }
 
     pub(super) fn tile_at(&self, p: Position, index: usize, seed: u64, terrain: &[Tile]) -> Tile {
@@ -157,16 +266,24 @@ impl Parcels {
         let mut result = super::ChunkSites::default();
         for parcel in &self.parcels {
             if intersects(parcel.lot.min, parcel.lot.max) {
-                let sites = &self.detail(parcel, seed, terrain).1;
-                result
-                    .buildings
-                    .extend(sites.buildings.iter().filter(|b| intersects(b.min, b.max)));
-                result
-                    .loot
-                    .extend(sites.loot.iter().filter(|s| inside(s.position)));
-                result
-                    .infected
-                    .extend(sites.infected.iter().filter(|s| inside(s.position)));
+                if let Some(plan) = &parcel.plan {
+                    result.structures.extend(
+                        plan.structures
+                            .iter()
+                            .filter(|s| intersects(s.bounds.min, s.bounds.max)),
+                    );
+                } else {
+                    let sites = &self.detail(parcel, seed, terrain).1;
+                    result
+                        .buildings
+                        .extend(sites.buildings.iter().filter(|b| intersects(b.min, b.max)));
+                    result
+                        .loot
+                        .extend(sites.loot.iter().filter(|s| inside(s.position)));
+                    result
+                        .infected
+                        .extend(sites.infected.iter().filter(|s| inside(s.position)));
+                }
             }
         }
         result
@@ -181,9 +298,15 @@ impl Parcels {
         terrain: &[Tile],
     ) -> Option<super::Feature> {
         let id = self.owner[index].checked_sub(1)?;
-        self.detail(&self.parcels[usize::from(id)], seed, terrain)
-            .1
-            .feature_at(p, floor)
+        let parcel = &self.parcels[usize::from(id)];
+        if let Some(plan) = &parcel.plan {
+            return plan.structures.iter().find_map(|structure| {
+                structure
+                    .cell_at_world(p, floor)
+                    .map(|(cell, _)| cell.kind.to_feature(cell.material))
+            });
+        }
+        self.detail(parcel, seed, terrain).1.feature_at(p, floor)
     }
 
     pub(super) fn sites(&self, seed: u64, terrain: &[Tile]) -> &Sites {
@@ -197,5 +320,26 @@ impl Parcels {
             }
             all
         })
+    }
+}
+
+fn zone_for(district: District) -> ZoneKind {
+    match district {
+        District::Residential | District::Woods => ZoneKind::Residential,
+        District::City => ZoneKind::Commercial,
+        District::Hospital | District::Police => ZoneKind::Civic,
+        District::MilitaryBase => ZoneKind::Service,
+        District::Farm => ZoneKind::Rural,
+    }
+}
+
+fn apply_plan_ground(plan: &ParcelPlan, cells: &mut ParcelTiles) {
+    for structure in &plan.structures {
+        for (local, world, cell) in structure.world_cells() {
+            if local.floor != 0 || cell.kind == BlueprintKind::Empty {
+                continue;
+            }
+            cells[world].feature = cell.kind.to_feature(cell.material);
+        }
     }
 }

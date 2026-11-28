@@ -675,6 +675,7 @@ pub struct ActionGame {
     prop_hp: std::collections::HashMap<u64, u16>,
     prop_tile_index: std::collections::HashMap<Tile3D, u64>,
     prop_revision: u64,
+    blueprint_prop_cursor: usize,
     readable_fixtures: Vec<(ReadableId, PropAnchor)>,
     readable_id: ReadableId,
     read_open: bool,
@@ -726,7 +727,7 @@ impl ActionGame {
         let stage = Stage::County(Box::new(county));
         let readable = readable_fixtures(spawn, true);
         let prop_anchors = readable.iter().map(|(_, anchor)| *anchor).collect();
-        Self {
+        let mut game = Self {
             seed,
             world,
             stage,
@@ -763,10 +764,13 @@ impl ActionGame {
             prop_hp: Default::default(),
             prop_tile_index: Default::default(),
             prop_revision: 0,
+            blueprint_prop_cursor: 0,
             readable_fixtures: readable,
             readable_id: ReadableId::CountyDirectory,
             read_open: false,
-        }
+        };
+        game.sync_county_blueprint_props();
+        game
     }
 
     pub fn residential(seed: u64) -> Self {
@@ -835,6 +839,7 @@ impl ActionGame {
             prop_hp: Default::default(),
             prop_tile_index: Default::default(),
             prop_revision: 0,
+            blueprint_prop_cursor: 0,
             readable_fixtures: readable,
             readable_id: ReadableId::BirchDirectory,
             read_open: false,
@@ -966,6 +971,7 @@ impl ActionGame {
         self.stair_cooldown = STAIR_COOLDOWN_TICKS;
         self.must_leave_stair = Some(dest.pos());
         county.update_visibility(self.player.position, self.player.floor);
+        self.sync_county_blueprint_props();
         Some(dest)
     }
 
@@ -1036,6 +1042,7 @@ impl ActionGame {
         if let Stage::County(county) = &mut self.stage {
             county.sync_active_window(&self.world, focus, &mut self.monsters);
         }
+        self.sync_county_blueprint_props();
 
         // 4. On-foot aim / facing update (right-stick retains facing on release).
         // Vehicle heading is authoritative while mounted; carried look input is ignored.
@@ -2629,6 +2636,45 @@ impl ActionGame {
                 })
             })
             .collect()
+    }
+
+    /// Ingest persistent blueprint props from the county stage. Re-running this
+    /// after streaming is idempotent, so revisiting a parcel cannot duplicate a
+    /// prop instance.
+    fn sync_county_blueprint_props(&mut self) {
+        let anchors = match &self.stage {
+            Stage::County(county) => {
+                let all = county.blueprint_prop_anchors();
+                let start = self.blueprint_prop_cursor.min(all.len());
+                if start == all.len() {
+                    return;
+                }
+                all[start..].to_vec()
+            }
+            Stage::Residential(_) => return,
+        };
+        for anchor in anchors {
+            if self
+                .prop_anchors
+                .iter()
+                .any(|existing| existing.anchor_uid == anchor.anchor_uid)
+            {
+                continue;
+            }
+            if !self.add_prop_fixture(anchor) {
+                // The anchor's chunk window is not fully materialized yet.
+                // Retry the same tail after the next streaming update.
+                return;
+            }
+        }
+        if let Stage::County(county) = &self.stage {
+            self.blueprint_prop_cursor = county.blueprint_prop_anchors().len();
+        }
+    }
+
+    /// Persistent prop anchors in stable placement order.
+    pub fn prop_anchors(&self) -> &[PropAnchor] {
+        &self.prop_anchors
     }
 
     /// Adds a deliberately controlled prop fixture to the snapshot registry. This is

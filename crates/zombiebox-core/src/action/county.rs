@@ -1,7 +1,7 @@
 //! Streaming `512 × 512 × 3` procedural county runtime implementing `CombatWorld`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::spatial::action_adapter::{
     SpatialStageSource, resolve_tile_support, stage_colliders_in, stage_supports_at,
@@ -12,7 +12,7 @@ use crate::spatial::{
 };
 use crate::{
     Building, BuildingKind, CHUNK_SIZE, CHUNKS_PER_SIDE, District, Feature, Ground, MonsterId,
-    Position, RoomKind, WORLD_SIZE, World,
+    PlacedStructure, Position, PropAnchor, RoomKind, StructureId, WORLD_SIZE, World,
 };
 
 use super::ai::Monster;
@@ -113,6 +113,9 @@ pub struct CountyStage {
     window_origin: Position,
     all_buildings: Vec<BuildingInfo>,
     registered_buildings: HashMap<BuildingUid, BuildingReg>,
+    registered_blueprints: HashMap<StructureId, BuildingId>,
+    blueprint_props: Vec<PropAnchor>,
+    blueprint_prop_uids: HashSet<u64>,
     cache_index_by_id: HashMap<CacheId, usize>,
     window_max_floors: u8,
     window_buildings: Vec<BuildingInfo>,
@@ -150,6 +153,9 @@ impl CountyStage {
             window_origin,
             all_buildings: Vec::new(),
             registered_buildings: HashMap::new(),
+            registered_blueprints: HashMap::new(),
+            blueprint_props: Vec::new(),
+            blueprint_prop_uids: HashSet::new(),
             cache_index_by_id: HashMap::new(),
             window_max_floors: 1,
             window_buildings: Vec::new(),
@@ -509,6 +515,49 @@ impl CountyStage {
         reg
     }
 
+    fn register_blueprint_building(&mut self, structure: &PlacedStructure) -> BuildingId {
+        if let Some(&id) = self.registered_blueprints.get(&structure.id) {
+            return id;
+        }
+        let id = self.next_building_id();
+        let floors = structure.floors().min(MAX_COUNTY_FLOORS as u8);
+        let (wings, wing_count) = BuildingInfo::single_wing_array(
+            structure.bounds.min.x,
+            structure.bounds.min.y,
+            structure.bounds.width(),
+            structure.bounds.height(),
+            floors,
+        );
+        self.all_buildings.push(BuildingInfo {
+            id,
+            uid: BuildingUid(structure.id.0),
+            name: structure.name,
+            x: structure.bounds.min.x,
+            y: structure.bounds.min.y,
+            width: structure.bounds.width(),
+            height: structure.bounds.height(),
+            floors,
+            style: structure.style,
+            front_door: structure.front_door,
+            foundation_z: structure.foundation_z,
+            wings,
+            wing_count,
+        });
+        self.registered_blueprints.insert(structure.id, id);
+        for anchor in structure.planned_props() {
+            if self.blueprint_prop_uids.insert(anchor.anchor_uid) {
+                self.blueprint_props.push(anchor);
+            }
+        }
+        id
+    }
+
+    /// Persistent prop anchors produced by authored blueprints. The action
+    /// layer ingests these through the existing `PropAnchor` registry.
+    pub fn blueprint_prop_anchors(&self) -> &[PropAnchor] {
+        &self.blueprint_props
+    }
+
     fn materialize_chunk(&mut self, world: &World, cx: i32, cy: i32) {
         if !(0..CHUNKS_PER_SIDE).contains(&cx) || !(0..CHUNKS_PER_SIDE).contains(&cy) {
             return;
@@ -524,6 +573,12 @@ impl CountyStage {
         let mut regs = Vec::with_capacity(sites.buildings.len());
         for b in &sites.buildings {
             regs.push((*b, self.register_building(b)));
+        }
+        let structures = sites.structures.clone();
+        let mut blueprint_regs = Vec::with_capacity(structures.len());
+        for structure in structures {
+            let id = self.register_blueprint_building(structure);
+            blueprint_regs.push((structure, id));
         }
 
         let mut chunk = Box::new(CountyChunk::with_floors(1));
@@ -944,6 +999,41 @@ impl CountyStage {
         }
 
         self.chunks[cidx] = Some(chunk);
+
+        // 2b. Stamp authored blueprint structures. They share the same empty
+        // chunk and building registry, but their authoritative cell data comes
+        // from the sparse blueprint instead of the legacy site template.
+        if let Some(chunk) = self.chunks[cidx].as_mut() {
+            for (structure, bid) in blueprint_regs {
+                let floors = usize::from(structure.floors()).clamp(1, MAX_COUNTY_FLOORS);
+                if chunk.floors.len() < floors {
+                    chunk.ensure_floors(floors);
+                }
+                for (local, pos, blueprint_cell) in structure.world_cells() {
+                    let lx = pos.x - base_x;
+                    let ly = pos.y - base_y;
+                    if !(0..CHUNK_SIZE).contains(&lx) || !(0..CHUNK_SIZE).contains(&ly) {
+                        continue;
+                    }
+                    let floor = local.floor as usize;
+                    let target = &mut chunk.floors[floor][ly as usize][lx as usize];
+                    target.surface = blueprint_cell.surface;
+                    target.building_id = bid;
+                    target.indoor = blueprint_cell.indoor;
+                    target.load_bearing = blueprint_cell.load_bearing;
+                    target.stair_dir = structure
+                        .transform
+                        .world_stair_dir(blueprint_cell.stair_dir);
+                    target.door_axis =
+                        if matches!(blueprint_cell.kind, crate::BlueprintKind::Door { .. }) {
+                            structure.door_axis_at(local)
+                        } else {
+                            None
+                        };
+                    target.set_kind(blueprint_cell.kind.to_tile_kind(), blueprint_cell.material);
+                }
+            }
+        }
 
         // 3. Materialize chunk-owned loot caches.
         for (cache_slot, site) in sites.loot.into_iter().enumerate() {
@@ -2917,6 +3007,7 @@ fn roll_cache_loot(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CountyFixture;
     use crate::spatial::{Aabb3, ColliderKind, FLOOR_H, Vec3};
 
     #[test]
@@ -3222,5 +3313,248 @@ mod tests {
             };
             assert_eq!(signature(&first), signature(&second));
         }
+    }
+
+    fn fixture_chunks(structure: &PlacedStructure) -> Vec<(i32, i32)> {
+        let bounds = structure.bounds;
+        let mut chunks = Vec::new();
+        for cy in (bounds.min.y >> 4)..=(bounds.max.y >> 4) {
+            for cx in (bounds.min.x >> 4)..=(bounds.max.x >> 4) {
+                if (0..CHUNKS_PER_SIDE).contains(&cx) && (0..CHUNKS_PER_SIDE).contains(&cy) {
+                    chunks.push((cx, cy));
+                }
+            }
+        }
+        chunks
+    }
+
+    fn blueprint_snapshot(
+        stage: &CountyStage,
+        structure: &PlacedStructure,
+    ) -> (
+        BuildingInfo,
+        Vec<(
+            Position,
+            Floor,
+            BuildingUid,
+            TileKind,
+            Option<DoorAxis>,
+            Surface,
+            bool,
+            bool,
+        )>,
+        Vec<PropAnchor>,
+    ) {
+        let info = stage
+            .all_buildings
+            .iter()
+            .find(|b| b.uid == BuildingUid(structure.id.0))
+            .copied()
+            .expect("registered blueprint building");
+        let mut cells = Vec::new();
+        for (local, pos, _) in structure.world_cells() {
+            let Some(cell) = stage.cell_at_world(Tile3D::from_pos(pos, local.floor)) else {
+                continue;
+            };
+            let owner = stage
+                .building_by_id(cell.building_id)
+                .map_or(BuildingUid::default(), |b| b.uid);
+            cells.push((
+                pos,
+                local.floor,
+                owner,
+                cell.kind,
+                cell.door_axis,
+                cell.surface,
+                cell.indoor,
+                cell.load_bearing,
+            ));
+        }
+        let props = stage
+            .blueprint_prop_anchors()
+            .iter()
+            .copied()
+            .filter(|anchor| anchor.anchor_uid >> 1 != 0)
+            .collect();
+        (info, cells, props)
+    }
+
+    #[test]
+    fn blueprint_fixture_streams_across_seams_in_any_chunk_order() {
+        // u64::MAX places the fixture outside the initial 7x7 window, so the
+        // test actually exercises first-time streaming order.
+        let seed = u64::MAX;
+        let world = World::with_fixture(seed, CountyFixture::BlueprintLot);
+        let plan = world.fixture_plan().expect("fixture plan");
+        let structure = &plan.structures[0];
+        assert!(plan.bounds.contains(structure.bounds.min));
+        let props = structure.props_world();
+        assert_eq!(props.len(), 1);
+        let prop_tiles: Vec<_> = props[0].span.covered_tiles(props[0].tile).collect();
+        assert!(
+            prop_tiles.iter().any(|a| prop_tiles
+                .iter()
+                .any(|b| { a.x >> 4 != b.x >> 4 || a.y >> 4 != b.y >> 4 })),
+            "fixture prop must straddle a chunk seam"
+        );
+
+        let chunks = fixture_chunks(structure);
+        let (mut forward, _, _) = CountyStage::new(&world, seed);
+        for &(cx, cy) in &chunks {
+            forward.materialize_chunk(&world, cx, cy);
+        }
+        let (mut reverse, _, _) = CountyStage::new(&world, seed);
+        for &(cx, cy) in chunks.iter().rev() {
+            reverse.materialize_chunk(&world, cx, cy);
+        }
+
+        let a = blueprint_snapshot(&forward, structure);
+        let b = blueprint_snapshot(&reverse, structure);
+        assert_eq!(a.0.uid, BuildingUid(structure.id.0));
+        assert_eq!(a.0.x, structure.bounds.min.x);
+        assert_eq!(a.0.width, structure.bounds.width());
+        assert_eq!(a.0.floors, structure.floors());
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1, b.1);
+        assert_eq!(a.1.len(), structure.blueprint.cells.len());
+        assert_eq!(a.2, b.2);
+        assert_eq!(a.2.len(), 1, "exactly one fixture prop anchor");
+        assert!(a.1.iter().all(|cell| cell.2 == BuildingUid(structure.id.0)));
+        assert_eq!(a.2[0].tile, props[0].tile);
+        assert_eq!(a.2[0].span, props[0].span);
+        assert_eq!(a.2[0].id, props[0].id);
+    }
+
+    #[test]
+    fn blueprint_fixture_door_passes_runtime_bilateral_capsule_sweep() {
+        use crate::spatial::SpatialWorld;
+        use crate::spatial::collision::sweep_circle_rect_2d;
+        let seed = 42;
+        let world = World::with_fixture(seed, CountyFixture::BlueprintLot);
+        let plan = world.fixture_plan().expect("fixture plan");
+        let structure = &plan.structures[0];
+        let door = structure.blueprint.doors[0].cell;
+        let door_pos = structure.transform.local_to_world(door);
+        let axis = structure.door_axis_at(door).expect("world door axis");
+        let (mut stage, _, _) = CountyStage::new(&world, seed);
+        for cy in ((door_pos.y - 2) >> 4)..=((door_pos.y + 2) >> 4) {
+            for cx in ((door_pos.x - 2) >> 4)..=((door_pos.x + 2) >> 4) {
+                if (0..CHUNKS_PER_SIDE).contains(&cx) && (0..CHUNKS_PER_SIDE).contains(&cy) {
+                    stage.materialize_chunk(&world, cx, cy);
+                }
+            }
+        }
+        let tile = Tile3D::from_pos(door_pos, 0);
+        let cell = stage.cell_at_world(tile).expect("door cell");
+        let TileKind::Door { exterior, .. } = cell.kind else {
+            panic!("fixture door became {:?}", cell.kind);
+        };
+        assert_eq!(cell.door_axis, Some(axis));
+        let info = stage.building_by_id(cell.building_id).expect("door owner");
+        assert_eq!(info.uid, BuildingUid(structure.id.0));
+        let base = info.foundation_z;
+        let normal = axis.normal();
+        let direction = Vec2::new(normal.0 as f32, normal.1 as f32);
+        let center = tile.center();
+        for open in [true, false] {
+            stage
+                .cell_mut_world(tile)
+                .unwrap()
+                .set_kind(TileKind::Door { open, exterior }, Material::WoodDoor);
+            let query = Aabb3::new(
+                center.extend(base) - Vec3::new(1.5, 1.5, 0.01),
+                center.extend(base + crate::action::PLAYER_HEIGHT) + Vec3::new(1.5, 1.5, 0.01),
+            );
+            let mut colliders = Vec::new();
+            stage.colliders_in(query, &mut colliders);
+            for sign in [-1.0, 1.0] {
+                let start = center - direction * (sign * 0.8);
+                let delta = direction * (sign * 1.6);
+                let hit = colliders.iter().find(|c| {
+                    c.bounds.max.z > base + 0.001
+                        && c.bounds.min.z < base + crate::action::PLAYER_HEIGHT - 0.001
+                        && sweep_circle_rect_2d(
+                            start,
+                            delta,
+                            crate::action::PLAYER_RADIUS,
+                            c.bounds.min.xy(),
+                            c.bounds.max.xy(),
+                        )
+                        .is_some()
+                });
+                let valid = if open {
+                    hit.is_none()
+                } else {
+                    hit.is_some_and(
+                        |c| matches!(c.kind, ColliderKind::ClosedDoor { tile: t } if t == tile),
+                    )
+                };
+                assert!(valid, "open={open} sign={sign} hit={hit:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn blueprint_fixture_registers_roof_owner_and_single_prop_after_revisit() {
+        use crate::spatial::SpatialWorld;
+        let seed = u64::MAX;
+        let world = World::with_fixture(seed, CountyFixture::BlueprintLot);
+        let plan = world.fixture_plan().expect("fixture plan");
+        let structure = &plan.structures[0];
+        let (mut stage, _, _) = CountyStage::new(&world, seed);
+        for &(cx, cy) in &fixture_chunks(structure) {
+            stage.materialize_chunk(&world, cx, cy);
+        }
+        let info = stage
+            .all_buildings
+            .iter()
+            .find(|b| b.uid == BuildingUid(structure.id.0))
+            .copied()
+            .unwrap();
+        let center = Tile3D::from_pos(structure.bounds.min, 0).center();
+        let mut colliders = Vec::new();
+        stage.colliders_in(
+            Aabb3::new(
+                center.extend(info.foundation_z - 0.1)
+                    - Vec3::new(
+                        structure.bounds.width() as f32,
+                        structure.bounds.height() as f32,
+                        0.0,
+                    ),
+                center.extend(info.foundation_z + FLOOR_H + 1.0)
+                    + Vec3::new(
+                        structure.bounds.width() as f32,
+                        structure.bounds.height() as f32,
+                        0.0,
+                    ),
+            ),
+            &mut colliders,
+        );
+        assert!(colliders.iter().any(|c| matches!(
+            c.kind,
+            ColliderKind::BuildingSlab {
+                building_id,
+                is_roof: true,
+                ..
+            } if building_id == info.id
+        )));
+
+        let prop = structure.props_world()[0];
+        let spawn = world.wake_position();
+        let mut game = crate::action::ActionGame::county_with_world(world.clone());
+        game.teleport(Tile3D::from_pos(prop.tile.pos(), 0))
+            .expect("teleport to fixture");
+        let count = |game: &crate::action::ActionGame| {
+            game.prop_anchors()
+                .iter()
+                .filter(|a| a.anchor_uid == prop.anchor_uid)
+                .count()
+        };
+        assert_eq!(count(&game), 1);
+        game.teleport(Tile3D::from_pos(spawn, 0))
+            .expect("teleport away");
+        game.teleport(Tile3D::from_pos(prop.tile.pos(), 0))
+            .expect("teleport back");
+        assert_eq!(count(&game), 1);
     }
 }
