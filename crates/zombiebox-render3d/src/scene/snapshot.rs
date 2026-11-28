@@ -542,6 +542,11 @@ fn hash_tile_kind(h: &mut Fnv1a64, kind: TileKind) {
             h.write_bool(open);
             h.write_bool(exterior);
         }
+        TileKind::GarageDoor { open, segment } => {
+            h.write_u8(14);
+            h.write_bool(open);
+            h.write_u8(segment);
+        }
         TileKind::StairsUp => h.write_u8(7),
         TileKind::StairsDown => h.write_u8(8),
         TileKind::StairsBoth => h.write_u8(9),

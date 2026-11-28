@@ -2067,7 +2067,7 @@ impl ActionGame {
         for dy in -1..=1 {
             for dx in -1..=1 {
                 let t = Tile3D::new(center_tile.x + dx, center_tile.y + dy, floor);
-                if let TileKind::Door { open, .. } = self.stage.tile_kind(t) {
+                if let TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } = self.stage.tile_kind(t) {
                     let d = p.distance(t.center());
                     if d <= INTERACT_FEATURE_RADIUS {
                         let dir_bias = if d > 0.05 {
@@ -2247,18 +2247,17 @@ impl ActionGame {
             InteractAction::ToggleDoor(tile, will_open) => {
                 if !will_open {
                     // Refuse closing a door while player or any living monster overlaps its tile.
-                    if self.actor_overlaps_tile(
-                        self.player.position,
-                        self.player.floor,
-                        PLAYER_RADIUS,
-                        tile,
-                    ) {
-                        return;
-                    }
-                    if self.monsters.iter().any(|m| {
-                        m.is_alive() && self.actor_overlaps_tile(m.pos, m.floor, m.radius(), tile)
-                    }) {
-                        return;
+                    for occupied_tile in self.door_group_tiles(tile) {
+                        if self.actor_overlaps_tile(
+                            self.player.position,
+                            self.player.floor,
+                            PLAYER_RADIUS,
+                            occupied_tile,
+                        ) || self.monsters.iter().any(|m| {
+                            m.is_alive() && self.actor_overlaps_tile(m.pos, m.floor, m.radius(), occupied_tile)
+                        }) {
+                            return;
+                        }
                     }
                 }
                 if let Some(opened) = self.stage.toggle_door(tile) {
@@ -2375,6 +2374,31 @@ impl ActionGame {
         let dx = center.x - nx;
         let dy = center.y - ny;
         dx * dx + dy * dy < radius * radius
+    }
+
+    fn door_group_tiles(&self, tile: Tile3D) -> Vec<Tile3D> {
+        if !matches!(self.stage.tile_kind(tile), TileKind::GarageDoor { .. }) {
+            return vec![tile];
+        }
+        let center = [tile]
+            .into_iter()
+            .chain([
+                Tile3D::new(tile.x - 1, tile.y, tile.floor),
+                Tile3D::new(tile.x + 1, tile.y, tile.floor),
+                Tile3D::new(tile.x, tile.y - 1, tile.floor),
+                Tile3D::new(tile.x, tile.y + 1, tile.floor),
+            ])
+            .find(|candidate| matches!(self.stage.tile_kind(*candidate), TileKind::GarageDoor { segment: 1, .. }));
+        let Some(center) = center else { return vec![tile] };
+        for (dx, dy) in [(1, 0), (0, 1)] {
+            let group: Vec<_> = (-1..=1)
+                .map(|offset| Tile3D::new(center.x + dx * offset, center.y + dy * offset, center.floor))
+                .collect();
+            if group.iter().all(|part| matches!(self.stage.tile_kind(*part), TileKind::GarageDoor { .. })) {
+                return group;
+            }
+        }
+        vec![tile]
     }
 
     fn process_collapses(&mut self) {
@@ -2818,6 +2842,7 @@ impl ActionGame {
                 || matches!(
                     self.stage.tile_kind(*t),
                     TileKind::Door { .. }
+                        | TileKind::GarageDoor { .. }
                         | TileKind::StairsUp
                         | TileKind::StairsDown
                         | TileKind::StairsBoth
@@ -3955,6 +3980,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ranch_garage_door_interacts_as_one_opening_and_stays_open_on_revisit() {
+        let world = World::new(42);
+        let ranch = world
+            .fixture_plans()
+            .into_iter()
+            .flat_map(|plan| &plan.structures)
+            .find(|structure| structure.archetype.starts_with("ranch_l_wing"))
+            .expect("reference street ranch");
+        let mut parts: Vec<_> = ranch
+            .blueprint
+            .cells
+            .iter()
+            .filter_map(|(&local, cell)| match cell.kind {
+                crate::BlueprintKind::GarageDoor { segment } => Some((segment, local)),
+                _ => None,
+            })
+            .collect();
+        parts.sort_unstable();
+        assert_eq!(parts.len(), 3);
+        let world_tile = |local: crate::LocalCell| {
+            Tile3D::from_pos(ranch.transform.local_to_world(local), local.floor)
+        };
+        let door_tiles: Vec<_> = parts.iter().map(|&(_, local)| world_tile(local)).collect();
+        let approaches: Vec<_> = parts
+            .iter()
+            .map(|&(_, local)| world_tile(crate::LocalCell::new(local.u, local.v - 1, local.floor)))
+            .collect();
+        let hospital = world
+            .sites()
+            .unwrap()
+            .buildings
+            .iter()
+            .find(|building| building.kind == crate::BuildingKind::Hospital)
+            .expect("county hospital")
+            .entry;
+
+        let mut game = ActionGame::county_with_world(world);
+        let interact = ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        };
+        let assert_open = |game: &ActionGame, expected| {
+            for &tile in &door_tiles {
+                assert!(
+                    matches!(game.stage.tile_kind(tile), TileKind::GarageDoor { open, .. } if open == expected),
+                    "garage segment at {tile:?} did not have open={expected}"
+                );
+            }
+        };
+        assert_eq!(game.teleport(approaches[0]), Some(approaches[0]));
+        game.monsters.clear();
+        assert_open(&game, false);
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::OpenDoor);
+        game.step(interact);
+        assert_open(&game, true);
+
+        assert!(game.teleport(Tile3D::from_pos(hospital, 0)).is_some());
+        assert_eq!(game.teleport(approaches[2]), Some(approaches[2]));
+        game.monsters.clear();
+        assert_open(&game, true);
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::CloseDoor);
+        game.monsters.push(Monster::new(
+            MonsterId(99),
+            MonsterKind::Shambler,
+            0,
+            door_tiles[0],
+        ));
+        game.step(interact);
+        assert_open(&game, true);
+        game.monsters.clear();
+        game.step(interact);
+        assert_open(&game, false);
     }
 
     #[test]

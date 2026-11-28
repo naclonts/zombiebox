@@ -9,6 +9,7 @@ use zombiebox_core::Tile3D;
 use zombiebox_core::{CHUNK_SIZE, DOOR_OPENING_HEIGHT, FLOOR_H, TileKind, WallOrientation};
 
 const HALF_WIDTH: f32 = 0.45;
+pub(crate) const GARAGE_HEIGHT: f32 = 1.48;
 const HANDLE_X: f32 = 0.80;
 const HANDLE_Y: f32 = 0.59;
 const PANEL_HALF_DEPTH: f32 = 0.023;
@@ -61,11 +62,21 @@ pub(crate) struct DoorLeaf {
     hinge: Vec3,
     yaw: f32,
     swing: f32,
+    pub garage: bool,
 }
 
 impl DoorLeaf {
     pub fn model(self, openness: f32) -> Mat4 {
-        Mat4::from_translation(self.hinge) * Mat4::from_rotation_y(self.yaw + self.swing * openness)
+        if self.garage {
+            Mat4::from_translation(self.hinge)
+                * Mat4::from_rotation_y(self.yaw)
+                * Mat4::from_translation(Vec3::Y * GARAGE_HEIGHT)
+                * Mat4::from_rotation_x(self.swing * openness)
+                * Mat4::from_translation(Vec3::NEG_Y * GARAGE_HEIGHT)
+        } else {
+            Mat4::from_translation(self.hinge)
+                * Mat4::from_rotation_y(self.yaw + self.swing * openness)
+        }
     }
 
     pub fn tint(self) -> [f32; 4] {
@@ -74,6 +85,11 @@ impl DoorLeaf {
 
     #[cfg(feature = "gpu")]
     pub fn handle(self, openness: f32, player: Vec3) -> Vec3 {
+        if self.garage {
+            return self
+                .model(openness)
+                .transform_point3(Vec3::new(0.0, 0.45, 0.05));
+        }
         let model = self.model(openness);
         let normal = model.transform_vector3(Vec3::Z);
         let side = if (player - self.hinge).dot(normal) < 0.0 {
@@ -91,8 +107,10 @@ pub(crate) fn door_leaves(chunk: &ChunkSnapshot) -> impl Iterator<Item = DoorLea
             let tile = chunk.local_tile(x, y).unwrap();
             (0..tile.floor_count).filter_map(move |floor| {
                 let c = tile.floor(floor)?;
-                let TileKind::Door { open, exterior } = c.kind else {
-                    return None;
+                let (open, exterior, garage) = match c.kind {
+                    TileKind::Door { open, exterior } => (open, exterior, false),
+                    TileKind::GarageDoor { open, segment: 1 } => (open, true, true),
+                    _ => return None,
                 };
                 let info = chunk.building(c.building_id)?.info;
                 let along_y = c.orientation == WallOrientation::AlongY;
@@ -127,9 +145,14 @@ pub(crate) fn door_leaves(chunk: &ChunkSnapshot) -> impl Iterator<Item = DoorLea
                         2 => 0.68,
                         _ => 1.0,
                     },
-                    hinge: base - along * HALF_WIDTH,
+                    hinge: if garage {
+                        base
+                    } else {
+                        base - along * HALF_WIDTH
+                    },
                     yaw: if along_y { -FRAC_PI_2 } else { 0.0 },
                     swing: -FRAC_PI_2 * inward,
+                    garage,
                 })
             })
         })
@@ -158,9 +181,54 @@ pub(crate) fn door_leaf_mesh() -> MeshBuffer {
     b.build()
 }
 
+/// A single sectional-looking panel spanning the three-tile garage opening.
+pub(crate) fn garage_door_mesh() -> MeshBuffer {
+    let mut b = MeshBuilder::new();
+    emit_box_min_max(
+        &mut b,
+        Vec3::new(-1.46, 0.012, -0.025),
+        Vec3::new(1.46, GARAGE_HEIGHT - 0.014, 0.025),
+        FaceMask::ALL,
+        [0.88, 0.85, 0.76, 1.0],
+        VertexMeta::DEFAULT,
+    );
+    for y in [0.36, 0.72, 1.08] {
+        emit_box_min_max(
+            &mut b,
+            Vec3::new(-1.45, y, -0.030),
+            Vec3::new(1.45, y + 0.032, 0.030),
+            FaceMask::ALL,
+            [0.42, 0.43, 0.40, 1.0],
+            VertexMeta::DEFAULT,
+        );
+    }
+    b.build()
+}
+
 #[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn garage_panel_lifts_overhead_into_the_building() {
+        let leaf = DoorLeaf {
+            tile: Tile3D::new(5, 6, 0),
+            opened: false,
+            meta: VertexMeta::DEFAULT,
+            tint: 1.0,
+            hinge: Vec3::ZERO,
+            yaw: 0.0,
+            swing: -FRAC_PI_2,
+            garage: true,
+        };
+        let closed_bottom = leaf.model(0.0).transform_point3(Vec3::ZERO);
+        let open_bottom = leaf.model(1.0).transform_point3(Vec3::ZERO);
+        let open_top = leaf.model(1.0).transform_point3(Vec3::Y * GARAGE_HEIGHT);
+        assert!(closed_bottom.length() < 1e-5);
+        assert!((open_bottom.y - GARAGE_HEIGHT).abs() < 1e-5);
+        assert!((open_bottom.z - GARAGE_HEIGHT).abs() < 1e-5);
+        assert!((open_top - Vec3::Y * GARAGE_HEIGHT).length() < 1e-5);
+    }
 
     #[test]
     fn a_door_hinges_through_intermediate_positions_and_reverses_smoothly() {
@@ -172,6 +240,7 @@ mod tests {
             hinge: Vec3::new(4.55, 0.0, 6.0),
             yaw: 0.0,
             swing: -FRAC_PI_2,
+            garage: false,
         };
         let closed = AnimatedDoor::new(leaf, None, false);
         let open_leaf = DoorLeaf {

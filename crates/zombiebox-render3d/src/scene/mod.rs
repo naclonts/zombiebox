@@ -260,7 +260,10 @@ impl SceneManager {
                     .tile_render_info(Position::new(player_tile.x + dx, player_tile.y + dy), floor)
                     && matches!(
                         tile.kind,
-                        TileKind::Window | TileKind::BrokenWindow | TileKind::Door { .. }
+                        TileKind::Window
+                            | TileKind::BrokenWindow
+                            | TileKind::Door { .. }
+                            | TileKind::GarageDoor { .. }
                     )
                 {
                     nearby_openings.push((

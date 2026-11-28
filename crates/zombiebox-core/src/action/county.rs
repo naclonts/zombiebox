@@ -1126,7 +1126,7 @@ impl CountyStage {
                         .transform
                         .world_stair_dir(blueprint_cell.stair_dir);
                     target.door_axis =
-                        if matches!(blueprint_cell.kind, crate::BlueprintKind::Door { .. }) {
+                        if matches!(blueprint_cell.kind, crate::BlueprintKind::Door { .. } | crate::BlueprintKind::GarageDoor { .. }) {
                             structure.door_axis_at(local)
                         } else {
                             None
@@ -1425,7 +1425,8 @@ impl CountyStage {
             | TileKind::StairsDown
             | TileKind::StairsBoth
             | TileKind::BrokenStreetlight
-            | TileKind::Door { open: true, .. } => true,
+            | TileKind::Door { open: true, .. }
+            | TileKind::GarageDoor { open: true, .. } => true,
             TileKind::BrokenWindow => can_vault_window && tile.floor == 0,
             _ => false,
         }
@@ -1745,7 +1746,7 @@ impl CountyStage {
         let Some(cell) = self.cell_at_world(Tile3D::new(wx, wy, fl)) else {
             return WallOrientation::AlongX;
         };
-        if matches!(cell.kind, TileKind::Door { .. })
+        if matches!(cell.kind, TileKind::Door { .. } | TileKind::GarageDoor { .. })
             && let Some(axis) = cell.door_axis
         {
             return axis.to_wall_orientation();
@@ -1756,7 +1757,8 @@ impl CountyStage {
             | TileKind::InteriorWall
             | TileKind::Window
             | TileKind::BrokenWindow
-            | TileKind::Door { .. } => {
+            | TileKind::Door { .. }
+            | TileKind::GarageDoor { .. } => {
                 let same_wall = |nx: i32, ny: i32| -> bool {
                     self.cell_at_world(Tile3D::new(nx, ny, fl))
                         .is_some_and(|other| {
@@ -1838,7 +1840,7 @@ impl CountyStage {
                     let fl = light.floor;
                     let src_closed_door = self
                         .cell_at_world(Tile3D::new(light.wx, light.wy, fl))
-                        .is_some_and(|c| matches!(c.kind, TileKind::Door { open: false, .. }));
+                        .is_some_and(|c| matches!(c.kind, TileKind::Door { open: false, .. } | TileKind::GarageDoor { open: false, .. }));
 
                     for wy in min_y..=max_y {
                         for wx in min_x..=max_x {
@@ -2545,10 +2547,12 @@ impl CombatWorld for CountyStage {
             | TileKind::StairsDown
             | TileKind::StairsBoth
             | TileKind::BrokenStreetlight
-            | TileKind::Door { open: true, .. } => TileObstruction::Open,
+            | TileKind::Door { open: true, .. }
+            | TileKind::GarageDoor { open: true, .. } => TileObstruction::Open,
             TileKind::BrokenWindow => TileObstruction::BrokenWindow,
             TileKind::Window => TileObstruction::IntactWindow,
             TileKind::Door { open: false, .. } => TileObstruction::DoorClosed,
+            TileKind::GarageDoor { open: false, .. } => TileObstruction::DoorClosed,
             TileKind::Streetlight => TileObstruction::LowProp(cell.material),
             TileKind::Prop(PropKind::Shed | PropKind::BirchTree) => {
                 TileObstruction::Wall(cell.material)
@@ -2743,7 +2747,7 @@ impl CombatWorld for CountyStage {
         let (new_kind, sound_radius, light_changed) = match old_kind {
             TileKind::Window => (TileKind::BrokenWindow, 8.5, false),
             TileKind::Streetlight => (TileKind::BrokenStreetlight, 9.5, true),
-            TileKind::Door { open, .. } => (TileKind::Rubble, 7.5, !open),
+            TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } => (TileKind::Rubble, 7.5, !open),
             TileKind::Prop(prop) => (
                 TileKind::Rubble,
                 7.5,

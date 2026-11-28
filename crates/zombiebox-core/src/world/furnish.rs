@@ -395,17 +395,20 @@ fn reserve_circulation(blueprint: &BlueprintGrid) -> HashSet<LocalCell> {
     let mut reserved = HashSet::new();
     for door in &blueprint.doors {
         let normal = door.tangent.normal();
-        for sign in [-1, 1] {
-            let cell = LocalCell::new(
-                door.cell.u + normal.0 * sign,
-                door.cell.v + normal.1 * sign,
-                door.cell.floor,
-            );
-            if blueprint
-                .cell(cell)
-                .is_some_and(|cell| cell.kind.walkable())
-            {
-                reserved.insert(cell);
+        let tangent = door.tangent.tangent();
+        let half_span = i32::from(blueprint.cell(door.cell).is_some_and(|cell| {
+            matches!(cell.kind, BlueprintKind::GarageDoor { segment: 1 })
+        }));
+        for offset in -half_span..=half_span {
+            for sign in [-1, 1] {
+                let cell = LocalCell::new(
+                    door.cell.u + tangent.0 * offset + normal.0 * sign,
+                    door.cell.v + tangent.1 * offset + normal.1 * sign,
+                    door.cell.floor,
+                );
+                if blueprint.cell(cell).is_some_and(|cell| cell.kind.walkable()) {
+                    reserved.insert(cell);
+                }
             }
         }
     }
@@ -1324,7 +1327,7 @@ fn candidate_rect(candidate: &Candidate) -> Rect {
 }
 
 fn is_wall_like(kind: BlueprintKind) -> bool {
-    kind.is_wall() || matches!(kind, BlueprintKind::Door { .. })
+    kind.is_wall() || matches!(kind, BlueprintKind::Door { .. } | BlueprintKind::GarageDoor { .. })
 }
 
 fn wall_at(blueprint: &BlueprintGrid, u: i32, v: i32, floor: Floor) -> bool {

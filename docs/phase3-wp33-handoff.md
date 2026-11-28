@@ -17,10 +17,8 @@ vehicle driveways are separate `OutdoorLayer` fields, rendered as gravel and
 pavement respectively. `vehicle_slots` use the world-space minimum corner of
 an oriented car footprint; the runtime registers the parked car through the
 prop anchor registry in its owning chunk. The car is a static prop, not a
-drivable vehicle. The driveway is three tiles wide; the garage gate is one
-cell wide because the existing bilateral door validator requires solid jambs
-on either side. A car-width traversable gate needs a later wide-opening
-primitive.
+drivable vehicle. The three-tile driveway aligns with a three-tile overhead
+garage door. Interacting at any part of the opening moves the whole door.
 
 The headless full-presentation preview, including buildings and props, is:
 

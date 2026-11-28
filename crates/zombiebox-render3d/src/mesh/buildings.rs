@@ -23,6 +23,7 @@ fn barrier(k: TileKind) -> bool {
             | TileKind::Window
             | TileKind::BrokenWindow
             | TileKind::Door { .. }
+            | TileKind::GarageDoor { .. }
     )
 }
 fn meta(tag: GeometryTag, f: u8, id: u32) -> VertexMeta {
@@ -292,13 +293,23 @@ fn footprint(s: &ChunkSnapshot, p: Position, f: u8, id: u32) -> (f32, f32, f32, 
 pub fn build_chunk_buildings_mesh(s: &ChunkSnapshot) -> MeshBuffer {
     let mut mesh = build_chunk_building_shell(s);
     let mut leaf_mesh = super::doors::door_leaf_mesh();
+    let mut garage_mesh = super::doors::garage_door_mesh();
     let original_colors: Vec<_> = leaf_mesh.vertices.iter().map(|v| v.color).collect();
+    let garage_colors: Vec<_> = garage_mesh.vertices.iter().map(|v| v.color).collect();
     for leaf in super::doors::door_leaves(s) {
-        for (vertex, color) in leaf_mesh.vertices.iter_mut().zip(&original_colors) {
+        let (mesh_for_leaf, colors) = if leaf.garage {
+            (&mut garage_mesh, &garage_colors)
+        } else {
+            (&mut leaf_mesh, &original_colors)
+        };
+        for (vertex, color) in mesh_for_leaf.vertices.iter_mut().zip(colors) {
             vertex.meta = leaf.meta.pack();
             vertex.color = std::array::from_fn(|i| color[i] * leaf.tint()[i]);
         }
-        mesh.append_transformed(&leaf_mesh, leaf.model(if leaf.opened { 1.0 } else { 0.0 }));
+        mesh.append_transformed(
+            mesh_for_leaf,
+            leaf.model(if leaf.opened { 1.0 } else { 0.0 }),
+        );
     }
     mesh
 }
@@ -434,6 +445,7 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                             | TileKind::Window
                             | TileKind::BrokenWindow
                             | TileKind::Door { .. }
+                            | TileKind::GarageDoor { .. }
                     )
                 {
                     let wing = info.wing_at(info.wing_index_at(p, f));
@@ -539,6 +551,47 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                                     wallmeta,
                                 )
                             }
+                        }
+                    }
+                    TileKind::GarageDoor { .. } => {
+                        let (dx, dy) = if along_y { (0, 1) } else { (1, 0) };
+                        let neighbor_is_garage = |sign| {
+                            cell(s, Position::new(p.x + dx * sign, p.y + dy * sign), f).is_some_and(
+                                |n| {
+                                    n.building_id == c.building_id
+                                        && matches!(n.kind, TileKind::GarageDoor { .. })
+                                },
+                            )
+                        };
+                        let has_lower_neighbor = neighbor_is_garage(-1);
+                        let has_upper_neighbor = neighbor_is_garage(1);
+                        part(
+                            -0.5,
+                            0.5,
+                            z + super::doors::GARAGE_HEIGHT,
+                            top,
+                            palette.trim.to_array(),
+                            wallmeta,
+                        );
+                        if !has_lower_neighbor {
+                            part(
+                                -0.5,
+                                -0.46,
+                                z,
+                                z + super::doors::GARAGE_HEIGHT,
+                                color,
+                                wallmeta,
+                            );
+                        }
+                        if !has_upper_neighbor {
+                            part(
+                                0.46,
+                                0.5,
+                                z,
+                                z + super::doors::GARAGE_HEIGHT,
+                                color,
+                                wallmeta,
+                            );
                         }
                     }
                     TileKind::Door { .. } => {

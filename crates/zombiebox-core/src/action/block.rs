@@ -227,6 +227,7 @@ pub fn tile_spec(kind: TileKind, wall_mat: Material) -> (Material, u16) {
         | TileKind::StairsBoth => (Material::None, 0),
         TileKind::Window => (Material::Glass, 20),
         TileKind::Door { .. } => (Material::WoodDoor, 60),
+        TileKind::GarageDoor { .. } => (Material::MetalPole, 60),
         TileKind::Streetlight => (Material::MetalPole, 50),
         TileKind::InteriorWall => {
             let mat = match wall_mat {
@@ -1353,7 +1354,8 @@ impl ResidentialBlock {
             | TileKind::InteriorWall
             | TileKind::Window
             | TileKind::BrokenWindow
-            | TileKind::Door { .. } => {
+            | TileKind::Door { .. }
+            | TileKind::GarageDoor { .. } => {
                 let same_wall = |nx: i32, ny: i32| -> bool {
                     if !(0..BLOCK_WIDTH as i32).contains(&nx)
                         || !(0..BLOCK_HEIGHT as i32).contains(&ny)
@@ -1425,6 +1427,7 @@ impl ResidentialBlock {
             let src_closed_door = matches!(
                 self.cell_at(light.lx, light.ly, fl).kind,
                 TileKind::Door { open: false, .. }
+                | TileKind::GarageDoor { open: false, .. }
             );
 
             for ly in min_y..=max_y {
@@ -1550,6 +1553,7 @@ impl ResidentialBlock {
             | TileKind::InteriorWall
             | TileKind::Pillar
             | TileKind::Door { open: false, .. }
+            | TileKind::GarageDoor { open: false, .. }
             | TileKind::Prop(PropKind::Shed) => 0.0,
             TileKind::Window => WINDOW_LIGHT_TRANSMIT,
             TileKind::Prop(PropKind::BirchTree) => TREE_LIGHT_TRANSMIT,
@@ -1590,6 +1594,7 @@ impl ResidentialBlock {
                 | TileKind::InteriorWall
                 | TileKind::Pillar
                 | TileKind::Door { open: false, .. }
+                | TileKind::GarageDoor { open: false, .. }
                 | TileKind::Prop(PropKind::Shed)
                 | TileKind::Prop(PropKind::BirchTree)
         )
@@ -1706,7 +1711,7 @@ impl ResidentialBlock {
         f1.room_id = 0;
 
         let f0 = self.cell_mut(lx, ly, 0);
-        if !f0.load_bearing && !matches!(f0.kind, TileKind::StairsUp | TileKind::Door { .. }) {
+        if !f0.load_bearing && !matches!(f0.kind, TileKind::StairsUp | TileKind::Door { .. } | TileKind::GarageDoor { .. }) {
             f0.set_kind(TileKind::Rubble, Material::None);
         }
 
@@ -1794,9 +1799,11 @@ impl CombatWorld for ResidentialBlock {
             | TileKind::StairsBoth
             | TileKind::BrokenStreetlight
             | TileKind::Door { open: true, .. } => TileObstruction::Open,
+            TileKind::GarageDoor { open: true, .. } => TileObstruction::Open,
             TileKind::BrokenWindow => TileObstruction::BrokenWindow,
             TileKind::Window => TileObstruction::IntactWindow,
             TileKind::Door { open: false, .. } => TileObstruction::DoorClosed,
+            TileKind::GarageDoor { open: false, .. } => TileObstruction::DoorClosed,
             TileKind::Streetlight => TileObstruction::LowProp(cell.material),
             TileKind::Prop(PropKind::Shed | PropKind::BirchTree) => {
                 TileObstruction::Wall(cell.material)
@@ -1928,7 +1935,7 @@ impl CombatWorld for ResidentialBlock {
         let (new_kind, sound_radius, light_changed) = match old_kind {
             TileKind::Window => (TileKind::BrokenWindow, 8.5, false),
             TileKind::Streetlight => (TileKind::BrokenStreetlight, 9.5, true),
-            TileKind::Door { open, .. } => (TileKind::Rubble, 7.5, !open),
+            TileKind::Door { open, .. } | TileKind::GarageDoor { open, .. } => (TileKind::Rubble, 7.5, !open),
             TileKind::Prop(prop) => (
                 TileKind::Rubble,
                 7.5,
@@ -1988,13 +1995,16 @@ impl CombatWorld for ResidentialBlock {
     fn toggle_door(&mut self, tile: Tile3D) -> Option<bool> {
         let (lx, ly, fl) = self.world_to_local(tile)?;
         let cell = self.cell_mut(lx, ly, fl);
-        let TileKind::Door { open, exterior } = cell.kind else {
-            return None;
+        let (open, exterior) = match cell.kind {
+            TileKind::Door { open, exterior } => (open, exterior),
+            TileKind::GarageDoor { open, .. } => (open, true),
+            _ => return None,
         };
         let now_open = !open;
-        cell.kind = TileKind::Door {
-            open: now_open,
-            exterior,
+        cell.kind = match cell.kind {
+            TileKind::Door { .. } => TileKind::Door { open: now_open, exterior },
+            TileKind::GarageDoor { segment, .. } => TileKind::GarageDoor { open: now_open, segment },
+            _ => unreachable!(),
         };
         self.terrain_version += 1;
         Some(now_open)
@@ -2033,6 +2043,7 @@ pub(crate) fn is_room_barrier(kind: TileKind) -> bool {
             | TileKind::Window
             | TileKind::BrokenWindow
             | TileKind::Door { .. }
+            | TileKind::GarageDoor { .. }
     )
 }
 
@@ -2042,6 +2053,7 @@ pub(super) fn light_cell_factor_kind(kind: TileKind) -> f32 {
         | TileKind::InteriorWall
         | TileKind::Pillar
         | TileKind::Door { open: false, .. }
+        | TileKind::GarageDoor { open: false, .. }
         | TileKind::Prop(PropKind::Shed) => 0.0,
         TileKind::Window => WINDOW_LIGHT_TRANSMIT,
         TileKind::Prop(PropKind::BirchTree) => TREE_LIGHT_TRANSMIT,
@@ -2056,6 +2068,7 @@ pub(super) fn is_los_opaque_kind(kind: TileKind) -> bool {
             | TileKind::InteriorWall
             | TileKind::Pillar
             | TileKind::Door { open: false, .. }
+            | TileKind::GarageDoor { open: false, .. }
             | TileKind::Prop(PropKind::Shed)
             | TileKind::Prop(PropKind::BirchTree)
     )
@@ -2457,6 +2470,11 @@ mod tests {
                                     b.x - block.origin().x,
                                     b.y - block.origin().y
                                 );
+                            }
+                            TileKind::GarageDoor { .. } => {
+                                let open = matches!(block.tile_kind(tile), TileKind::GarageDoor { open: true, .. });
+                                block.toggle_door(tile);
+                                assert_eq!(matches!(block.tile_kind(tile), TileKind::GarageDoor { open: true, .. }), !open);
                             }
                             TileKind::Window => {
                                 let info = block.tile_render_info(tile.pos(), fl).unwrap();

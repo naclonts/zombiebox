@@ -235,6 +235,7 @@ pub enum BlueprintKind {
     Pillar,
     Window,
     Door { exterior: bool, gate: bool },
+    GarageDoor { segment: u8 },
     Stairs { up: bool, down: bool },
 }
 
@@ -247,7 +248,10 @@ impl BlueprintKind {
     }
 
     pub fn walkable(self) -> bool {
-        matches!(self, Self::Floor | Self::Door { .. } | Self::Stairs { .. })
+        matches!(
+            self,
+            Self::Floor | Self::Door { .. } | Self::GarageDoor { .. } | Self::Stairs { .. }
+        )
     }
 
     pub fn to_feature(self, material: Material) -> super::Feature {
@@ -258,6 +262,7 @@ impl BlueprintKind {
             Self::Pillar => super::Feature::Wall(Material::MetalPole),
             Self::Window => super::Feature::Window,
             Self::Door { gate: true, .. } => super::Feature::Gate,
+            Self::GarageDoor { .. } => super::Feature::Gate,
             Self::Door { .. } => super::Feature::Door,
             Self::Stairs { .. } => super::Feature::Stairs,
         }
@@ -273,6 +278,10 @@ impl BlueprintKind {
             Self::Door { exterior, .. } => TileKind::Door {
                 open: false,
                 exterior,
+            },
+            Self::GarageDoor { segment } => TileKind::GarageDoor {
+                open: false,
+                segment,
             },
             Self::Stairs {
                 up: true,
@@ -640,6 +649,20 @@ impl PlacedStructure {
             .iter()
             .find(|door| door.cell == local)
             .map(|door| self.transform.world_axis(door.tangent))
+            .or_else(|| {
+                let BlueprintKind::GarageDoor { .. } = self.blueprint.cell(local)?.kind else {
+                    return None;
+                };
+                let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+                dirs.into_iter().find_map(|(du, dv)| {
+                    let center = LocalCell::new(local.u + du, local.v + dv, local.floor);
+                    (matches!(self.blueprint.cell(center)?.kind, BlueprintKind::GarageDoor { segment: 1 })
+                        && self.blueprint.doors.iter().any(|door| door.cell == center))
+                    .then(|| self.blueprint.doors.iter().find(|door| door.cell == center)
+                        .map(|door| self.transform.world_axis(door.tangent)))
+                    .flatten()
+                })
+            })
     }
 
     pub fn cell_at_world(
@@ -914,7 +937,10 @@ impl BlueprintGrid {
                     reason: "door cell missing",
                 });
             };
-            if !matches!(cell.kind, BlueprintKind::Door { .. }) {
+            if !matches!(
+                cell.kind,
+                BlueprintKind::Door { .. } | BlueprintKind::GarageDoor { .. }
+            ) {
                 return Err(FitError::AccessFailure {
                     reason: "door intent cell is not a door",
                 });
@@ -930,12 +956,20 @@ impl BlueprintGrid {
                     reason: "duplicate door intent",
                 });
             }
+            let garage_wide = matches!(cell.kind, BlueprintKind::GarageDoor { segment: 1 })
+                && [-1, 1].into_iter().all(|sign| {
+                    self.cells.get(&LocalCell::new(
+                        door.cell.u + door.tangent.tangent().0 * sign,
+                        door.cell.v + door.tangent.tangent().1 * sign,
+                        door.cell.floor,
+                    )).is_some_and(|adjacent| matches!(adjacent.kind, BlueprintKind::GarageDoor { .. }))
+                });
             let tangent = door.tangent.tangent();
             let normal = door.tangent.normal();
             for sign in [-1, 1] {
                 let jambs = self.cells.get(&LocalCell::new(
-                    door.cell.u + tangent.0 * sign,
-                    door.cell.v + tangent.1 * sign,
+                    door.cell.u + tangent.0 * sign * if garage_wide { 2 } else { 1 },
+                    door.cell.v + tangent.1 * sign * if garage_wide { 2 } else { 1 },
                     door.cell.floor,
                 ));
                 let inside = jambs.is_some();

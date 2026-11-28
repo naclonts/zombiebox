@@ -13,7 +13,7 @@ use crate::gpu::{
 };
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
 use crate::mesh::buildings::build_chunk_building_shell;
-use crate::mesh::doors::{AnimatedDoor, door_leaf_mesh, door_leaves};
+use crate::mesh::doors::{AnimatedDoor, door_leaf_mesh, door_leaves, garage_door_mesh};
 use crate::mesh::library::PropMeshLibrary;
 use crate::mesh::motorcycle::{
     MotorcycleLocator, MotorcyclePart, motorcycle_locator, motorcycle_part_mesh_with_appearance,
@@ -64,6 +64,7 @@ pub struct Presentation {
     prop_prototypes: Vec<(String, PrototypeMeshId)>,
     motorcycle_prototypes: [Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
     door_prototype: PrototypeMeshId,
+    garage_door_prototype: PrototypeMeshId,
     doors: BTreeMap<ChunkCoord, Vec<AnimatedDoor>>,
     motorcycle_wheel_phase: BTreeMap<zombiebox_core::VehicleId, f32>,
     mounted_camera_preference_isometric: bool,
@@ -89,7 +90,8 @@ struct MotorcyclePrototypeSet {
 const CACHE_BATCH_COUNT: usize = 2;
 const MOTORCYCLE_BATCH_COUNT: usize = MOTORCYCLE_SLOT_COUNT * MOTORCYCLE_PARTS.len();
 const DOOR_BATCH: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
-const PROP_BATCH_BASE: usize = DOOR_BATCH + 1;
+const GARAGE_DOOR_BATCH: usize = DOOR_BATCH + 1;
+const PROP_BATCH_BASE: usize = GARAGE_DOOR_BATCH + 1;
 const BATCH_COUNT: usize = PROP_BATCH_BASE + 64;
 
 struct PreparedZombie {
@@ -161,6 +163,8 @@ impl Presentation {
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
         ];
         let door_prototype = renderer.register_prototype(ctx, "door_leaf", &door_leaf_mesh());
+        let garage_door_prototype =
+            renderer.register_prototype(ctx, "garage_door", &garage_door_mesh());
         let prop_library = PropMeshLibrary::shared();
         let prop_prototypes = prop_library
             .iter()
@@ -192,6 +196,7 @@ impl Presentation {
             prop_prototypes,
             motorcycle_prototypes,
             door_prototype,
+            garage_door_prototype,
             doors: BTreeMap::new(),
             motorcycle_wheel_phase: BTreeMap::new(),
             mounted_camera_preference_isometric: false,
@@ -570,7 +575,12 @@ impl Presentation {
             0.0
         };
         for door in self.doors.values_mut().flatten() {
-            instances[DOOR_BATCH].push(
+            let batch = if door.leaf.garage {
+                GARAGE_DOOR_BATCH
+            } else {
+                DOOR_BATCH
+            };
+            instances[batch].push(
                 InstanceRaw::from_transform(door.leaf.model(door.openness()))
                     .with_tint(door.leaf.tint())
                     .with_meta_override(door.leaf.meta),
@@ -616,6 +626,7 @@ impl Presentation {
         cache_prototypes: [PrototypeMeshId; 2],
         motorcycle_prototypes: &[Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
         door_prototype: PrototypeMeshId,
+        garage_door_prototype: PrototypeMeshId,
         prop_prototypes: &[(String, PrototypeMeshId)],
         instances: &'a [Vec<InstanceRaw>; BATCH_COUNT],
     ) -> Vec<InstanceBatch<'a>> {
@@ -654,6 +665,10 @@ impl Presentation {
             mesh: door_prototype,
             instances: &instances[DOOR_BATCH],
         });
+        batches.push(InstanceBatch {
+            mesh: garage_door_prototype,
+            instances: &instances[GARAGE_DOOR_BATCH],
+        });
         for (index, (_, mesh)) in prop_prototypes.iter().enumerate() {
             let batch = PROP_BATCH_BASE + index;
             if batch >= BATCH_COUNT || instances[batch].is_empty() {
@@ -681,6 +696,7 @@ impl Presentation {
             self.cache_prototypes,
             &self.motorcycle_prototypes,
             self.door_prototype,
+            self.garage_door_prototype,
             &self.prop_prototypes,
             &instances,
         );
@@ -762,6 +778,7 @@ impl Presentation {
             self.cache_prototypes,
             &self.motorcycle_prototypes,
             self.door_prototype,
+            self.garage_door_prototype,
             &self.prop_prototypes,
             &instances,
         );

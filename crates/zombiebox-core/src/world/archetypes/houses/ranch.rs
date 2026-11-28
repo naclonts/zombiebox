@@ -26,7 +26,7 @@ impl CompoundPlanner for RanchParcel {
             .blueprint
             .doors
             .iter()
-            .find(|door| door.kind == DoorKind::Gate)
+            .find(|door| door.kind == DoorKind::Gate && door.cell == ranch_garage_door())
             .ok_or(FitError::AccessFailure {
                 reason: "ranch garage gate is missing",
             })?
@@ -283,13 +283,6 @@ fn ranch_house_with_width(
             (SpaceId::Exterior, SpaceId::Room(entry)),
             0,
         ),
-        (
-            garage_door,
-            DoorAxis::AlongX,
-            DoorKind::Gate,
-            (SpaceId::Exterior, SpaceId::Room(GARAGE_ROOM)),
-            1,
-        ),
     ] {
         add_house_door(&mut bp, cell, tangent, kind, connects, wing);
     }
@@ -310,11 +303,27 @@ fn ranch_house_with_width(
             0,
         );
     }
-    // Keep the street-facing gate's material and floor treatment consistent
-    // with the driveway and the garage slab.
-    let gate = bp.cells.get_mut(&garage_door).unwrap();
-    gate.material = Material::MetalPole;
-    gate.surface = Surface::Driveway;
+    // The exterior garage opening spans three cells so a car can pass through.
+    // Segment 1 is centered on the former one-cell gate position.
+    for (segment, u) in (garage_door.u - 1..=garage_door.u + 1).enumerate() {
+        let cell = LocalCell::new(u, garage_door.v, garage_door.floor);
+        let mut tile = BlueprintCell::new(
+            BlueprintKind::GarageDoor {
+                segment: segment as u8,
+            },
+            Material::MetalPole,
+            Surface::Driveway,
+        );
+        tile.wing = 1;
+        tile.load_bearing = true;
+        bp.set_cell(cell, tile);
+    }
+    bp.add_door(crate::world::blueprint::DoorIntent {
+        cell: garage_door,
+        tangent: DoorAxis::AlongX,
+        kind: DoorKind::Gate,
+        connects: (SpaceId::Exterior, SpaceId::Room(GARAGE_ROOM)),
+    });
 
     let garage_threshold = LocalCell::new(GARAGE_LEFT, utility_v, 0);
     bp.cells.insert(garage_threshold, {

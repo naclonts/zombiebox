@@ -274,7 +274,15 @@ pub enum TileKind {
     Pillar,
     Window,
     BrokenWindow,
-    Door { open: bool, exterior: bool },
+    Door {
+        open: bool,
+        exterior: bool,
+    },
+    /// One segment of a three-cell garage opening. Segment 1 is the center.
+    GarageDoor {
+        open: bool,
+        segment: u8,
+    },
     StairsUp,
     StairsDown,
     StairsBoth,
