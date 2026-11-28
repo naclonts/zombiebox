@@ -30,7 +30,6 @@
   // Set only after a Read interaction succeeds (the prompt itself must not
   // steal focus or pause play).
   const STATUS_READ_OPEN = 1 << 8;
-  const INTERACT_READ = 11;
 
   const DISTRICTS = [
     "BIRCH STREET",
@@ -680,6 +679,7 @@
     syncEngineLoop({ controlKind: 0 });
     clearHeldInput();
     overlayEl.hidden = false;
+    overlayEl.classList.toggle("is-reading", kind === "read");
 
     const showSetupHeading = kind !== "start";
     setupHeading.hidden = !showSetupHeading;
@@ -1032,7 +1032,7 @@
           } else if ((hud.statusFlags & STATUS_READ_OPEN) !== 0 && hud.readId && hud.readId !== state.readId) {
             state.readId = hud.readId;
             void openReadable(hud.readId);
-          } else if (hud.interactKind !== INTERACT_READ) {
+          } else if ((hud.statusFlags & STATUS_READ_OPEN) === 0) {
             state.readId = 0;
           }
         }
@@ -1622,7 +1622,6 @@
   btnPrimary.addEventListener("click", async () => {
     ensureAudio();
     if (state.modalKind === "read") {
-      state.readId = 0;
       closeModalAndPlay();
       requestFrame(false);
       return;

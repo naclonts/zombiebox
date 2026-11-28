@@ -514,6 +514,14 @@ fn static_route(path: &str) -> Vec<u8> {
 
 fn static_route_conn(path: &str, keep_alive: bool) -> Vec<u8> {
     let path = path.split('?').next().unwrap_or(path);
+    if let Some(id) = path
+        .strip_prefix("/api/action/readable/")
+        .and_then(|v| v.parse::<u8>().ok())
+        && let Some((_, title, body)) = zombiebox_core::readable_text(id)
+    {
+        let json = format!("{{\"id\":{id},\"title\":{title:?},\"body\":{body:?}}}");
+        return response_conn(200, "application/json", json.as_bytes(), keep_alive);
+    }
     if let Some(value) = path.strip_prefix("/api/county/") {
         if let Some(seed) = parse_u64_decimal(value) {
             return response_conn(
@@ -560,15 +568,6 @@ fn route_conn(
     keep_alive: bool,
 ) -> Vec<u8> {
     let path = path.split('?').next().unwrap_or(path);
-    if method == "GET"
-        && let Some(id) = path
-            .strip_prefix("/api/action/readable/")
-            .and_then(|v| v.parse::<u8>().ok())
-        && let Some((_, title, body)) = zombiebox_core::readable_text(id)
-    {
-        let json = format!("{{\"id\":{id},\"title\":{title:?},\"body\":{body:?}}}");
-        return response_conn(200, "application/json", json.as_bytes(), keep_alive);
-    }
     if method != "POST" {
         return response_conn(405, "text/plain", b"method not allowed\n", keep_alive);
     }
@@ -1267,8 +1266,8 @@ fn encode_zbf3_frame(
         ext[4] = hud.engine_load;
         ext[5] = 1; // occupied riding state
         ext[6] = hud.condition_pct;
-        ext[7] = game.hud().read_id;
     }
+    ext[7] = game.hud().read_id;
     ext[0] = u8::from(game.control_mode() == zombiebox_core::ControlMode::Motorcycle);
     // Preserve the v2 header and insert the v3 extension before its RGBA pixels.
     out.splice(64..64, ext);
@@ -1556,6 +1555,35 @@ fn response_conn(status: u16, mime: &str, body: &[u8], keep_alive: bool) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_foot_readable_id_is_encoded_in_v3_frame() {
+        let mut game = ActionGame::residential(42);
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert!(game.hud().read_open);
+        assert_ne!(game.hud().read_id, 0);
+        let frame = encode_zbf3_frame(&game, 0, 0, 0, &[]);
+        assert_eq!(frame[71], game.hud().read_id);
+        assert_ne!(u16::from_le_bytes([frame[44], frame[45]]) & (1 << 8), 0);
+    }
+
+    #[test]
+    fn readable_text_is_served_by_get_dispatch() {
+        let response = static_route("/api/action/readable/1");
+        let (headers, body) = split_http_response(&response);
+        assert!(headers.starts_with("HTTP/1.1 200"));
+        let body = std::str::from_utf8(body).unwrap();
+        assert!(body.contains("Birch Street directory"));
+        assert!(body.contains("Keep the porch light in sight"));
+        assert!(
+            split_http_response(&static_route("/api/action/readable/255"))
+                .0
+                .starts_with("HTTP/1.1 404")
+        );
+    }
 
     fn game_at_starter_motorcycle() -> ActionGame {
         let mut game = ActionGame::county(42);

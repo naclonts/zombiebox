@@ -1159,3 +1159,11 @@ body.action-body {
     font-size:11px;
   }
 }
+
+/* Reading uses the same dialog shell without the run configuration. */
+.is-reading .modal-setup,
+.is-reading .modal-controls,
+.is-reading .action-atlas-btn,
+.is-reading .modal-footer { display:none; }
+.is-reading .action-modal h1 { font-size:clamp(22px, 3vw, 28px); }
+.is-reading .modal-copy { font-size:16px; line-height:1.6; margin:16px auto 20px; }
