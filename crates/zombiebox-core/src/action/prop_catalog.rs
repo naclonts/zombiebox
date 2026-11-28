@@ -190,5 +190,7 @@ define_props! {
     Nightstand = 43, "nightstand", [1, 1], [0.26, 0.24, 0.58], Low, Floor, WoodLight, 40, None;
     GrocerySign = 44, "grocery-sign", [1, 1], [0.90, 0.06, 0.40], None, WallMount, WoodLight, 25, None;
     RestroomSign = 45, "restroom-sign", [1, 1], [0.42, 0.06, 0.30], None, WallMount, WoodLight, 20, None;
+    FuelPump = 47, "fuel-pump", [1, 1], [0.45, 0.35, 1.65], HighBlocker, Floor, MetalPole, 100, None;
+    FuelPylon = 48, "fuel-pylon", [1, 1], [0.45, 0.25, 2.40], HighBlocker, Floor, MetalPole, 100, None;
     AisleSign = 46, "aisle-sign", [1, 1], [0.40, 0.06, 0.28], None, WallMount, WoodLight, 20, None;
 }

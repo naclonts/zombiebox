@@ -250,7 +250,11 @@ impl Parcels {
             if fixture.furnished_lot() && lot.district != District::Residential {
                 continue;
             }
-            if fixture == CountyFixture::GroceryLot && lot.district != District::City {
+            if matches!(
+                fixture,
+                CountyFixture::GroceryLot | CountyFixture::GasStationLot
+            ) && lot.district != District::City
+            {
                 continue;
             }
             let context = parcel_context(seed, lot);
@@ -259,8 +263,11 @@ impl Parcels {
             };
             if fixture != CountyFixture::BlueprintLot {
                 parcels[index].plan = Some(plan);
-                parcels[index].planned_outdoors =
-                    fixture.furnished_lot() || fixture == CountyFixture::GroceryLot;
+                parcels[index].planned_outdoors = fixture.furnished_lot()
+                    || matches!(
+                        fixture,
+                        CountyFixture::GroceryLot | CountyFixture::GasStationLot
+                    );
                 return Some(index);
             }
             let crosses_seam = plan.structures.iter().any(|structure| {

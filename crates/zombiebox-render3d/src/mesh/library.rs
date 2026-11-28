@@ -139,6 +139,8 @@ impl PropMeshLibrary {
         let mut prototypes = converted();
         for (id, mesh) in [
             (PropId::GondolaShelf, kit::build_gondola_shelf(2)),
+            (PropId::FuelPump, kit::build_fuel_pump()),
+            (PropId::FuelPylon, kit::build_fuel_pylon()),
             (PropId::CheckoutLane, kit::build_checkout_lane(2)),
             // The converted `television-vintage` asset is a microwave, so the
             // Television key is served by a procedural CRT instead.

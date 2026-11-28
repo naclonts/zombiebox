@@ -140,6 +140,29 @@ pub(crate) fn motorcycle_spawns(
         }
     }
 
+    // A review-only bike at the drive entrance; the normal county roster is unchanged.
+    if world.fixture() == super::CountyFixture::GasStationLot
+        && let Some(plan) = world.fixture_plan()
+    {
+        let transform = plan.structures[1].transform;
+        let tile = transform.local_to_world(super::LocalCell::new(8, -6, 0));
+        let inward = transform.local_to_world(super::LocalCell::new(8, -5, 0));
+        let heading = ((inward.y - tile.y) as f32).atan2((inward.x - tile.x) as f32);
+        if let Some(last) = spawns.last_mut() {
+            *last = MotorcycleSpawn {
+                slot: last.slot,
+                tile,
+                heading,
+            };
+        } else {
+            spawns.push(MotorcycleSpawn {
+                slot: 0,
+                tile,
+                heading,
+            });
+        }
+    }
+
     spawns
 }
 

@@ -30,6 +30,7 @@ enum SceneChoice {
     CountySplitLevel,
     CountyDuplex,
     CountyGrocery,
+    CountyGasStation,
     CountyMountains,
 }
 
@@ -49,6 +50,7 @@ impl SceneChoice {
             "split-level" | "split-level-lot" => Ok(Self::CountySplitLevel),
             "duplex" | "duplex-lot" => Ok(Self::CountyDuplex),
             "grocery" | "grocery-lot" => Ok(Self::CountyGrocery),
+            "gas-station" | "gas-station-lot" => Ok(Self::CountyGasStation),
             "mountains" | "county-mountains" => Ok(Self::CountyMountains),
             other => Err(format!("Unknown --scene '{other}'")),
         }
@@ -688,6 +690,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             SceneChoice::CountyDuplex => World::with_fixture(seed, CountyFixture::DuplexLot),
             SceneChoice::CountyGrocery => World::with_fixture(seed, CountyFixture::GroceryLot),
+            SceneChoice::CountyGasStation => {
+                World::with_fixture(seed, CountyFixture::GasStationLot)
+            }
             _ => World::new(42),
         };
         let mut county = ActionGame::county_with_world(world.clone());
@@ -699,6 +704,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 | SceneChoice::CountySplitLevel
                 | SceneChoice::CountyDuplex
                 | SceneChoice::CountyGrocery
+                | SceneChoice::CountyGasStation
         ) {
             let plans = world.fixture_plans();
             for plan in &plans {
@@ -722,20 +728,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SceneChoice::CountyDuplex => Some("duplex"),
                 _ => None,
             };
-            let (target, scene_name, orbit_distance) = if scene == SceneChoice::CountyGrocery {
-                let structure = &plan.structures[0];
-                let door = structure.front_door;
-                let (target, distance) = match focus_name.as_str() {
-                    "overview" | "frontage" => {
-                        (Tile3D::new(door.x - ix * 3, door.y - iy * 3, 0), 1.35)
-                    }
-                    "interior" => {
-                        let room = structure
+            let (target, scene_name, orbit_distance) = if matches!(
+                scene,
+                SceneChoice::CountyGrocery | SceneChoice::CountyGasStation
+            ) {
+                let scene_name = if scene == SceneChoice::CountyGasStation {
+                    "gas-station"
+                } else {
+                    "grocery"
+                };
+                let (structure, room) = plan
+                    .structures
+                    .iter()
+                    .find_map(|structure| {
+                        structure
                             .blueprint
                             .rooms
                             .iter()
                             .find(|room| room.kind == RoomKind::Shop)
-                            .ok_or("fixture has no sales floor")?;
+                            .map(|room| (structure, room))
+                    })
+                    .ok_or("fixture has no sales floor")?;
+                let door = structure.front_door;
+                let (target, distance) = match focus_name.as_str() {
+                    "overview" | "frontage" if scene == SceneChoice::CountyGasStation => {
+                        let access = plan.frontage.access;
+                        (Tile3D::new(access.x + ix * 3, access.y + iy * 3, 0), 1.6)
+                    }
+                    "overview" | "frontage" => {
+                        (Tile3D::new(door.x - ix * 3, door.y - iy * 3, 0), 1.35)
+                    }
+                    "interior" => {
                         let (u, v) = room
                             .cells
                             .iter()
@@ -759,9 +782,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .ok_or("fixture sales floor has no clear focus tile")?;
                         (Tile3D::from_pos(tile, room.floor), 1.5)
                     }
-                    _ => return Err("--focus for grocery must be frontage or interior".into()),
+                    _ => {
+                        return Err(format!(
+                            "--focus for {scene_name} must be frontage or interior"
+                        )
+                        .into());
+                    }
                 };
-                (target, "grocery", distance)
+                (target, scene_name, distance)
             } else if let Some(scene_name) = single_house {
                 let structure = &plan.structures[0];
                 let door = structure.front_door;
@@ -896,14 +924,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut presentation = Presentation::new(&ctx, size.0, size.1);
             presentation.camera_mut().set_mode(mode);
             if mode == CameraMode::Orbit {
-                let pitch_delta =
-                    if scene == SceneChoice::CountyResidentialStreet && focus_name == "overview" {
-                        0.2
+                let yaw_offset =
+                    if scene == SceneChoice::CountyGasStation && focus_name != "interior" {
+                        0.35
                     } else {
-                        -0.15
+                        0.0
                     };
+                let pitch_delta = match (scene, focus_name.as_str()) {
+                    (SceneChoice::CountyResidentialStreet, "overview") => 0.2,
+                    (SceneChoice::CountyGasStation, "frontage" | "overview") => -0.32,
+                    _ => -0.15,
+                };
                 presentation.camera_mut().orbit_rotate(
-                    (-(iy as f32)).atan2(-(ix as f32)) - std::f32::consts::FRAC_PI_4,
+                    (-(iy as f32)).atan2(-(ix as f32)) - std::f32::consts::FRAC_PI_4 + yaw_offset,
                     pitch_delta,
                 );
                 presentation

@@ -11,11 +11,14 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
-use zombiebox_core::{ActionGame, ActionInput, CountyFixture, Tile3D, Vec2, Weapon, World};
+use zombiebox_core::{
+    ActionGame, ActionInput, CountyFixture, InteractPrompt, MotorcycleInput, RideInput, Tile3D,
+    Vec2, Weapon, World, readable_text,
+};
 use zombiebox_render3d::{CameraMode, GpuContext, Presentation, SurfaceFrameOutcome};
 
 const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
-const HELP: &str = "WASD move · arrows aim · Space fire · E interact · Z/X/C/V weapons · R reload · H heal · Shift walk · P pause · 1–5 cameras · drag to orbit · wheel zoom · B Birch · N county · Esc quit";
+const HELP: &str = "WASD move · arrows aim · Space fire · E interact · Z/X/C/V weapons · R reload · H heal · Shift walk · P pause · 1–5 cameras · drag to orbit · wheel zoom · B Birch · N county · Esc quit\nMotorcycle: W throttle · S brake/reverse · A/D steer · left/right arrows lean · E dismount";
 
 #[derive(Clone, Copy)]
 enum CountyScene {
@@ -25,6 +28,7 @@ enum CountyScene {
     SplitLevelLot,
     DuplexLot,
     GroceryLot,
+    GasStationLot,
     SupportLot,
 }
 
@@ -37,6 +41,7 @@ fn county_game(seed: u64, scene: CountyScene) -> Result<ActionGame, String> {
         CountyScene::SplitLevelLot => CountyFixture::SplitLevelLot,
         CountyScene::DuplexLot => CountyFixture::DuplexLot,
         CountyScene::GroceryLot => CountyFixture::GroceryLot,
+        CountyScene::GasStationLot => CountyFixture::GasStationLot,
         CountyScene::SupportLot => CountyFixture::SupportLot,
     };
     let world = World::with_fixture(seed, fixture);
@@ -166,9 +171,22 @@ impl App {
             reload: self.once.contains(&KeyCode::KeyR),
             use_medkit: self.once.contains(&KeyCode::KeyH),
             quiet_walk: self.down(KeyCode::ShiftLeft) || self.down(KeyCode::ShiftRight),
+            ride: self.game.mounted_vehicle().map(|_| {
+                RideInput::Motorcycle(MotorcycleInput {
+                    steer: movement_stick.x,
+                    throttle: f32::from(self.down(KeyCode::KeyW)),
+                    brake: f32::from(self.down(KeyCode::KeyS)),
+                    lean: look_stick.x * 0.6,
+                })
+            }),
             ..Default::default()
         };
         self.game.step(input);
+        if input.interact
+            && let Some((_, title, body)) = readable_text(self.game.hud().read_id)
+        {
+            println!("{title}\n{body}");
+        }
         self.once.clear();
         if let Some(v) = &mut self.view {
             v.presentation.observe_tick(&self.game);
@@ -217,7 +235,30 @@ impl App {
             let h = self.game.hud();
             let s = v.presentation.last_frame_stats();
             let fps = self.frames as f64 / now.duration_since(self.title_at).as_secs_f64();
-            v.window.set_title(&format!("Zombiebox {} seed {} | {:?}{} | HP {}/{} | {:?} {}/{} +{} | medkits {} | infected {} | caches {}/{} | {:.0} FPS | chunks {}/{} | {} triangles",if self.birch{"Birch"}else{"County"},self.seed,v.presentation.camera().mode(),if self.paused{" PAUSED"}else{""},h.health,h.max_health,h.equipped,h.active_mag,h.active_mag_cap,h.active_reserve,h.medkits,h.zombie_count,h.caches_found,h.caches_total,fps,s.chunks_drawn,s.chunks_resident,s.triangles_submitted));
+            let scene = if self.birch { "Birch" } else { "County" };
+            let mode = v.presentation.camera().mode();
+            let paused = if self.paused { " PAUSED" } else { "" };
+            let action = match h.mounted {
+                Some(bike) => format!(
+                    "{:.1} mph · bike {}%",
+                    f32::from(bike.speed_mph_x10) / 10.0,
+                    bike.condition_pct
+                ),
+                None => format!(
+                    "{:?} {}/{} +{}",
+                    h.equipped, h.active_mag, h.active_mag_cap, h.active_reserve
+                ),
+            };
+            let prompt = if h.interact_prompt == InteractPrompt::None {
+                String::new()
+            } else {
+                format!(" | E {:?}", h.interact_prompt)
+            };
+            v.window.set_title(&format!(
+                "Zombiebox {scene} seed {} | {mode:?}{paused} | HP {}/{} | {action} | medkits {} | infected {} | caches {}/{}{prompt} | {fps:.0} FPS | chunks {}/{} | {} triangles",
+                self.seed, h.health, h.max_health, h.medkits, h.zombie_count, h.caches_found,
+                h.caches_total, s.chunks_drawn, s.chunks_resident, s.triangles_submitted,
+            ));
             self.title_at = now;
             self.frames = 0;
         }
@@ -376,11 +417,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--split-level-lot" => county_scene = CountyScene::SplitLevelLot,
             "--duplex-lot" => county_scene = CountyScene::DuplexLot,
             "--grocery-lot" => county_scene = CountyScene::GroceryLot,
+            "--gas-station-lot" => county_scene = CountyScene::GasStationLot,
             "--support-lot" => county_scene = CountyScene::SupportLot,
             "--seed" => seed = args.next().ok_or("--seed requires an integer")?.parse()?,
             "--help" | "-h" => {
                 println!(
-                    "Usage: viewer [--birch | --residential-street | --colonial-lot | --split-level-lot | --duplex-lot | --grocery-lot | --support-lot] [--seed N]\n{HELP}"
+                    "Usage: viewer [--birch | --residential-street | --colonial-lot | --split-level-lot | --duplex-lot | --grocery-lot | --gas-station-lot | --support-lot] [--seed N]\n{HELP}"
                 );
                 return Ok(());
             }
@@ -412,6 +454,7 @@ mod tests {
             (CountyScene::SplitLevelLot, CountyFixture::SplitLevelLot),
             (CountyScene::DuplexLot, CountyFixture::DuplexLot),
             (CountyScene::GroceryLot, CountyFixture::GroceryLot),
+            (CountyScene::GasStationLot, CountyFixture::GasStationLot),
             (CountyScene::SupportLot, CountyFixture::SupportLot),
         ] {
             let world = World::with_fixture(42, fixture);

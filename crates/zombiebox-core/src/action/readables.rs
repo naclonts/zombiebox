@@ -11,6 +11,7 @@ pub enum ReadableId {
     CountyDirectory = 4,
     CraftsmanNote = 5,
     GroceryNotice = 6,
+    FuelPrices = 7,
 }
 
 impl ReadableId {
@@ -22,6 +23,7 @@ impl ReadableId {
             4 => Some(Self::CountyDirectory),
             5 => Some(Self::CraftsmanNote),
             6 => Some(Self::GroceryNotice),
+            7 => Some(Self::FuelPrices),
             _ => None,
         }
     }
@@ -33,6 +35,7 @@ impl ReadableId {
             Self::CountyDirectory => "County directory",
             Self::CraftsmanNote => "Craftsman house note",
             Self::GroceryNotice => "Market notice",
+            Self::FuelPrices => "Fuel prices",
         }
     }
     pub const fn body(self) -> &'static str {
@@ -52,6 +55,7 @@ impl ReadableId {
             Self::CraftsmanNote => {
                 "Porch light stays on. The spare key is under the kitchen sink, and the pantry is stocked."
             }
+            Self::FuelPrices => "Fuel unavailable. Pay inside.",
             Self::GroceryNotice => {
                 "Store closed at dusk. Take only what you need, and keep the loading door clear."
             }
@@ -65,6 +69,7 @@ impl ReadableId {
             Self::CountyDirectory => c"County directory",
             Self::CraftsmanNote => c"Craftsman house note",
             Self::GroceryNotice => c"Market notice",
+            Self::FuelPrices => c"Fuel prices",
         }
     }
     pub const fn body_c(self) -> &'static std::ffi::CStr {
@@ -74,6 +79,7 @@ impl ReadableId {
             Self::SurvivorJournal => c"Noise carries after dusk. Move quietly, and keep an exit in view.",
             Self::CountyDirectory => c"County roads radiate from the town center. Bridges and marked routes are safest after dusk.",
             Self::CraftsmanNote => c"Porch light stays on. The spare key is under the kitchen sink, and the pantry is stocked.",
+            Self::FuelPrices => c"Fuel unavailable. Pay inside.",
             Self::GroceryNotice => c"Store closed at dusk. Take only what you need, and keep the loading door clear.",
         }
     }

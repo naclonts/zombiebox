@@ -1066,7 +1066,8 @@ pub fn build_chunk_terrain_mesh_with_config(
             let quad_z = tile_terrain_quad_00_10_01_11(terrain, lx, ly);
 
             // Resolve Case 1 (building perimeter wall) vs Case 2..5
-            let is_perimeter_wall = cell.building_id > 0 && !cell.indoor;
+            let is_perimeter_wall =
+                cell.building_id > 0 && !cell.indoor && raw_surface != Surface::Driveway;
             let is_interior = cell.building_id > 0 && cell.indoor;
             let interior_meta = VertexMeta::DEFAULT
                 .with_tag(GeometryTag::InteriorFloor)
@@ -1395,7 +1396,8 @@ mod tests {
     use crate::scene::SceneManager;
     use std::collections::HashMap;
     use zombiebox_core::{
-        ActionGame, CHUNK_SIZE, Ground, LandmarkKind, Position, Tile3D, WORLD_SIZE, Water, World,
+        ActionGame, CHUNK_SIZE, CountyFixture, Ground, LandmarkKind, LocalCell, Position, Tile3D,
+        WORLD_SIZE, Water, World,
     };
 
     fn find_river_bridge(world: &World) -> Position {
@@ -1678,6 +1680,39 @@ mod tests {
         let neg_mesh = build_chunk_terrain_mesh(&neg_snap);
         neg_mesh.validate().expect("negative void chunk valid");
         assert!(neg_mesh.is_empty());
+    }
+
+    #[test]
+    fn gas_canopy_keeps_driveway_surface_under_the_roof() {
+        let world = World::with_fixture(42, CountyFixture::GasStationLot);
+        let canopy = &world.fixture_plan().unwrap().structures[1];
+        let pos = canopy.transform.local_to_world(LocalCell::new(8, 4, 0));
+        let mut game = ActionGame::county_with_world(world);
+        assert_eq!(
+            game.teleport(Tile3D::from_pos(pos, 0)),
+            Some(Tile3D::from_pos(pos, 0))
+        );
+
+        let mut scene = SceneManager::new();
+        let frame = scene.prepare_at_focus(&game, pos, 0.016);
+        let chunk = frame
+            .dirty_chunks
+            .iter()
+            .find(|delta| delta.coord == ChunkCoord::from_pos(pos))
+            .unwrap();
+        let mesh = build_chunk_terrain_mesh(&chunk.snapshot);
+        assert!(mesh.indices.chunks_exact(3).any(|triangle| {
+            let vertices =
+                [triangle[0], triangle[1], triangle[2]].map(|index| &mesh.vertices[index as usize]);
+            let centroid = vertices
+                .iter()
+                .map(|vertex| Vec3::from_array(vertex.position))
+                .sum::<Vec3>()
+                / 3.0;
+            (centroid.x - pos.x as f32).abs() < 0.5
+                && (centroid.z - pos.y as f32).abs() < 0.5
+                && vertices[0].unpacked_meta().tag == GeometryTag::Road
+        }));
     }
 
     #[test]

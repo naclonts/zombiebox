@@ -629,6 +629,7 @@ fn readable_fixtures(spawn: Tile3D, county: bool) -> Vec<(ReadableId, PropAnchor
                     ReadableId::SurvivorJournal => PropId::Journal,
                     ReadableId::CraftsmanNote => PropId::Note,
                     ReadableId::GroceryNotice => PropId::Note,
+                    ReadableId::FuelPrices => PropId::FuelPylon,
                 },
                 span: PropSpan::new(1, 1),
                 attachment: CellAttachment::WallMount,
@@ -3667,14 +3668,134 @@ mod tests {
     }
 
     #[test]
+    fn gas_station_motorcycle_drives_in_and_reverses_out() {
+        let world = World::with_fixture(42, crate::CountyFixture::GasStationLot);
+        let transform = world.fixture_plan().unwrap().structures[1].transform;
+        let start_tile =
+            Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(8, -6, 0)), 0);
+        assert!(world.tile_at(start_tile.pos()).unwrap().ground.is_road());
+        let pump = transform.local_to_world(crate::LocalCell::new(5, 3, 0));
+        let (ix, iy) = transform.inward();
+        let inward = Vec2::new(ix as f32, iy as f32);
+        let mut game = ActionGame::county_with_world(world);
+        assert_eq!(game.teleport(start_tile), Some(start_tile));
+        game.monsters.clear();
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+        let initial = game.player.position;
+        let input = |throttle, brake| ActionInput {
+            ride: Some(RideInput::Motorcycle(MotorcycleInput {
+                throttle,
+                brake,
+                steer: 0.0,
+                lean: 0.0,
+            })),
+            ..Default::default()
+        };
+        for _ in 0..170 {
+            game.step(input(0.45, 0.0));
+        }
+        let inside = game.player.position;
+        assert!(
+            inside.distance(initial) > 8.5,
+            "drive in {initial:?} → {inside:?}"
+        );
+        assert!((inside - Tile3D::from_pos(pump, 0).center()).dot(inward) > 0.0);
+        for _ in 0..90 {
+            if game.hud().mounted.unwrap().speed_mph_x10 == 0 {
+                break;
+            }
+            game.step(input(0.0, 1.0));
+        }
+        for _ in 0..1100 {
+            game.step(input(0.0, 1.0));
+            if game.player.position.distance(initial) < 0.3 {
+                break;
+            }
+        }
+        let exit = game.player.position;
+        eprintln!("gas motorcycle start {initial:?}, inside {inside:?}, exit {exit:?}");
+        assert!(
+            exit.distance(initial) < 0.3,
+            "reverse out {inside:?} → {exit:?}"
+        );
+        assert_eq!(game.control_mode(), ControlMode::Motorcycle);
+        assert_eq!(game.hud().mounted.unwrap().condition_pct, 100);
+    }
+
+    #[test]
+    fn gas_mart_public_wc_and_till_are_reachable() {
+        let world = World::with_fixture(42, crate::CountyFixture::GasStationLot);
+        let plan = world.fixture_plan().unwrap();
+        let access = Tile3D::from_pos(plan.frontage.access, 0);
+        let transform = plan.structures[0].transform;
+        let till_uid = plan.structures[0]
+            .props_world()
+            .into_iter()
+            .find(|p| p.id == PropId::CheckoutTill)
+            .unwrap()
+            .anchor_uid;
+        let tile =
+            |u, v| Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(u, v, 0)), 0);
+        let mut game = ActionGame::county_with_world(world);
+        assert_eq!(game.teleport(access), Some(access));
+        game.monsters.clear();
+        let walk = |game: &mut ActionGame, u, v| {
+            let target = tile(u, v).center();
+            for _ in 0..480 {
+                let delta = target - game.player.position;
+                if delta.length() < 0.12 {
+                    return;
+                }
+                game.step(ActionInput {
+                    movement: delta.normalized(),
+                    ..Default::default()
+                });
+            }
+            panic!(
+                "gas route blocked at ({u},{v}), target {target:?}, player {:?}",
+                game.player.position
+            );
+        };
+        for (u, v) in [(18, -12), (18, -1), (10, -1)] {
+            walk(&mut game, u, v);
+        }
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::OpenDoor);
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        for (u, v) in [(10, 1), (8, 2)] {
+            walk(&mut game, u, v);
+        }
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::Search);
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        assert!(game.prop_opened.contains(&till_uid));
+        for (u, v) in [(9, 4), (3, 4), (3, 5)] {
+            walk(&mut game, u, v);
+        }
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::OpenDoor);
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        walk(&mut game, 3, 7);
+    }
+
+    #[test]
     fn grocery_public_and_service_routes_are_walkable_in_live_action() {
         let world = World::with_fixture(42, crate::CountyFixture::GroceryLot);
         let plan = world.fixture_plan().expect("grocery fixture");
         let access = Tile3D::from_pos(plan.frontage.access, 0);
         let transform = plan.structures[0].transform;
-        let tile = |u, v| {
-            Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(u, v, 0)), 0)
-        };
+        let tile =
+            |u, v| Tile3D::from_pos(transform.local_to_world(crate::LocalCell::new(u, v, 0)), 0);
         let mut game = ActionGame::county_with_world(world);
 
         let walk = |game: &mut ActionGame, u, v| {
@@ -3691,7 +3812,8 @@ mod tests {
             }
             panic!(
                 "grocery route blocked at local ({u}, {v}) / {target:?}, player {:?} {:?}",
-                game.player.position, game.outcome()
+                game.player.position,
+                game.outcome()
             );
         };
         let open = |game: &mut ActionGame, u, v| {

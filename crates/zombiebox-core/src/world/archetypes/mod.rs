@@ -44,6 +44,8 @@ pub enum CountyFixture {
     DuplexLot,
     /// One-floor open-span grocery fixture with public and service approaches.
     GroceryLot,
+    /// Opt-in two-structure roadside station.
+    GasStationLot,
 }
 
 impl CountyFixture {
@@ -74,6 +76,7 @@ pub fn plan_fixture(
         CountyFixture::SplitLevelLot => houses::SplitLevelParcel.plan(context),
         CountyFixture::DuplexLot => houses::DuplexParcel.plan(context),
         CountyFixture::GroceryLot => retail::GroceryParcel.plan(context),
+        CountyFixture::GasStationLot => retail::GasStationParcel.plan(context),
     }
 }
 

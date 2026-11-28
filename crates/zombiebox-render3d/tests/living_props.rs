@@ -261,9 +261,8 @@ fn furnished_chunk(prop_count: usize) -> (ActionGame, Position) {
             if ChunkCoord::from_pos(at.pos()) != ChunkCoord::from_pos(start.pos())
                 || x.rem_euclid(16) > 13
                 || ![at, Tile3D::new(x + 1, y, 0)].into_iter().all(|tile| {
-                    game.tile_render_info(tile.pos(), 0).is_some_and(|info| {
-                        info.kind == TileKind::Empty && !info.indoor
-                    })
+                    game.tile_render_info(tile.pos(), 0)
+                        .is_some_and(|info| info.kind == TileKind::Empty && !info.indoor)
                 })
             {
                 continue;

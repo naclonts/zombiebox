@@ -4370,6 +4370,133 @@ mod tests {
     }
 
     #[test]
+    fn gas_canopy_registers_outdoor_cells_and_roof_owner() {
+        use crate::spatial::SpatialWorld;
+        let world = World::with_fixture(42, CountyFixture::GasStationLot);
+        let plan = world.fixture_plan().unwrap();
+        let canopy = &plan.structures[1];
+        let (mut stage, _, _) = CountyStage::new(&world, 42);
+        for &(cx, cy) in &fixture_chunks(canopy) {
+            stage.materialize_chunk(&world, cx, cy);
+        }
+        let info = stage
+            .all_buildings
+            .iter()
+            .find(|b| b.uid == BuildingUid(canopy.id.0))
+            .copied()
+            .unwrap();
+        let tile = Tile3D::from_pos(
+            canopy
+                .transform
+                .local_to_world(crate::LocalCell::new(8, 3, 0)),
+            0,
+        );
+        assert!(!stage.is_indoor(tile));
+        let center = tile.center();
+        let mut colliders = Vec::new();
+        stage.colliders_in(
+            Aabb3::new(
+                center.extend(info.foundation_z - 0.1) - Vec3::new(20.0, 20.0, 0.0),
+                center.extend(info.foundation_z + FLOOR_H + 1.0) + Vec3::new(20.0, 20.0, 0.0),
+            ),
+            &mut colliders,
+        );
+        assert!(colliders.iter().any(|c| matches!(c.kind, ColliderKind::BuildingSlab { building_id, is_roof: true, .. } if building_id == info.id)));
+    }
+
+    #[test]
+    fn gas_price_pylon_opens_read_prompt() {
+        use crate::action::{ActionInput, InteractPrompt, ReadableId, Vec2};
+        let world = World::with_fixture(42, CountyFixture::GasStationLot);
+        let pylon = world.fixture_plan().unwrap().structures[1].signs_world()[0]
+            .anchor
+            .tile;
+        let mut game = crate::action::ActionGame::county_with_world(world);
+        let found = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+            .into_iter()
+            .any(|(dx, dy)| {
+                let tile = Tile3D::new(pylon.x + dx, pylon.y + dy, 0);
+                if game.teleport(tile) != Some(tile) {
+                    return false;
+                }
+                game.step(ActionInput {
+                    aim: Some(Vec2::new(-dx as f32, -dy as f32)),
+                    ..Default::default()
+                });
+                game.hud().interact_prompt == InteractPrompt::Read
+            });
+        assert!(found, "pylon should be readable from its approach");
+        game.step(ActionInput {
+            interact: true,
+            ..Default::default()
+        });
+        assert!(game.hud().read_open);
+        assert_eq!(game.hud().read_id, ReadableId::FuelPrices as u8);
+    }
+
+    #[test]
+    fn gas_station_structures_and_props_keep_ids_across_revisit() {
+        let world = World::with_fixture(42, CountyFixture::GasStationLot);
+        let plan = world.fixture_plan().unwrap();
+        let site = plan.structures[1].bounds.min;
+        let structure_uids =
+            [plan.structures[0].id, plan.structures[1].id].map(|id| BuildingUid(id.0));
+        let away = world.wake_position();
+        let mut game = crate::action::ActionGame::county_with_world(world);
+        assert!(game.teleport(Tile3D::from_pos(site, 0)).is_some());
+        let ids = |game: &crate::action::ActionGame| {
+            let mut ids: Vec<_> = game
+                .prop_anchors()
+                .iter()
+                .filter(|a| {
+                    matches!(
+                        a.id,
+                        super::super::PropId::Car
+                            | super::super::PropId::FuelPump
+                            | super::super::PropId::FuelPylon
+                    )
+                })
+                .filter(|a| a.tile.pos().distance(site) < 40)
+                .map(|a| a.anchor_uid)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        let structures = |game: &crate::action::ActionGame| {
+            let mut ids: Vec<_> = game
+                .buildings()
+                .iter()
+                .filter(|building| structure_uids.contains(&building.uid))
+                .map(|building| (building.uid.0, building.id))
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+        let before = ids(&game);
+        let before_structures = structures(&game);
+        assert_eq!(before_structures.len(), 2);
+        assert_eq!(
+            before.len(),
+            5,
+            "site={site:?} anchors={:?}",
+            game.prop_anchors()
+                .iter()
+                .filter(|a| matches!(
+                    a.id,
+                    super::super::PropId::Car
+                        | super::super::PropId::FuelPump
+                        | super::super::PropId::FuelPylon
+                ))
+                .collect::<Vec<_>>()
+        );
+        game.teleport(Tile3D::from_pos(away, 0)).unwrap();
+        assert!(structures(&game).is_empty());
+        game.teleport(Tile3D::from_pos(site, 0)).unwrap();
+        assert_eq!(before, ids(&game));
+        assert_eq!(before_structures, structures(&game));
+    }
+
+    #[test]
     fn blueprint_fixture_registers_roof_owner_and_single_prop_after_revisit() {
         use crate::spatial::SpatialWorld;
         let seed = u64::MAX;

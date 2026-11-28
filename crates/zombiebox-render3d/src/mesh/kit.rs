@@ -123,3 +123,22 @@ pub fn build_crt_television() -> MeshBuffer {
     piece(&mut mesh, [0.31, 0.20, 0.25], [0.37, 0.27, 0.27], BELT);
     mesh.build()
 }
+
+/// TODO(asset): replace this dispenser proxy with an authored fuel pump.
+pub fn build_fuel_pump() -> MeshBuffer {
+    let mut mesh = MeshBuilder::new();
+    piece(&mut mesh, [-0.38, 0.0, -0.30], [0.38, 1.50, 0.30], TRIM);
+    piece(&mut mesh, [-0.32, 1.04, -0.32], [0.32, 1.38, -0.30], SCREEN);
+    piece(&mut mesh, [0.38, 0.35, -0.18], [0.45, 1.20, -0.08], BELT);
+    piece(&mut mesh, [-0.40, 1.50, -0.32], [0.40, 1.65, 0.32], FRAME);
+    mesh.build()
+}
+
+/// TODO(asset): replace this price-pylon proxy with authored signage.
+pub fn build_fuel_pylon() -> MeshBuffer {
+    let mut mesh = MeshBuilder::new();
+    piece(&mut mesh, [-0.12, 0.0, -0.12], [0.12, 1.45, 0.12], FRAME);
+    piece(&mut mesh, [-0.45, 1.35, -0.25], [0.45, 2.40, 0.25], TRIM);
+    piece(&mut mesh, [-0.36, 1.55, -0.26], [0.36, 2.17, -0.25], SCREEN);
+    mesh.build()
+}
