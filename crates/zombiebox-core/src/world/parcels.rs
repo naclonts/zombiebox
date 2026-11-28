@@ -109,14 +109,18 @@ impl Parcels {
         let fixture_index = match fixture {
             CountyFixture::None => None,
             CountyFixture::ResidentialStreet => {
-                Self::select_starting_houses(seed, &mut parcels, spawn, terrain).or_else(|| {
-                    Self::select_fixture_parcel(
-                        seed,
-                        &mut parcels,
-                        spawn,
-                        CountyFixture::CraftsmanLot,
-                    )
-                })
+                let candidates = Self::residential_frontages(seed, &parcels, spawn, terrain);
+                let starter =
+                    Self::select_starting_houses(&mut parcels, &candidates).or_else(|| {
+                        Self::select_fixture_parcel(
+                            seed,
+                            &mut parcels,
+                            spawn,
+                            CountyFixture::CraftsmanLot,
+                        )
+                    });
+                Self::select_additional_houses(&mut parcels, &candidates);
+                starter
             }
             _ => Self::select_fixture_parcel(seed, &mut parcels, spawn, fixture),
         };
@@ -128,14 +132,13 @@ impl Parcels {
         }
     }
 
-    /// Consider closest road approaches first. Keep viable plans until all three
-    /// families can fit on distinct lots, then commit the assignment together.
-    fn select_starting_houses(
+    /// Rank residential frontages by their connected road distance from spawn.
+    fn residential_frontages(
         seed: u64,
-        parcels: &mut [Parcel],
+        parcels: &[Parcel],
         spawn: Position,
         terrain: &[Tile],
-    ) -> Option<usize> {
+    ) -> Vec<(usize, ParcelContext)> {
         let distances = road_distances(terrain, spawn);
         let mut candidates: Vec<_> = parcels
             .iter()
@@ -153,14 +156,24 @@ impl Parcels {
             })
             .collect();
         candidates.sort_unstable_by_key(|&(distance, y, x, index, _)| (distance, y, x, index));
+        candidates
+            .into_iter()
+            .map(|(_, _, _, index, context)| (index, context))
+            .collect()
+    }
 
+    /// Keep viable plans until all three starter families fit on distinct lots.
+    fn select_starting_houses(
+        parcels: &mut [Parcel],
+        candidates: &[(usize, ParcelContext)],
+    ) -> Option<usize> {
         let planners: [&dyn CompoundPlanner; 3] = [
             &archetypes::houses::CraftsmanStreetParcel,
             &archetypes::houses::RanchParcel,
             &archetypes::colonial::ColonialParcel,
         ];
         let mut fits: [Vec<(usize, ParcelPlan)>; 3] = Default::default();
-        for (_, _, _, index, context) in candidates {
+        for &(index, context) in candidates {
             for (planner, options) in planners.into_iter().zip(&mut fits) {
                 if let Ok(plan) = planner.plan(&context) {
                     options.push((index, plan));
@@ -183,6 +196,22 @@ impl Parcels {
             }
         }
         None
+    }
+
+    /// Give the wider duplex first choice of the remaining road-connected lots.
+    fn select_additional_houses(parcels: &mut [Parcel], candidates: &[(usize, ParcelContext)]) {
+        for fixture in [CountyFixture::DuplexLot, CountyFixture::SplitLevelLot] {
+            for (index, context) in candidates {
+                let parcel = &mut parcels[*index];
+                if parcel.plan.is_none()
+                    && let Ok(plan) = plan_fixture(fixture, context)
+                {
+                    parcel.plan = Some(plan);
+                    parcel.planned_outdoors = true;
+                    break;
+                }
+            }
+        }
     }
 
     fn select_fixture_parcel(
@@ -218,7 +247,7 @@ impl Parcels {
         let mut fallback = None;
         for index in candidates {
             let lot = parcels[index].lot;
-            if fixture == CountyFixture::ColonialLot && lot.district != District::Residential {
+            if fixture.furnished_lot() && lot.district != District::Residential {
                 continue;
             }
             let context = parcel_context(seed, lot);
@@ -227,7 +256,7 @@ impl Parcels {
             };
             if fixture != CountyFixture::BlueprintLot {
                 parcels[index].plan = Some(plan);
-                parcels[index].planned_outdoors = fixture == CountyFixture::ColonialLot;
+                parcels[index].planned_outdoors = fixture.furnished_lot();
                 return Some(index);
             }
             let crosses_seam = plan.structures.iter().any(|structure| {
@@ -515,7 +544,7 @@ mod reference_street_tests {
             let first = World::new(seed);
             let second = World::with_fixture(seed, CountyFixture::ResidentialStreet);
             let plans = first.fixture_plans();
-            assert_eq!(plans.len(), 3, "seed {seed} needs all three house families");
+            assert_eq!(plans.len(), 5, "seed {seed} needs all five house families");
             assert_eq!(plans, second.fixture_plans(), "seed {seed}");
             let county = first.county.as_ref().unwrap();
             let distances = road_distances(&county.tiles, first.wake_position());
@@ -534,6 +563,30 @@ mod reference_street_tests {
                 assert!(
                     total_steps <= 90,
                     "seed {seed}: {prefix} is {total_steps} tiles away"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_county_assigns_both_new_houses_to_connected_frontages() {
+        for seed in (0..64).chain([u64::MAX]) {
+            let world = World::new(seed);
+            let plans = world.fixture_plans();
+            assert_eq!(plans.len(), 5, "seed {seed}");
+            let county = world.county.as_ref().unwrap();
+            let distances = road_distances(&county.tiles, world.wake_position());
+            for prefix in ["split_level_", "duplex_"] {
+                let plan = plans
+                    .iter()
+                    .find(|plan| plan.structures[0].archetype.starts_with(prefix))
+                    .unwrap_or_else(|| panic!("seed {seed} is missing {prefix}"));
+                let access = plan.frontage.access;
+                let (dx, dy) = plan.frontage.side.inward();
+                let road = Position::new(access.x - dx, access.y - dy);
+                assert!(
+                    distances[road.index().unwrap()].is_some(),
+                    "seed {seed}: {prefix} road access is disconnected"
                 );
             }
         }

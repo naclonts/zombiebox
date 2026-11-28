@@ -3237,6 +3237,16 @@ mod tests {
                     }
                 }
             }
+            let plans = world.fixture_plans();
+            assert!(!plans.is_empty(), "seed {seed}: default county fixtures must be enumerated");
+            for plan in &plans {
+                for structure in &plan.structures {
+                    for (cx, cy) in fixture_chunks(structure) {
+                        stage.materialize_chunk(&world, cx, cy);
+                    }
+                    assert_blueprint_door_sweep(&mut stage, structure);
+                }
+            }
         }
         assert!(
             failures.is_empty(),
@@ -3467,12 +3477,14 @@ mod tests {
         )>,
         Vec<PropAnchor>,
     ) {
-        let info = stage
+        let mut info = stage
             .all_buildings
             .iter()
             .find(|b| b.uid == BuildingUid(structure.id.0))
             .copied()
             .expect("registered blueprint building");
+        // The live numeric slot is assigned as chunks stream in. The UID is stable.
+        info.id = 0;
         let mut cells = Vec::new();
         for (local, pos, _) in structure.world_cells() {
             let Some(cell) = stage.cell_at_world(Tile3D::from_pos(pos, local.floor)) else {
@@ -3492,12 +3504,19 @@ mod tests {
                 cell.load_bearing,
             ));
         }
-        let props = stage
+        cells.sort_by_key(|cell| (cell.0.x, cell.0.y, cell.1));
+        let expected_props: std::collections::HashSet<_> = structure
+            .props_world()
+            .into_iter()
+            .map(|prop| prop.anchor_uid)
+            .collect();
+        let mut props: Vec<_> = stage
             .blueprint_prop_anchors()
             .iter()
             .copied()
-            .filter(|anchor| anchor.anchor_uid >> 1 != 0)
+            .filter(|anchor| expected_props.contains(&anchor.anchor_uid))
             .collect();
+        props.sort_by_key(|anchor| anchor.anchor_uid);
         (info, cells, props)
     }
 
@@ -3506,7 +3525,7 @@ mod tests {
         let seed = 42;
         let world = World::new(seed);
         assert_eq!(world.fixture(), CountyFixture::ResidentialStreet);
-        assert_eq!(world.fixture_plans().len(), 3);
+        assert_eq!(world.fixture_plans().len(), 5);
         let plan = world.fixture_plan().expect("default fixture plan");
         let fridge = plan.structures[0]
             .props_world()
@@ -3793,7 +3812,7 @@ mod tests {
         for seed in [42, 63] {
             let world = World::new(seed);
             let plans = world.fixture_plans();
-            assert_eq!(plans.len(), 3);
+            assert_eq!(plans.len(), 5);
             let mut chunks: Vec<_> = plans
                 .iter()
                 .flat_map(|plan| plan.structures.iter())
@@ -3851,6 +3870,314 @@ mod tests {
             );
             assert_blueprint_door_sweep(&mut forward, structure);
             assert_blueprint_door_sweep(&mut reverse, structure);
+        }
+    }
+
+    #[test]
+    fn wp35_split_level_and_duplex_materialize_and_replay_live_contracts() {
+        use crate::world::blueprint::{BlueprintKind, DoorKind, SpaceId};
+        use std::collections::{BTreeSet, VecDeque};
+
+        fn reachable(
+            stage: &CountyStage,
+            start: Tile3D,
+            allowed: &BTreeSet<Tile3D>,
+        ) -> BTreeSet<Tile3D> {
+            let mut found = BTreeSet::from([start]);
+            let mut queue = VecDeque::from([start]);
+            while let Some(tile) = queue.pop_front() {
+                for next in [
+                    Tile3D::new(tile.x - 1, tile.y, tile.floor),
+                    Tile3D::new(tile.x + 1, tile.y, tile.floor),
+                    Tile3D::new(tile.x, tile.y - 1, tile.floor),
+                    Tile3D::new(tile.x, tile.y + 1, tile.floor),
+                ] {
+                    if allowed.contains(&next)
+                        && stage.is_walkable(next, false)
+                        && found.insert(next)
+                    {
+                        queue.push_back(next);
+                    }
+                }
+            }
+            found
+        }
+
+        for (fixture, expected) in [
+            (
+                CountyFixture::SplitLevelLot,
+                ["split_level_a", "split_level_b"],
+            ),
+            (CountyFixture::DuplexLot, ["duplex_a", "duplex_b"]),
+        ] {
+            let mut seen = BTreeSet::new();
+            let mut seam_seen = BTreeSet::new();
+            for seed in 0..64 {
+                let world = World::with_fixture(seed, fixture);
+                let plan = world.fixture_plan().expect("WP 3.5 fixture plan");
+                assert_eq!(plan.structures.len(), 1, "seed {seed} {fixture:?}");
+                let structure = &plan.structures[0];
+                let first_layout = seen.insert(structure.archetype);
+                let crossing_prop = structure.props_world().into_iter().find(|prop| {
+                    let tiles: Vec<_> = prop.span.covered_tiles(prop.tile).collect();
+                    tiles.iter().any(|a| tiles.iter().any(|b| a.x >> 4 != b.x >> 4 || a.y >> 4 != b.y >> 4))
+                });
+                if let Some(prop) = crossing_prop {
+                    seam_seen.insert(structure.archetype);
+                    let mut game = crate::action::ActionGame::county_with_world(world.clone());
+                    game.teleport(Tile3D::from_pos(prop.tile.pos(), prop.tile.floor)).expect("seam prop streams");
+                    let first = game.prop_anchors().iter().filter(|anchor| anchor.anchor_uid == prop.anchor_uid).count();
+                    assert_eq!(first, 1, "seed {seed} crossing prop has one registered anchor");
+                    let prop_pos = prop.tile.pos();
+                    let far_corner = [Position::new(32, 32), Position::new(480, 32), Position::new(32, 480), Position::new(480, 480)]
+                        .into_iter()
+                        .max_by_key(|corner| (corner.x - prop_pos.x).abs() + (corner.y - prop_pos.y).abs())
+                        .unwrap();
+                    let away = game.teleport(Tile3D::from_pos(far_corner, 0)).expect("stream away from seam prop");
+                    assert!(away.pos().distance(prop_pos) > 30, "seam revisit must leave active streaming range");
+                    game.teleport(Tile3D::from_pos(prop.tile.pos(), prop.tile.floor)).expect("revisit seam prop");
+                    let revisited = game.prop_anchors().iter().filter(|anchor| anchor.anchor_uid == prop.anchor_uid).count();
+                    assert_eq!(revisited, 1, "seed {seed} revisit must not duplicate crossing prop");
+                }
+                let chunks = fixture_chunks(structure);
+                let (mut forward, _, _) = CountyStage::new(&world, seed);
+                let (mut reverse, _, _) = CountyStage::new(&world, seed);
+                for &(cx, cy) in &chunks {
+                    forward.materialize_chunk(&world, cx, cy);
+                }
+                for &(cx, cy) in chunks.iter().rev() {
+                    reverse.materialize_chunk(&world, cx, cy);
+                }
+                let a = blueprint_snapshot(&forward, structure);
+                let b = blueprint_snapshot(&reverse, structure);
+                assert_eq!(a, b, "fixture replay differs by chunk order, seed {seed}");
+                assert!(a.1.iter().all(|cell| cell.2 == BuildingUid(structure.id.0)));
+                for door in &structure.blueprint.doors {
+                    let pos = structure.transform.local_to_world(door.cell);
+                    if let Some(cell) =
+                        forward.cell_mut_world(Tile3D::from_pos(pos, door.cell.floor))
+                    {
+                        let exterior = matches!(cell.kind, TileKind::Door { exterior: true, .. });
+                        cell.set_kind(
+                            TileKind::Door {
+                                open: true,
+                                exterior,
+                            },
+                            Material::WoodDoor,
+                        );
+                    }
+                }
+                assert_blueprint_door_sweep(&mut forward, structure);
+                assert_blueprint_door_sweep(&mut reverse, structure);
+
+                if fixture == CountyFixture::SplitLevelLot {
+                    assert!(!structure.blueprint.stairs.is_empty(), "seed {seed}");
+                    for link in &structure.blueprint.stairs {
+                        let lower = structure.transform.local_to_world(link.lower);
+                        let upper = structure.transform.local_to_world(link.upper);
+                        assert_eq!(lower, upper);
+                        let low_tile = Tile3D::from_pos(lower, link.lower.floor);
+                        let high_tile = Tile3D::from_pos(upper, link.upper.floor);
+                        assert_eq!(forward.stair_link(low_tile).unwrap().0, high_tile);
+                        assert_eq!(forward.stair_link(high_tile).unwrap().0, low_tile);
+                    }
+                    let info = forward
+                        .all_buildings
+                        .iter()
+                        .find(|b| b.uid == BuildingUid(structure.id.0))
+                        .unwrap();
+                    let wings: Vec<_> = structure
+                        .blueprint
+                        .rooms
+                        .iter()
+                        .map(|room| {
+                            let p = structure.transform.local_to_world(room.cells[0]);
+                            let index = info.wing_index_at(p, room.floor);
+                            (index, info.wing_at(index).floors)
+                        })
+                        .collect();
+                    assert!(wings.iter().any(|(_, floors)| *floors == 1), "seed {seed} {} wings {wings:?}", structure.archetype);
+                    assert!(wings.iter().any(|(_, floors)| *floors >= 2), "seed {seed} {} wings {wings:?}", structure.archetype);
+                    if first_layout {
+                        let link = structure.blueprint.stairs[0];
+                        let lower_landing = structure.transform.local_to_world(link.lower_landing);
+                        let mut game = crate::action::ActionGame::county_with_world(world.clone());
+                        assert_eq!(game.teleport(Tile3D::from_pos(lower_landing, link.lower.floor)).map(Tile3D::pos), Some(lower_landing));
+                        for _ in 0..40 { game.step(crate::action::ActionInput::default()); }
+                        game.step(crate::action::ActionInput { interact: true, ..Default::default() });
+                        assert_eq!(game.player_pose().floor, link.upper.floor, "seed {seed} stair up");
+                        for _ in 0..40 { game.step(crate::action::ActionInput::default()); }
+                        game.step(crate::action::ActionInput { interact: true, ..Default::default() });
+                        assert_eq!(game.player_pose().floor, link.lower.floor, "seed {seed} stair down");
+                    }
+                } else {
+                    for door in &structure.blueprint.doors {
+                        let pos = structure.transform.local_to_world(door.cell);
+                        if let Some(cell) = forward.cell_mut_world(Tile3D::from_pos(pos, door.cell.floor)) {
+                            let exterior = matches!(cell.kind, TileKind::Door { exterior: true, .. });
+                            cell.set_kind(TileKind::Door { open: true, exterior }, Material::WoodDoor);
+                        }
+                    }
+                    let exterior: Vec<_> = structure
+                        .blueprint
+                        .doors
+                        .iter()
+                        .filter(|door| door.kind == DoorKind::Exterior)
+                        .collect();
+                    assert_eq!(
+                        exterior.len(),
+                        2,
+                        "seed {seed} must have both unit entrances"
+                    );
+                    let units: BTreeSet<_> = exterior
+                        .iter()
+                        .map(|door| {
+                            let room_id = match door.connects.0 {
+                                SpaceId::Room(id) => id,
+                                _ => match door.connects.1 {
+                                    SpaceId::Room(id) => id,
+                                    _ => panic!("entry door must name a room"),
+                                },
+                            };
+                            structure
+                                .blueprint
+                                .rooms
+                                .iter()
+                                .find(|room| room.id == room_id)
+                                .and_then(|room| room.unit)
+                                .expect("entry room has unit ownership")
+                        })
+                        .collect();
+                    assert_eq!(
+                        units.len(),
+                        2,
+                        "seed {seed} has distinct unit entry ownership"
+                    );
+                    let room_units: BTreeSet<_> = structure
+                        .blueprint
+                        .rooms
+                        .iter()
+                        .filter_map(|room| room.unit)
+                        .collect();
+                    assert_eq!(room_units, units, "seed {seed} room ownership");
+                    let mut party_wall = None;
+                    for (&local, cell) in &structure.blueprint.cells {
+                        if cell.kind != BlueprintKind::InteriorWall {
+                            continue;
+                        }
+                        for (du, dv) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                            let neighbor =
+                                crate::LocalCell::new(local.u + du, local.v + dv, local.floor);
+                            let Some(other) = structure.blueprint.cells.get(&neighbor) else {
+                                continue;
+                            };
+                            let room_a = structure
+                                .blueprint
+                                .rooms
+                                .iter()
+                                .find(|r| r.cells.contains(&neighbor));
+                            let room_b = structure.blueprint.rooms.iter().find(|r| {
+                                r.cells.contains(&crate::LocalCell::new(
+                                    local.u - du,
+                                    local.v - dv,
+                                    local.floor,
+                                ))
+                            });
+                            if let (Some(a), Some(b)) = (room_a, room_b) {
+                                if a.unit != b.unit
+                                    && a.unit.is_some()
+                                    && b.unit.is_some()
+                                    && other.kind == BlueprintKind::Floor
+                                {
+                                    party_wall = Some(local);
+                                }
+                            }
+                        }
+                    }
+                    let party_wall = party_wall.expect("seed must retain a solid party wall");
+                    let wall_world = structure.transform.local_to_world(party_wall);
+                    assert_eq!(
+                        forward
+                            .cell_at_world(Tile3D::from_pos(wall_world, party_wall.floor))
+                            .unwrap()
+                            .kind,
+                        TileKind::InteriorWall,
+                        "seed {seed} party wall must materialize intact"
+                    );
+                    let mut unit_reachable = BTreeSet::new();
+                    for door in exterior {
+                        let entry_room = match door.connects.0 {
+                            SpaceId::Room(id) => id,
+                            _ => match door.connects.1 {
+                                SpaceId::Room(id) => id,
+                                _ => panic!("entry door must name its room"),
+                            },
+                        };
+                        let room = structure
+                            .blueprint
+                            .rooms
+                            .iter()
+                            .find(|room| room.id == entry_room)
+                            .expect("entry room");
+                        let unit = room.unit.expect("unit-owned entry room");
+                        let mut allowed: BTreeSet<_> = structure
+                            .blueprint
+                            .rooms
+                            .iter()
+                            .filter(|candidate| candidate.unit == Some(unit))
+                            .flat_map(|candidate| candidate.cells.iter())
+                            .map(|cell| {
+                                Tile3D::from_pos(
+                                    structure.transform.local_to_world(*cell),
+                                    cell.floor,
+                                )
+                            })
+                            .collect();
+                        for intent in &structure.blueprint.doors {
+                            let joins_unit = [intent.connects.0, intent.connects.1].iter().any(|space| match space {
+                                SpaceId::Room(id) => structure.blueprint.rooms.iter().find(|r| r.id == *id).is_some_and(|r| r.unit == Some(unit)),
+                                SpaceId::Unit(id) => *id == unit,
+                                SpaceId::Exterior => false,
+                            });
+                            if joins_unit {
+                                let pos = structure.transform.local_to_world(intent.cell);
+                                allowed.insert(Tile3D::from_pos(pos, intent.cell.floor));
+                            }
+                        }
+                        let door_pos = structure.transform.local_to_world(door.cell);
+                        let (dx, dy) = plan.frontage.side.inward();
+                        let entry_room_cells: BTreeSet<_> = room
+                            .cells
+                            .iter()
+                            .map(|cell| Tile3D::from_pos(structure.transform.local_to_world(*cell), cell.floor))
+                            .collect();
+                        let start = [
+                            Tile3D::new(door_pos.x - 1, door_pos.y, door.cell.floor),
+                            Tile3D::new(door_pos.x + 1, door_pos.y, door.cell.floor),
+                            Tile3D::new(door_pos.x, door_pos.y - 1, door.cell.floor),
+                            Tile3D::new(door_pos.x, door_pos.y + 1, door.cell.floor),
+                        ]
+                        .into_iter()
+                        .find(|candidate| entry_room_cells.contains(candidate) && forward.is_walkable(*candidate, false))
+                        .unwrap_or_else(|| panic!("seed {seed} entry door {:?} does not border a walkable cell in room {entry_room}; frontage inward {dx},{dy}", door.cell));
+                        let reached = reachable(&forward, start, &allowed);
+                        assert!(reached.contains(&start), "seed {seed} unit entry not walkable");
+                        for target_room in structure.blueprint.rooms.iter().filter(|candidate| candidate.unit == Some(unit)) {
+                            assert!(target_room.cells.iter().any(|cell| reached.contains(&Tile3D::from_pos(structure.transform.local_to_world(*cell), cell.floor))), "seed {seed} unit {unit} cannot reach room {}", target_room.id);
+                        }
+                        unit_reachable.insert(unit);
+                    }
+                    assert_eq!(
+                        unit_reachable, units,
+                        "both duplex homes must be reachable from their doors"
+                    );
+                }
+                if expected.iter().all(|key| seen.contains(key) && seam_seen.contains(key)) { break; }
+            }
+            for key in expected {
+                assert!(seen.contains(key), "missing layout {key} for {fixture:?}");
+                assert!(seam_seen.contains(key), "missing chunk-crossing prop for {key}");
+            }
         }
     }
 

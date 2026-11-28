@@ -191,8 +191,7 @@ pub struct World {
 }
 
 impl World {
-    /// Default county generation includes all three furnished house families
-    /// near the starting point.
+    /// Default county generation includes all five furnished house families.
     pub fn new(seed: u64) -> Self {
         Self::with_fixture(seed, CountyFixture::ResidentialStreet)
     }
@@ -246,7 +245,7 @@ impl World {
             .map_or(CountyFixture::None, |c| c.fixture)
     }
 
-    /// The opt-in fixture parcel plan. Returns `None` when the fixture is off.
+    /// The primary authored parcel plan. Returns `None` with legacy generation.
     pub fn fixture_plan(&self) -> Option<&ParcelPlan> {
         self.county.as_ref()?.parcels.fixture_plan()
     }

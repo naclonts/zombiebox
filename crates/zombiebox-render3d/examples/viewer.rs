@@ -22,6 +22,8 @@ enum CountyScene {
     Default,
     ResidentialStreet,
     ColonialLot,
+    SplitLevelLot,
+    DuplexLot,
     SupportLot,
 }
 
@@ -31,6 +33,8 @@ fn county_game(seed: u64, scene: CountyScene) -> Result<ActionGame, String> {
             return Ok(ActionGame::county(seed));
         }
         CountyScene::ColonialLot => CountyFixture::ColonialLot,
+        CountyScene::SplitLevelLot => CountyFixture::SplitLevelLot,
+        CountyScene::DuplexLot => CountyFixture::DuplexLot,
         CountyScene::SupportLot => CountyFixture::SupportLot,
     };
     let world = World::with_fixture(seed, fixture);
@@ -367,11 +371,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--birch" => birch = true,
             "--residential-street" => county_scene = CountyScene::ResidentialStreet,
             "--colonial-lot" => county_scene = CountyScene::ColonialLot,
+            "--split-level-lot" => county_scene = CountyScene::SplitLevelLot,
+            "--duplex-lot" => county_scene = CountyScene::DuplexLot,
             "--support-lot" => county_scene = CountyScene::SupportLot,
             "--seed" => seed = args.next().ok_or("--seed requires an integer")?.parse()?,
             "--help" | "-h" => {
                 println!(
-                    "Usage: viewer [--birch | --residential-street | --colonial-lot | --support-lot] [--seed N]\n{HELP}"
+                    "Usage: viewer [--birch | --residential-street | --colonial-lot | --split-level-lot | --duplex-lot | --support-lot] [--seed N]\n{HELP}"
                 );
                 return Ok(());
             }
@@ -400,6 +406,8 @@ mod tests {
         );
         for (scene, fixture) in [
             (CountyScene::ColonialLot, CountyFixture::ColonialLot),
+            (CountyScene::SplitLevelLot, CountyFixture::SplitLevelLot),
+            (CountyScene::DuplexLot, CountyFixture::DuplexLot),
             (CountyScene::SupportLot, CountyFixture::SupportLot),
         ] {
             let world = World::with_fixture(42, fixture);

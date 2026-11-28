@@ -1872,7 +1872,7 @@ fn prune_unreachable(
     let mut removed = 0u16;
     loop {
         let passable = furnished_passable(blueprint);
-        let mut door_approaches: BTreeMap<u8, Vec<LocalCell>> = BTreeMap::new();
+        let mut door_approaches: BTreeMap<(u8, Option<u8>), Vec<LocalCell>> = BTreeMap::new();
         for door in &blueprint.doors {
             let normal = door.tangent.normal();
             for sign in [-1, 1] {
@@ -1882,7 +1882,15 @@ fn prune_unreachable(
                     door.cell.floor,
                 );
                 if passable.contains(&cell) {
-                    door_approaches.entry(cell.floor).or_default().push(cell);
+                    let unit = blueprint
+                        .rooms
+                        .iter()
+                        .find(|room| room.cells.contains(&cell))
+                        .and_then(|room| room.unit);
+                    door_approaches
+                        .entry((cell.floor, unit))
+                        .or_default()
+                        .push(cell);
                 }
             }
         }

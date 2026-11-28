@@ -400,9 +400,9 @@ pub(super) fn generate_with_meta(
             } else {
                 District::Residential
             };
-            // The first three blocks face the starting street before rotation.
-            // Keep enough depth for the three furnished starter houses.
-            let starter_frontage = reserve_starting_houses && row == 0 && col < 3;
+            // Keep the starting street's five blocks deep enough for the
+            // furnished families, including the two larger footprints.
+            let starter_frontage = reserve_starting_houses && row == 0;
             if district == District::Residential
                 && !starter_frontage
                 && (bottom - y >= 33)

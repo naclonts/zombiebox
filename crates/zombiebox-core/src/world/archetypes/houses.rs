@@ -151,6 +151,10 @@ impl CompoundPlanner for CraftsmanStreetParcel {
     }
 }
 
+mod split_level;
+pub use split_level::SplitLevelParcel;
+mod duplex;
+pub use duplex::DuplexParcel;
 mod ranch;
 #[cfg(test)]
 use ranch::{GARAGE_ROOM, UTILITY, ranch_garage_door, ranch_house, ranch_public_door};
@@ -1457,5 +1461,144 @@ mod tests {
             craftsman_structure(1, small, frontage(CardinalDir::North)),
             Err(FitError::InvalidLot { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod wp35_matrix {
+    use super::*;
+    use crate::world::archetypes::colonial::ColonialParcel;
+    use crate::world::blueprint::{CardinalDir, Frontage, GridRect, ParcelContext, ZoneKind};
+    use std::collections::{BTreeSet, VecDeque};
+
+    #[test]
+    fn five_house_families_fit_seed_and_orientation_matrix() {
+        let planners: [(&str, &dyn CompoundPlanner); 5] = [
+            ("craftsman", &CraftsmanParcel),
+            ("ranch", &RanchParcel),
+            ("colonial", &ColonialParcel),
+            ("split", &SplitLevelParcel),
+            ("duplex", &DuplexParcel),
+        ];
+        let mut seen = BTreeSet::new();
+        for seed in 0..64 {
+            for side in [
+                CardinalDir::North,
+                CardinalDir::East,
+                CardinalDir::South,
+                CardinalDir::West,
+            ] {
+                let bounds = GridRect::new(Position::new(100, 100), Position::new(130, 130));
+                let access = match side {
+                    CardinalDir::North => Position::new(115, 100),
+                    CardinalDir::South => Position::new(115, 130),
+                    CardinalDir::West => Position::new(100, 115),
+                    CardinalDir::East => Position::new(130, 115),
+                };
+                let context = ParcelContext {
+                    seed,
+                    bounds,
+                    frontage: Frontage { side, access },
+                    zone: ZoneKind::Residential,
+                };
+                for (family, planner) in planners {
+                    let plan = planner
+                        .plan(&context)
+                        .unwrap_or_else(|e| panic!("{family} seed {seed} {side:?}: {e:?}"));
+                    let bp = &plan.structures[0].blueprint;
+                    bp.validate()
+                        .unwrap_or_else(|e| panic!("{family} seed {seed} {side:?}: {e:?}"));
+                    seen.insert(plan.structures[0].archetype);
+                    for kind in [
+                        RoomKind::Living,
+                        RoomKind::Kitchen,
+                        RoomKind::Bedroom,
+                        RoomKind::Bathroom,
+                    ] {
+                        assert!(
+                            bp.rooms
+                                .iter()
+                                .any(|r| r.kind == kind
+                                    && bp.props.iter().any(|p| p.room == Some(r.id))),
+                            "{family} seed {seed} {side:?}: {kind:?}"
+                        );
+                    }
+                    if family == "split" {
+                        assert_eq!(bp.stairs.len(), 1);
+                        assert!(
+                            bp.cells
+                                .iter()
+                                .any(|(p, c)| p.floor == 0 && c.wing == 0 && c.roof)
+                        );
+                        assert!(bp.cells.iter().any(|(p, c)| p.floor == 1 && c.wing == 1));
+                        assert!(!bp.cells.iter().any(|(p, c)| p.floor == 1 && c.wing == 0));
+                        assert!(
+                            bp.rooms
+                                .iter()
+                                .all(|r| r.cells.iter().all(|p| bp.cells[p].wing == r.wing)),
+                            "split seed {seed} {side:?}: room crosses wing"
+                        );
+                    }
+                    if family == "duplex" {
+                        let doors: Vec<_> = bp
+                            .doors
+                            .iter()
+                            .filter(|d| d.kind == DoorKind::Exterior)
+                            .collect();
+                        assert_eq!(doors.len(), 2);
+                        for unit in [0, 1] {
+                            assert_eq!(bp.cells[&doors[usize::from(unit)].cell].wing, unit);
+                            for kind in [
+                                RoomKind::Living,
+                                RoomKind::Kitchen,
+                                RoomKind::Bedroom,
+                                RoomKind::Bathroom,
+                            ] {
+                                assert!(bp.rooms.iter().any(|r| r.unit == Some(unit)
+                                    && r.kind == kind
+                                    && bp.props.iter().any(|p| p.room == Some(r.id))));
+                            }
+                        }
+                        for unit in [0, 1] {
+                            let entry = doors[unit].cell;
+                            let mut queue = VecDeque::from([entry]);
+                            let mut component = BTreeSet::from([entry]);
+                            while let Some(p) = queue.pop_front() {
+                                for (du, dv) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                                    let n = LocalCell::new(p.u + du, p.v + dv, 0);
+                                    if bp.cell(n).is_some_and(|c| c.kind.walkable())
+                                        && component.insert(n)
+                                    {
+                                        queue.push_back(n);
+                                    }
+                                }
+                            }
+                            assert!(
+                                !component.contains(&doors[1 - unit].cell),
+                                "duplex seed {seed} {side:?}: units connected"
+                            );
+                            for room in bp.rooms.iter().filter(|r| r.unit == Some(unit as u8)) {
+                                assert!(
+                                    room.cells.iter().any(|c| component.contains(c)),
+                                    "duplex seed {seed} {side:?}: room {} unreachable",
+                                    room.id
+                                );
+                            }
+                        }
+                        let bounds = bp.local_bounds();
+                        let party = (bounds.min.x + bounds.max.x) / 2;
+                        assert!(
+                            (1..18).all(|v| bp
+                                .cell(LocalCell::new(party, v, 0))
+                                .is_some_and(|c| c.kind.is_wall())),
+                            "duplex seed {seed} {side:?}: party wall"
+                        );
+                    }
+                }
+            }
+        }
+        for key in ["split_level_a", "split_level_b", "duplex_a", "duplex_b"] {
+            assert!(seen.contains(key), "missing {key}");
+        }
     }
 }

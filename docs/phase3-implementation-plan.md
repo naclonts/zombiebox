@@ -13,7 +13,7 @@ Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [
 
 Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
 
-> The current county start includes one furnished Craftsman, Ranch, and Colonial within walking distance of spawn. `CountyFixture::ColonialLot` isolates the Colonial for review, `CountyFixture::BlueprintLot` selects the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
+> The current county start includes one furnished Craftsman, Ranch, and Colonial within walking distance of spawn. Regular generation also places one split-level and one duplex on separate road-connected residential lots. `CountyFixture::{ColonialLot, SplitLevelLot, DuplexLot}` isolates a furnished family for review, `CountyFixture::BlueprintLot` selects the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
 
 ## 1. Ownership and shared contracts
 
@@ -289,8 +289,10 @@ Working plan and host review are recorded in the [residential handoff](phase3-wp
 
 ### WP 3.5 — Stepped split-level and duplex
 
+Handoff: [WP 3.5 handoff](phase3-wp35-handoff.md).
+
 - **Owns** residential definitions and the house family test matrix.
-- **Build** both arrangements per family. Use the shared stair/link contract for the stepped house and distinct unit, room, wing and entry ownership for the duplex. Add any needed small frontage helpers for paired entries.
+- **Build** both arrangements per family. Use the shared stair/link contract for the stepped house and distinct unit, room, wing and entry ownership for the duplex. Add any needed small frontage helpers for paired entries. Place one house from each new family on a separate road-connected residential lot in regular county generation.
 - **Accept** all five families across seeds `0..63` and four orientations at blueprint level. Verify their archetype-specific topology and required furnishing. Run live stair and wing-cutaway checks for stepped houses and check both duplex entrances and the intact party wall. Replay seam placements and compare normalized plan output.
 
 ### WP 3.6 — Open-span grocery

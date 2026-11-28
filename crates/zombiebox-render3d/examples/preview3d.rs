@@ -27,6 +27,8 @@ enum SceneChoice {
     CountyCraftsman,
     CountyResidentialStreet,
     CountyColonial,
+    CountySplitLevel,
+    CountyDuplex,
     CountyMountains,
 }
 
@@ -43,6 +45,8 @@ impl SceneChoice {
             "craftsman" | "craftsman-lot" => Ok(Self::CountyCraftsman),
             "residential-street" => Ok(Self::CountyResidentialStreet),
             "colonial" | "colonial-lot" => Ok(Self::CountyColonial),
+            "split-level" | "split-level-lot" => Ok(Self::CountySplitLevel),
+            "duplex" | "duplex-lot" => Ok(Self::CountyDuplex),
             "mountains" | "county-mountains" => Ok(Self::CountyMountains),
             other => Err(format!("Unknown --scene '{other}'")),
         }
@@ -677,13 +681,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 World::with_fixture(seed, CountyFixture::ResidentialStreet)
             }
             SceneChoice::CountyColonial => World::with_fixture(seed, CountyFixture::ColonialLot),
+            SceneChoice::CountySplitLevel => {
+                World::with_fixture(seed, CountyFixture::SplitLevelLot)
+            }
+            SceneChoice::CountyDuplex => World::with_fixture(seed, CountyFixture::DuplexLot),
             _ => World::new(42),
         };
         let mut county = ActionGame::county_with_world(world.clone());
         let mut mgr = SceneManager::new();
         if matches!(
             scene,
-            SceneChoice::CountyResidentialStreet | SceneChoice::CountyColonial
+            SceneChoice::CountyResidentialStreet
+                | SceneChoice::CountyColonial
+                | SceneChoice::CountySplitLevel
+                | SceneChoice::CountyDuplex
         ) {
             let plans = world.fixture_plans();
             for plan in &plans {
@@ -701,13 +712,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let plan = world.fixture_plan().ok_or("no compatible fixture lot")?;
             let (mut ix, mut iy) = plan.frontage.side.inward();
-            let (target, scene_name, orbit_distance) = if scene == SceneChoice::CountyColonial {
+            let single_house = match scene {
+                SceneChoice::CountyColonial => Some("colonial"),
+                SceneChoice::CountySplitLevel => Some("split-level"),
+                SceneChoice::CountyDuplex => Some("duplex"),
+                _ => None,
+            };
+            let (target, scene_name, orbit_distance) = if let Some(scene_name) = single_house {
                 let structure = &plan.structures[0];
                 let door = structure.front_door;
                 let (target, distance) = match focus_name.as_str() {
+                    "overview" if scene == SceneChoice::CountyDuplex => {
+                        let bounds = structure.bounds;
+                        let (cx, cy) = (
+                            (bounds.min.x + bounds.max.x) / 2,
+                            (bounds.min.y + bounds.max.y) / 2,
+                        );
+                        let (x, y) = if ix == 0 {
+                            (cx, door.y - iy * 7)
+                        } else {
+                            (door.x - ix * 7, cy)
+                        };
+                        (Tile3D::new(x, y, 0), 1.65)
+                    }
                     "overview" => (Tile3D::new(door.x - ix * 5, door.y - iy * 5, 0), 1.35),
                     "upstairs" => {
-                        let landing = structure.blueprint.stairs[0].upper_landing;
+                        let landing = structure
+                            .blueprint
+                            .stairs
+                            .first()
+                            .ok_or("fixture has no stairs")?
+                            .upper_landing;
                         (
                             Tile3D::from_pos(
                                 structure.transform.local_to_world(landing),
@@ -722,7 +757,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .rooms
                             .iter()
                             .find(|room| room.kind == RoomKind::Bedroom)
-                            .ok_or("Colonial fixture has no bedroom")?;
+                            .ok_or("fixture has no bedroom")?;
                         let count = room.cells.len() as i32;
                         let (u, v) = room
                             .cells
@@ -734,7 +769,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .min_by_key(|cell| {
                                 (cell.u * count - u).abs() + (cell.v * count - v).abs()
                             })
-                            .ok_or("Colonial bedroom is empty")?;
+                            .ok_or("fixture bedroom is empty")?;
                         (
                             Tile3D::from_pos(
                                 structure.transform.local_to_world(*target),
@@ -745,31 +780,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {
                         return Err(
-                            "--focus for colonial must be overview, upstairs or bedroom".into()
+                            "--focus for a house must be overview, upstairs or bedroom".into()
                         );
                     }
                 };
-                (target, "colonial", distance)
+                (target, scene_name, distance)
             } else {
                 let target = match focus_name.as_str() {
                     "overview" => {
                         let front = plan.structures[0].front_door;
-                        let bounds = plans.iter().fold(
-                            zombiebox_core::GridRect::new(front, front),
-                            |bounds, plan| {
-                                let door = plan.structures[0].front_door;
-                                zombiebox_core::GridRect::new(
-                                    Position::new(
-                                        bounds.min.x.min(door.x),
-                                        bounds.min.y.min(door.y),
-                                    ),
-                                    Position::new(
-                                        bounds.max.x.max(door.x),
-                                        bounds.max.y.max(door.y),
-                                    ),
-                                )
-                            },
-                        );
+                        let bounds = plans
+                            .iter()
+                            .filter(|plan| {
+                                let family = plan.structures[0].archetype;
+                                ["craftsman_", "ranch_", "colonial_"]
+                                    .iter()
+                                    .any(|prefix| family.starts_with(prefix))
+                            })
+                            .fold(
+                                zombiebox_core::GridRect::new(front, front),
+                                |bounds, plan| {
+                                    let door = plan.structures[0].front_door;
+                                    zombiebox_core::GridRect::new(
+                                        Position::new(
+                                            bounds.min.x.min(door.x),
+                                            bounds.min.y.min(door.y),
+                                        ),
+                                        Position::new(
+                                            bounds.max.x.max(door.x),
+                                            bounds.max.y.max(door.y),
+                                        ),
+                                    )
+                                },
+                            );
                         Position::new(
                             (bounds.min.x + bounds.max.x) / 2 - ix * 6,
                             (bounds.min.y + bounds.max.y) / 2 - iy * 6,

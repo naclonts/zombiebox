@@ -31,12 +31,25 @@ pub enum CountyFixture {
     BlueprintLot,
     /// Replace one existing county lot with the furnished WP 3.2 Craftsman.
     CraftsmanLot,
-    /// One Craftsman, Ranch and Colonial near the normal county start.
+    /// The default county with all five furnished house families.
     ResidentialStreet,
     /// Small aligned two-floor support and stairs fixture.
     SupportLot,
     /// A furnished two-floor Colonial house.
     ColonialLot,
+    /// A furnished split-level house with two roof wings.
+    SplitLevelLot,
+    /// Two furnished side-by-side dwellings on one lot.
+    DuplexLot,
+}
+
+impl CountyFixture {
+    pub(super) fn furnished_lot(self) -> bool {
+        matches!(
+            self,
+            Self::ColonialLot | Self::SplitLevelLot | Self::DuplexLot
+        )
+    }
 }
 
 /// Resolve the selected fixture through the same parcel-composition seam the
@@ -55,6 +68,8 @@ pub fn plan_fixture(
         }
         CountyFixture::SupportLot => support_fixture::SupportFixtureParcel.plan(context),
         CountyFixture::ColonialLot => colonial::ColonialParcel.plan(context),
+        CountyFixture::SplitLevelLot => houses::SplitLevelParcel.plan(context),
+        CountyFixture::DuplexLot => houses::DuplexParcel.plan(context),
     }
 }
 

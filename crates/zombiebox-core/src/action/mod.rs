@@ -3579,7 +3579,16 @@ mod tests {
 
         for seed in [42, u64::MAX] {
             let world = World::new(seed);
-            let plans = world.fixture_plans();
+            let plans: Vec<_> = world
+                .fixture_plans()
+                .into_iter()
+                .filter(|plan| {
+                    let family = plan.structures[0].archetype;
+                    ["craftsman_", "ranch_", "colonial_"]
+                        .iter()
+                        .any(|prefix| family.starts_with(prefix))
+                })
+                .collect();
             assert_eq!(plans.len(), 3);
             let spawn = ActionGame::county_with_world(world.clone())
                 .player_tile()
@@ -3766,6 +3775,11 @@ mod tests {
             .fixture_plans()
             .iter()
             .flat_map(|p| &p.structures)
+            .filter(|s| {
+                ["craftsman_", "ranch_", "colonial_"]
+                    .iter()
+                    .any(|prefix| s.archetype.starts_with(prefix))
+            })
             .flat_map(|structure| {
                 structure
                     .blueprint

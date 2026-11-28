@@ -11,7 +11,7 @@ use crate::world::{floorplan, furnish};
 pub struct ColonialParcel;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Arrangement {
+pub(super) enum Arrangement {
     CenterHall,
     SideStair,
 }
@@ -92,7 +92,7 @@ impl CompoundPlanner for ColonialParcel {
     }
 }
 
-fn colonial_blueprint(
+pub(super) fn colonial_blueprint(
     w: i32,
     d: i32,
     arrangement: Arrangement,
