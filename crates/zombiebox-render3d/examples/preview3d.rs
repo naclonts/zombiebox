@@ -3,14 +3,15 @@
 use glam::{UVec2, Vec3};
 use std::path::PathBuf;
 use zombiebox_core::{
-    ActionGame, Ground, LandmarkKind, Position, Tile3D, WORLD_SIZE, Water, World,
+    ActionGame, CountyFixture, Ground, LandmarkKind, Position, Tile3D, WORLD_SIZE, Water, World,
 };
 use zombiebox_render3d::coords::{heading_to_render_quat, sim_to_render_point};
 use zombiebox_render3d::{
     CameraMode, CameraRig, CameraTarget, CardinalDir, ChunkCoord, FaceMask, GeometryTag,
     GpuContext, GpuRenderer, InstanceBatch, InstanceRaw, InternalResolutionPolicy, MaterialFlags,
-    MeshBuilder, PointLightGpu, RenderPipelineConfig, RidgeAxis, SceneLightingUniforms,
-    SceneManager, SimVec3, TerrainMeshConfig, VertexMeta, sync_terrain_chunks_to_gpu,
+    MeshBuilder, PointLightGpu, Presentation, RenderPipelineConfig, RidgeAxis,
+    SceneLightingUniforms, SceneManager, SimVec3, TerrainMeshConfig, VertexMeta,
+    sync_terrain_chunks_to_gpu,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -23,6 +24,7 @@ enum SceneChoice {
     CountyDowntown,
     CountyWoods,
     CountyCraftsman,
+    CountyResidentialStreet,
     CountyMountains,
 }
 
@@ -37,6 +39,7 @@ impl SceneChoice {
             "downtown" | "county-downtown" => Ok(Self::CountyDowntown),
             "woods" | "county-woods" => Ok(Self::CountyWoods),
             "craftsman" | "craftsman-lot" => Ok(Self::CountyCraftsman),
+            "residential-street" => Ok(Self::CountyResidentialStreet),
             "mountains" | "county-mountains" => Ok(Self::CountyMountains),
             other => Err(format!("Unknown --scene '{other}'")),
         }
@@ -548,11 +551,13 @@ fn focus_for_county_scene(world: &World, county: &mut ActionGame, scene: SceneCh
         SceneChoice::CountyRiverBridge => find_river_bridge(world),
         SceneChoice::CountyDowntown => find_landmark(world, LandmarkKind::Downtown),
         SceneChoice::CountyWoods => find_landmark(world, LandmarkKind::Cabin),
-        SceneChoice::CountyCraftsman => world.fixture_plan().map_or_else(
-            || county.player_tile().pos(),
-            // Stand on the street-side access tile so the roof is not cut away.
-            |plan| plan.frontage.access,
-        ),
+        SceneChoice::CountyCraftsman | SceneChoice::CountyResidentialStreet => {
+            world.fixture_plan().map_or_else(
+                || county.player_tile().pos(),
+                // Stand on the street-side access tile so the roof is not cut away.
+                |plan| plan.frontage.access,
+            )
+        }
         SceneChoice::CountyMountains => find_landmark(world, LandmarkKind::Mountain),
         _ => county.player_tile().pos(),
     };
@@ -564,6 +569,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out_dir = PathBuf::from("/tmp/zombiebox-preview3d");
     let mut scene = SceneChoice::All;
     let mut mode = CameraMode::Isometric;
+    let mut seed = 42u64;
+    let mut focus_name = String::from("overview");
     let mut size: (u32, u32) = (640, 360);
     let mut positional_out: Option<PathBuf> = None;
 
@@ -573,6 +580,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match args[i].as_str() {
             "--out-dir" if i + 1 < args.len() => {
                 out_dir = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            "--focus" if i + 1 < args.len() => {
+                focus_name = args[i + 1].clone();
+                i += 2;
+            }
+            "--seed" if i + 1 < args.len() => {
+                seed = args[i + 1].parse()?;
                 i += 2;
             }
             "--scene" if i + 1 < args.len() => {
@@ -653,9 +668,98 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if scene != SceneChoice::BirchStreet {
-        let world = World::new(42);
+        let world = if scene == SceneChoice::CountyResidentialStreet {
+            World::with_fixture(seed, CountyFixture::ResidentialStreet)
+        } else {
+            World::new(42)
+        };
         let mut county = ActionGame::county_with_world(world.clone());
         let mut mgr = SceneManager::new();
+        if scene == SceneChoice::CountyResidentialStreet {
+            for plan in world.fixture_plans() {
+                println!(
+                    "parcel {:?}..{:?}, frontage {:?}, structures {:?}, slots {:?}",
+                    plan.bounds.min,
+                    plan.bounds.max,
+                    plan.frontage,
+                    plan.structures
+                        .iter()
+                        .map(|s| (s.name, s.front_door))
+                        .collect::<Vec<_>>(),
+                    plan.outdoor.vehicle_slots
+                );
+            }
+            let plans = world.fixture_plans();
+            if plans.len() != 2 {
+                return Err("no compatible reference street".into());
+            }
+            let a = plans[0].structures[0].front_door;
+            let b = plans[1].structures[0].front_door;
+            let (ix, iy) = plans[0].frontage.side.inward();
+            let target = match focus_name.as_str() {
+                "overview" => Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8),
+                "ranch" | "craftsman" => {
+                    let plan = plans
+                        .iter()
+                        .find(|p| {
+                            p.structures[0]
+                                .name
+                                .to_ascii_lowercase()
+                                .contains(&focus_name)
+                        })
+                        .ok_or("requested house not found")?;
+                    let structure = &plan.structures[0];
+                    let door = structure.front_door;
+                    let bounds = structure.bounds;
+                    let (cx, cy) = (
+                        (bounds.min.x + bounds.max.x) / 2,
+                        (bounds.min.y + bounds.max.y) / 2,
+                    );
+                    if ix == 0 {
+                        Position::new(cx, door.y - iy * 6)
+                    } else {
+                        Position::new(door.x - ix * 6, cy)
+                    }
+                }
+                _ => return Err("--focus must be overview, ranch or craftsman".into()),
+            };
+            println!(
+                "street focus {target:?}; teleport {:?}",
+                county.teleport(Tile3D::from_pos(target, 0))
+            );
+
+            let mut presentation = Presentation::new(&ctx, size.0, size.1);
+            presentation.camera_mut().set_mode(mode);
+            if mode == CameraMode::Orbit {
+                presentation.camera_mut().orbit_rotate(
+                    (-(iy as f32)).atan2(-(ix as f32)) - std::f32::consts::FRAC_PI_4,
+                    -0.15,
+                );
+                presentation
+                    .camera_mut()
+                    .orbit_scale_distance(if focus_name == "overview" { 2.5 } else { 1.3 });
+            }
+            let out_path = positional_out.unwrap_or_else(|| {
+                out_dir.join(format!(
+                    "residential-street-s{seed}-{focus_name}-{mode:?}.png"
+                ))
+            });
+            let start = std::time::Instant::now();
+            presentation
+                .render_offscreen(&ctx, &county, 1.0 / 60.0)?
+                .save_png(&out_path)?;
+            let stats = presentation.last_frame_stats();
+            println!(
+                "Saved {} ({mode:?}, seed {seed}): {:?}, {} / {} chunks, {} instances, {} triangles",
+                out_path.display(),
+                start.elapsed(),
+                stats.chunks_drawn,
+                stats.chunks_resident,
+                stats.instances_drawn,
+                stats.triangles_submitted
+            );
+            return Ok(());
+        }
 
         if scene == SceneChoice::All {
             let batch = [
@@ -719,6 +823,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SceneChoice::CountyDowntown => "terrain-county-s42-downtown.png",
                 SceneChoice::CountyWoods => "terrain-county-s42-woods.png",
                 SceneChoice::CountyCraftsman => "terrain-county-s42-craftsman.png",
+                SceneChoice::CountyResidentialStreet => "terrain-county-s42-residential-street.png",
                 SceneChoice::CountyMountains => "terrain-county-s42-mountains.png",
                 _ => "terrain-county-s42.png",
             };

@@ -525,12 +525,29 @@ impl CountyStage {
         }
         let id = self.next_building_id();
         let floors = structure.floors().min(MAX_COUNTY_FLOORS as u8);
-        let (wings, wing_count) = BuildingInfo::single_wing_array(
-            structure.bounds.min.x,
-            structure.bounds.min.y,
-            structure.bounds.width(),
-            structure.bounds.height(),
-            floors,
+        // Blueprint wing IDs identify independently roofed masses. Derive their
+        // world rectangles from the authored cells after applying the lot basis.
+        let mut wing_bounds = std::collections::BTreeMap::new();
+        for (local, pos, cell) in structure.world_cells() {
+            let wing = wing_bounds
+                .entry(cell.wing)
+                .or_insert_with(|| WingRect::new(pos.x, pos.y, pos.x, pos.y, local.floor + 1));
+            wing.min_x = wing.min_x.min(pos.x);
+            wing.min_y = wing.min_y.min(pos.y);
+            wing.max_x = wing.max_x.max(pos.x);
+            wing.max_y = wing.max_y.max(pos.y);
+            wing.floors = wing.floors.max(local.floor + 1);
+        }
+        let authored_wings: Vec<_> = wing_bounds.into_values().collect();
+        let (wings, wing_count) = BuildingInfo::from_wings_slice(
+            &authored_wings,
+            WingRect::new(
+                structure.bounds.min.x,
+                structure.bounds.min.y,
+                structure.bounds.max.x,
+                structure.bounds.max.y,
+                floors,
+            ),
         );
         self.all_buildings.push(BuildingInfo {
             id,
@@ -588,6 +605,32 @@ impl CountyStage {
         let Some(sites) = world.chunk_sites(cx, cy) else {
             return;
         };
+
+        // Outdoor parked vehicles use the same stable anchor registry as interior
+        // props and are registered by the chunk containing their minimum corner.
+        for plan in world.fixture_plans_iter() {
+            for (slot, &(pos, facing)) in plan.outdoor.vehicle_slots.iter().enumerate() {
+                if pos.x / CHUNK_SIZE != cx || pos.y / CHUNK_SIZE != cy {
+                    continue;
+                }
+                let span = crate::world::blueprint::world_span_for_facing(
+                    super::PropId::Car.def().span,
+                    facing,
+                );
+                let anchor = PropAnchor {
+                    anchor_uid: mix64(plan.id.0 ^ 0x7374_7265_6574_6361 ^ slot as u64),
+                    tile: Tile3D::from_pos(pos, 0),
+                    id: super::PropId::Car,
+                    span,
+                    attachment: super::CellAttachment::Floor,
+                    facing,
+                    offset: Vec3::ZERO,
+                };
+                if self.blueprint_prop_uids.insert(anchor.anchor_uid) {
+                    self.blueprint_props.push(anchor);
+                }
+            }
+        }
 
         let mut regs = Vec::with_capacity(sites.buildings.len());
         for b in &sites.buildings {
@@ -3670,6 +3713,103 @@ mod tests {
 
         assert_blueprint_door_sweep(&mut forward, structure);
         assert_blueprint_door_sweep(&mut reverse, structure);
+    }
+
+    #[test]
+    fn reference_street_doors_pass_capsule_sweeps_in_both_chunk_orders() {
+        let world = World::with_fixture(42, CountyFixture::ResidentialStreet);
+        let plans = world.fixture_plans();
+        assert_eq!(plans.len(), 2);
+        let mut chunks: Vec<_> = plans
+            .iter()
+            .flat_map(|plan| plan.structures.iter())
+            .flat_map(fixture_chunks)
+            .collect();
+        chunks.sort_unstable();
+        chunks.dedup();
+        let (mut forward, _, _) = CountyStage::new(&world, 42);
+        let (mut reverse, _, _) = CountyStage::new(&world, 42);
+        for &(cx, cy) in &chunks {
+            forward.materialize_chunk(&world, cx, cy);
+        }
+        for &(cx, cy) in chunks.iter().rev() {
+            reverse.materialize_chunk(&world, cx, cy);
+        }
+        for structure in plans.iter().flat_map(|plan| &plan.structures) {
+            assert_eq!(
+                blueprint_snapshot(&forward, structure),
+                blueprint_snapshot(&reverse, structure)
+            );
+            assert_blueprint_door_sweep(&mut forward, structure);
+            assert_blueprint_door_sweep(&mut reverse, structure);
+        }
+    }
+
+    #[test]
+    fn support_fixture_streams_stairs_wings_and_collapses_after_breach() {
+        let world = World::with_fixture(42, CountyFixture::SupportLot);
+        let structure = &world.fixture_plan().expect("support fixture").structures[0];
+        let (mut stage, _, _) = CountyStage::new(&world, 42);
+        for (cx, cy) in fixture_chunks(structure) {
+            stage.materialize_chunk(&world, cx, cy);
+        }
+        let info = stage
+            .all_buildings
+            .iter()
+            .find(|b| b.uid == BuildingUid(structure.id.0))
+            .unwrap();
+        assert_eq!(info.wing_count, 2);
+        let tower = structure
+            .transform
+            .local_to_world(crate::LocalCell::new(2, 3, 0));
+        let wing = structure
+            .transform
+            .local_to_world(crate::LocalCell::new(8, 3, 0));
+        assert_eq!(info.wing_at(info.wing_index_at(tower, 0)).floors, 2);
+        assert_eq!(info.wing_at(info.wing_index_at(wing, 0)).floors, 1);
+        assert_ne!(
+            info.cutaway_slot_at(tower, 0),
+            info.cutaway_slot_at(wing, 0)
+        );
+        let id = info.id;
+        for (pos, expected_floor) in [(tower, 2), (wing, 1)] {
+            let center = Tile3D::from_pos(pos, 0).center();
+            let mut colliders = Vec::new();
+            stage.colliders_in(
+                Aabb3::new(
+                    center.extend(-100.0) - Vec3::new(0.1, 0.1, 0.0),
+                    center.extend(100.0) + Vec3::new(0.1, 0.1, 0.0),
+                ),
+                &mut colliders,
+            );
+            assert!(colliders.iter().any(|c| matches!(c.kind, ColliderKind::BuildingSlab { building_id, floor, is_roof: true } if building_id == id && floor == expected_floor)));
+        }
+        let stair = structure
+            .transform
+            .local_to_world(structure.blueprint.stairs[0].lower);
+        for floor in 0..2 {
+            let tile = Tile3D::from_pos(stair, floor);
+            let (dest, direction) = stage.stair_link(tile).expect("live stair link");
+            assert_eq!(dest.floor, 1 - floor);
+            assert_eq!(direction, structure.transform.world_stair_dir((1, 0)));
+        }
+        let adjacent = structure
+            .transform
+            .local_to_world(crate::LocalCell::new(0, 2, 0));
+        let _ = stage.damage_tile(Tile3D::from_pos(adjacent, 0), DamageKind::RocketBlast);
+        let wall = structure
+            .transform
+            .local_to_world(crate::LocalCell::new(0, 3, 0));
+        let damage = stage
+            .damage_tile(Tile3D::from_pos(wall, 0), DamageKind::RocketBlast)
+            .unwrap();
+        assert!(damage.destroyed && damage.collapsed_cells > 0);
+        assert!(
+            stage
+                .cell_at_world(Tile3D::from_pos(wall, 1))
+                .unwrap()
+                .collapsed
+        );
     }
 
     #[test]

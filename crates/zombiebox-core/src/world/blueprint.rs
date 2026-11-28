@@ -544,6 +544,8 @@ pub struct VehicleSlot {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OutdoorLayer {
     pub paths: Vec<(Position, Position)>,
+    /// Vehicle routes are separate from pedestrian approaches.
+    pub driveways: Vec<(Position, Position)>,
     pub fences: Vec<(Position, Position)>,
     pub props: Vec<(PropId, Position, PropFacing)>,
     pub signs: Vec<(Position, PropFacing)>,
@@ -741,7 +743,7 @@ impl PlacedStructure {
     }
 }
 
-fn world_span_for_facing(span: PropSpan, facing: PropFacing) -> PropSpan {
+pub(crate) fn world_span_for_facing(span: PropSpan, facing: PropFacing) -> PropSpan {
     if matches!(facing, PropFacing::East | PropFacing::West) {
         PropSpan::new(span.height, span.width)
     } else {
@@ -974,6 +976,55 @@ impl BlueprintGrid {
                 return Err(FitError::SupportFailure {
                     reason: "stair endpoints must align vertically",
                 });
+            }
+            for (endpoint, up) in [(stair.lower, true), (stair.upper, false)] {
+                let valid = self
+                    .cells
+                    .get(&endpoint)
+                    .is_some_and(|cell| match cell.kind {
+                        BlueprintKind::Stairs {
+                            up: has_up,
+                            down: has_down,
+                        } => {
+                            (if up { has_up } else { has_down })
+                                && i16::from(cell.stair_dir.0).abs()
+                                    + i16::from(cell.stair_dir.1).abs()
+                                    == 1
+                        }
+                        _ => false,
+                    });
+                if !valid {
+                    return Err(FitError::AccessFailure {
+                        reason: "stair endpoint or direction invalid",
+                    });
+                }
+            }
+            for (endpoint, landing) in [
+                (stair.lower, stair.lower_landing),
+                (stair.upper, stair.upper_landing),
+            ] {
+                if landing.floor != endpoint.floor
+                    || (landing.u - endpoint.u).abs() + (landing.v - endpoint.v).abs() != 1
+                {
+                    return Err(FitError::AccessFailure {
+                        reason: "stair landing must be adjacent on the same floor",
+                    });
+                }
+            }
+            // Runtime uses the source stair's direction to choose the arrival
+            // position on the other floor.
+            for (source, destination, landing) in [
+                (stair.lower, stair.upper, stair.upper_landing),
+                (stair.upper, stair.lower, stair.lower_landing),
+            ] {
+                let direction = self.cells[&source].stair_dir;
+                if (landing.u - destination.u, landing.v - destination.v)
+                    != (i32::from(direction.0), i32::from(direction.1))
+                {
+                    return Err(FitError::AccessFailure {
+                        reason: "stair direction does not point to arrival landing",
+                    });
+                }
             }
             for landing in [stair.lower_landing, stair.upper_landing] {
                 if !self
@@ -1239,6 +1290,15 @@ pub fn place_blueprint_along_frontage(
         CardinalDir::North | CardinalDir::South => Position::new(lateral, desired_min.y),
         CardinalDir::West | CardinalDir::East => Position::new(desired_min.x, lateral),
     };
+    if desired_min.x < lot.min.x
+        || desired_min.y < lot.min.y
+        || desired_min.x + span_w - 1 > lot.max.x
+        || desired_min.y + span_h - 1 > lot.max.y
+    {
+        return Err(FitError::InvalidLot {
+            reason: "blueprint does not fit inside the lot",
+        });
+    }
     let origin = Position::new(desired_min.x - rel.min.x, desired_min.y - rel.min.y);
     Ok(PlacedStructure::new(
         parcel,
@@ -1257,6 +1317,42 @@ mod tests {
 
     fn fixture_blueprint() -> BlueprintGrid {
         crate::world::archetypes::fixture_blueprint()
+    }
+
+    #[test]
+    fn frontage_placement_rejects_insufficient_depth_in_all_orientations() {
+        for side in [
+            CardinalDir::North,
+            CardinalDir::South,
+            CardinalDir::East,
+            CardinalDir::West,
+        ] {
+            let lot = match side {
+                CardinalDir::North | CardinalDir::South => {
+                    GridRect::new(Position::new(0, 0), Position::new(20, 4))
+                }
+                CardinalDir::East | CardinalDir::West => {
+                    GridRect::new(Position::new(0, 0), Position::new(4, 20))
+                }
+            };
+            assert!(
+                place_blueprint_along_frontage(
+                    1,
+                    parcel_id(1, lot),
+                    lot,
+                    Frontage {
+                        side,
+                        access: lot.min
+                    },
+                    fixture_blueprint(),
+                    "test",
+                    "test",
+                    BuildingStyle::WarmPutty
+                )
+                .is_err(),
+                "{side:?}"
+            );
+        }
     }
 
     #[test]

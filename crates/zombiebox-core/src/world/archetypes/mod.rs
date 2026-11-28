@@ -18,6 +18,7 @@ use super::blueprint::{
 };
 
 pub mod houses;
+pub mod support_fixture;
 
 /// Opt-in generation fixture used while the Phase 3 rendering gates are open.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -28,6 +29,10 @@ pub enum CountyFixture {
     BlueprintLot,
     /// Replace one existing county lot with the furnished WP 3.2 Craftsman.
     CraftsmanLot,
+    /// Two compatible neighboring residential lots, for WP 3.3 review.
+    ResidentialStreet,
+    /// Small aligned two-floor support and stairs fixture.
+    SupportLot,
 }
 
 /// Resolve the selected fixture through the same parcel-composition seam the
@@ -41,7 +46,10 @@ pub fn plan_fixture(
             reason: "no fixture selected",
         }),
         CountyFixture::BlueprintLot => FixtureParcel.plan(context),
-        CountyFixture::CraftsmanLot => houses::CraftsmanParcel.plan(context),
+        CountyFixture::CraftsmanLot | CountyFixture::ResidentialStreet => {
+            houses::CraftsmanParcel.plan(context)
+        }
+        CountyFixture::SupportLot => support_fixture::SupportFixtureParcel.plan(context),
     }
 }
 

@@ -5,6 +5,7 @@ pub mod blueprint;
 mod dressing;
 pub mod furnish;
 mod geography;
+pub mod massing;
 mod parcels;
 use parcels::{ParcelTiles, Parcels};
 mod relief;
@@ -244,6 +245,17 @@ impl World {
     /// The opt-in fixture parcel plan. Returns `None` when the fixture is off.
     pub fn fixture_plan(&self) -> Option<&ParcelPlan> {
         self.county.as_ref()?.parcels.fixture_plan()
+    }
+
+    /// All selected fixture parcels in stable county parcel order.
+    pub fn fixture_plans(&self) -> Vec<&ParcelPlan> {
+        self.county
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.parcels.fixture_plans().collect())
+    }
+
+    pub(crate) fn fixture_plans_iter(&self) -> impl Iterator<Item = &ParcelPlan> {
+        self.county.iter().flat_map(|c| c.parcels.fixture_plans())
     }
 
     #[inline]

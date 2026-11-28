@@ -433,6 +433,18 @@ fn reserve_circulation(blueprint: &BlueprintGrid) -> HashSet<LocalCell> {
                 }
             }
         }
+        for stair in &blueprint.stairs {
+            for cell in [
+                stair.lower,
+                stair.upper,
+                stair.lower_landing,
+                stair.upper_landing,
+            ] {
+                if cells.contains(&cell) {
+                    portals.push(cell);
+                }
+            }
+        }
         portals.sort_by_key(|cell| (cell.v, cell.u));
         portals.dedup();
         let Some(&start) = portals.first() else {

@@ -3,7 +3,7 @@
 use super::{
     District, Lot, ParcelPlan, Position, Sites, Tile, WORLD_SIZE,
     archetypes::{self, CountyFixture, ParcelContext, plan_fixture},
-    blueprint::{BlueprintKind, Frontage, GridRect, ZoneKind},
+    blueprint::{BlueprintKind, CardinalDir, CompoundPlanner, Frontage, GridRect, ZoneKind},
     dressing, sites,
 };
 use std::ops::{Index, IndexMut};
@@ -53,6 +53,7 @@ struct Parcel {
     template: u64,
     foundation_z: f32,
     plan: Option<ParcelPlan>,
+    reference_street: bool,
     detail: OnceLock<(ParcelTiles, Sites)>,
 }
 
@@ -94,12 +95,17 @@ impl Parcels {
                 template,
                 foundation_z: 0.0,
                 plan: None,
+                reference_street: false,
                 detail: OnceLock::new(),
             });
         }
         let mut fixture_index = None;
         if fixture != CountyFixture::None {
-            fixture_index = Self::select_fixture_parcel(seed, &mut parcels, spawn, fixture);
+            fixture_index = if fixture == CountyFixture::ResidentialStreet {
+                Self::select_reference_street(seed, &mut parcels, spawn)
+            } else {
+                Self::select_fixture_parcel(seed, &mut parcels, spawn, fixture)
+            };
         }
         Self {
             parcels,
@@ -107,6 +113,88 @@ impl Parcels {
             fixture_index,
             manifest: OnceLock::new(),
         }
+    }
+
+    // Only compare existing lots along the same road-facing line. The bounded
+    // pair list is sorted independently of geography emission or chunk order.
+    fn select_reference_street(
+        seed: u64,
+        parcels: &mut [Parcel],
+        spawn: Position,
+    ) -> Option<usize> {
+        let mut pairs = Vec::new();
+        for (a, first) in parcels.iter().enumerate() {
+            if first.lot.district != District::Residential {
+                continue;
+            }
+            let side = archetypes::frontage_side(first.lot.min, first.lot.max, first.lot.front);
+            for (b, second) in parcels.iter().enumerate() {
+                if a == b
+                    || second.lot.district != District::Residential
+                    || side
+                        != archetypes::frontage_side(
+                            second.lot.min,
+                            second.lot.max,
+                            second.lot.front,
+                        )
+                {
+                    continue;
+                }
+                let x_front = matches!(side, CardinalDir::East | CardinalDir::West);
+                let (same_line, gap) = if x_front {
+                    (
+                        first.lot.front.x == second.lot.front.x,
+                        (first.lot.min.y - second.lot.max.y - 1)
+                            .max(second.lot.min.y - first.lot.max.y - 1),
+                    )
+                } else {
+                    (
+                        first.lot.front.y == second.lot.front.y,
+                        (first.lot.min.x - second.lot.max.x - 1)
+                            .max(second.lot.min.x - first.lot.max.x - 1),
+                    )
+                };
+                if !same_line || !(0..=6).contains(&gap) {
+                    continue;
+                }
+                let distance = first.lot.front.distance(spawn) + second.lot.front.distance(spawn);
+                pairs.push((
+                    distance,
+                    first.lot.min.y,
+                    first.lot.min.x,
+                    second.lot.min.y,
+                    second.lot.min.x,
+                    a,
+                    b,
+                ));
+            }
+        }
+        pairs.sort_unstable();
+        for (_, _, _, _, _, a, b) in pairs {
+            let context = |lot: Lot| ParcelContext {
+                seed,
+                bounds: GridRect::new(lot.min, lot.max),
+                frontage: Frontage {
+                    side: archetypes::frontage_side(lot.min, lot.max, lot.front),
+                    access: lot.front,
+                },
+                zone: zone_for(lot.district),
+            };
+            let Ok(craftsman) =
+                archetypes::houses::CraftsmanStreetParcel.plan(&context(parcels[a].lot))
+            else {
+                continue;
+            };
+            let Ok(ranch) = archetypes::houses::RanchParcel.plan(&context(parcels[b].lot)) else {
+                continue;
+            };
+            parcels[a].reference_street = true;
+            parcels[b].reference_street = true;
+            parcels[a].plan = Some(craftsman);
+            parcels[b].plan = Some(ranch);
+            return Some(a);
+        }
+        None
     }
 
     fn select_fixture_parcel(
@@ -231,7 +319,7 @@ impl Parcels {
         parcel.detail.get_or_init(|| {
             let mut cells = ParcelTiles::new(parcel.lot, terrain);
             let sites = if let Some(plan) = &parcel.plan {
-                apply_plan_ground(plan, &mut cells);
+                apply_plan_ground(plan, &mut cells, parcel.reference_street);
                 Sites::default()
             } else {
                 sites::generate(
@@ -242,7 +330,9 @@ impl Parcels {
                     &mut cells,
                 )
             };
-            dressing::generate(seed, &parcel.lot, &sites, &mut cells);
+            if !parcel.reference_street {
+                dressing::generate(seed, &parcel.lot, &sites, &mut cells);
+            }
             (cells, sites)
         })
     }
@@ -250,6 +340,12 @@ impl Parcels {
     pub(super) fn fixture_plan(&self) -> Option<&ParcelPlan> {
         let index = self.fixture_index?;
         self.parcels[index].plan.as_ref()
+    }
+
+    pub(super) fn fixture_plans(&self) -> impl Iterator<Item = &ParcelPlan> {
+        self.parcels
+            .iter()
+            .filter_map(|parcel| parcel.plan.as_ref())
     }
 
     pub(super) fn tile_at(&self, p: Position, index: usize, seed: u64, terrain: &[Tile]) -> Tile {
@@ -342,13 +438,72 @@ fn zone_for(district: District) -> ZoneKind {
     }
 }
 
-fn apply_plan_ground(plan: &ParcelPlan, cells: &mut ParcelTiles) {
+fn apply_plan_ground(plan: &ParcelPlan, cells: &mut ParcelTiles, reference_street: bool) {
+    // Paths are established before structures, which remain authoritative.
+    for (&(start, end), ground) in plan
+        .outdoor
+        .paths
+        .iter()
+        .map(|p| (p, super::Ground::Gravel))
+        .chain(
+            plan.outdoor
+                .driveways
+                .iter()
+                .map(|p| (p, super::Ground::Pavement)),
+        )
+        .filter(|_| reference_street)
+    {
+        let mut p = start;
+        loop {
+            if p.x >= plan.bounds.min.x
+                && p.x <= plan.bounds.max.x
+                && p.y >= plan.bounds.min.y
+                && p.y <= plan.bounds.max.y
+            {
+                let tile = &mut cells[p];
+                if tile.feature == super::Feature::Empty
+                    && !tile.ground.is_road()
+                    && tile.water.is_none()
+                {
+                    tile.feature = super::Feature::Path;
+                    tile.ground = ground;
+                }
+            }
+            if p == end {
+                break;
+            }
+            if p.x != end.x {
+                p.x += (end.x - p.x).signum();
+            } else {
+                p.y += (end.y - p.y).signum();
+            }
+        }
+    }
     for structure in &plan.structures {
         for (local, world, cell) in structure.world_cells() {
             if local.floor != 0 || cell.kind == BlueprintKind::Empty {
                 continue;
             }
             cells[world].feature = cell.kind.to_feature(cell.material);
+        }
+    }
+}
+
+#[cfg(test)]
+mod reference_street_tests {
+    use crate::{CountyFixture, World};
+
+    #[test]
+    fn reference_street_is_opt_in_and_deterministic() {
+        for seed in [0, 1, 2, 7, 42, 63, u64::MAX] {
+            let first = World::with_fixture(seed, CountyFixture::ResidentialStreet);
+            let second = World::with_fixture(seed, CountyFixture::ResidentialStreet);
+            let plans = first.fixture_plans();
+            assert_eq!(plans.len(), 2, "seed {seed} has no compatible street");
+            assert_eq!(plans, second.fixture_plans(), "seed {seed}");
+            assert!(plans.iter().all(|p| !p.outdoor.paths.is_empty()));
+            assert_eq!(World::new(seed).fixture(), CountyFixture::CraftsmanLot);
+            assert_eq!(World::legacy(seed).fixture(), CountyFixture::None);
         }
     }
 }

@@ -272,6 +272,8 @@ Handoff: [WP 3.2 handoff](phase3-wp32-handoff.md).
 
 ### WP 3.3 — Ranch and shared street
 
+Handoff: [WP 3.3 handoff](phase3-wp33-handoff.md).
+
 - **Owns** `world/archetypes/houses.rs`, `world/massing.rs`, residential fixture dressing and the small two-floor fixture. Extend `world/furnish.rs` as needed for shared placement.
 - **Build** the ranch garage wing and driveway, place it next to the Craftsman, and add the second arrangement for each family. Write the smallest shared footprint-mask helper that supports both. Keep vehicle and pedestrian reservations separate. Use the two-floor fixture to wire aligned stairs, landing reservations, roof and supporting cells into the live path.
 - **Accept** street-side recognition of the two houses by approach, massing and roofline. Walk the garage connection and both directions on the stairs. Verify support loss follows existing collapse rules and entering a wing cuts away the correct roof. Confirm the two dwelling entries remain clear with a parked car.

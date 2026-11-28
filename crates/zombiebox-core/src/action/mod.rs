@@ -3537,6 +3537,306 @@ mod tests {
     }
 
     #[test]
+    fn reference_street_pedestrian_paths_reach_both_entries() {
+        let world = World::with_fixture(42, crate::CountyFixture::ResidentialStreet);
+        let paths: Vec<_> = world
+            .fixture_plans()
+            .iter()
+            .map(|p| p.outdoor.paths[0])
+            .collect();
+        assert_eq!(paths.len(), 2);
+        let routes: Vec<_> = paths
+            .into_iter()
+            .map(|(access, end)| {
+                let road = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                    .into_iter()
+                    .map(|(dx, dy)| Position::new(access.x + dx, access.y + dy))
+                    .find(|p| world.tile_at(*p).is_some_and(|tile| tile.ground.is_road()))
+                    .expect("street adjacent to frontage access");
+                (road, access, end)
+            })
+            .collect();
+        let mut game = ActionGame::county_with_world(world);
+        for (road, start, end) in routes {
+            assert_eq!(
+                game.teleport(Tile3D::from_pos(road, 0)),
+                Some(Tile3D::from_pos(road, 0))
+            );
+            game.monsters.clear();
+            let direction =
+                (Tile3D::from_pos(start, 0).center() - game.player.position).normalized();
+            for _ in 0..90 {
+                if game
+                    .player
+                    .position
+                    .distance(Tile3D::from_pos(start, 0).center())
+                    < 0.22
+                {
+                    break;
+                }
+                game.step(ActionInput {
+                    movement: direction,
+                    ..ActionInput::default()
+                });
+            }
+            assert!(
+                game.player
+                    .position
+                    .distance(Tile3D::from_pos(start, 0).center())
+                    < 0.22,
+                "street access blocked"
+            );
+            let mut next = start;
+            while next != end {
+                if next.x != end.x {
+                    next.x += (end.x - next.x).signum();
+                } else {
+                    next.y += (end.y - next.y).signum();
+                }
+                let destination = Tile3D::from_pos(next, 0).center();
+                let mut opened = false;
+                for _ in 0..90 {
+                    let delta = destination - game.player.position;
+                    if delta.length() < 0.22 {
+                        break;
+                    }
+                    if next == end && !opened && delta.length() < 1.0 {
+                        game.step(ActionInput {
+                            interact: true,
+                            ..ActionInput::default()
+                        });
+                        opened = true;
+                    } else {
+                        game.step(ActionInput {
+                            movement: delta.normalized(),
+                            ..ActionInput::default()
+                        });
+                    }
+                }
+                assert!(
+                    game.player.position.distance(destination) < 0.22,
+                    "approach from {start:?} to {end:?} blocked at {next:?}, player {:?}",
+                    game.player.position
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ranch_garage_connection_is_walkable_in_live_action() {
+        let world = World::with_fixture(42, crate::CountyFixture::ResidentialStreet);
+        let structure = world
+            .fixture_plans()
+            .into_iter()
+            .flat_map(|p| &p.structures)
+            .find(|s| s.archetype.starts_with("ranch_l_wing"))
+            .expect("reference street ranch");
+        let door = structure
+            .blueprint
+            .doors
+            .iter()
+            .find(|d| {
+                d.kind == crate::DoorKind::Interior
+                    && structure.blueprint.rooms.iter().any(|r| {
+                        r.wing == 1
+                            && (d.connects.0 == crate::world::blueprint::SpaceId::Room(r.id)
+                                || d.connects.1 == crate::world::blueprint::SpaceId::Room(r.id))
+                    })
+            })
+            .expect("garage connector");
+        let sign = [-1, 1]
+            .into_iter()
+            .find(|&sign| {
+                structure
+                    .blueprint
+                    .cell(crate::LocalCell::new(door.cell.u + sign, door.cell.v, 0))
+                    .is_some_and(|cell| cell.wing == 1 && cell.kind.walkable())
+            })
+            .expect("garage side of connector");
+        let start = structure.transform.local_to_world(crate::LocalCell::new(
+            door.cell.u - sign,
+            door.cell.v,
+            0,
+        ));
+        let target = structure.transform.local_to_world(crate::LocalCell::new(
+            door.cell.u + 2 * sign,
+            door.cell.v,
+            0,
+        ));
+        let door_pos = structure.transform.local_to_world(door.cell);
+        let mut game = ActionGame::county_with_world(world);
+        assert_eq!(
+            game.teleport(Tile3D::from_pos(start, 0)),
+            Some(Tile3D::from_pos(start, 0))
+        );
+        game.monsters.clear();
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert!(
+            matches!(
+                game.stage.tile_kind(Tile3D::from_pos(door_pos, 0)),
+                TileKind::Door { open: true, .. }
+            ),
+            "garage connector should open"
+        );
+        let direction =
+            Vec2::new((target.x - start.x) as f32, (target.y - start.y) as f32).normalized();
+        for _ in 0..180 {
+            if game
+                .player
+                .position
+                .distance(Tile3D::from_pos(target, 0).center())
+                < 0.35
+            {
+                break;
+            }
+            game.step(ActionInput {
+                movement: direction,
+                ..ActionInput::default()
+            });
+        }
+        assert!(
+            game.player
+                .position
+                .distance(Tile3D::from_pos(target, 0).center())
+                < 0.35,
+            "survivor did not reach garage: {:?}, target {target:?}",
+            game.player.position
+        );
+        let info = game
+            .stage
+            .building_by_id(game.stage.building_id(Tile3D::from_pos(target, 0)))
+            .unwrap();
+        assert_ne!(
+            info.cutaway_slot_at(start, 0),
+            info.cutaway_slot_at(target, 0)
+        );
+    }
+
+    #[test]
+    fn reference_street_parked_car_leaves_dwelling_entries_clear() {
+        use crate::spatial::collision::sweep_circle_rect_2d;
+        let world = World::with_fixture(42, crate::CountyFixture::ResidentialStreet);
+        let doors: Vec<_> = world
+            .fixture_plans()
+            .iter()
+            .flat_map(|p| &p.structures)
+            .flat_map(|structure| {
+                structure
+                    .blueprint
+                    .doors
+                    .iter()
+                    .filter(|d| d.kind == crate::DoorKind::Exterior)
+                    .map(|d| {
+                        (
+                            structure.transform.local_to_world(d.cell),
+                            structure.door_axis_at(d.cell).unwrap(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(doors.len(), 2);
+        let mut game = ActionGame::county_with_world(world);
+        for (pos, axis) in doors {
+            game.teleport(Tile3D::from_pos(pos, 0))
+                .expect("stream entrance");
+            let cars: Vec<_> = game
+                .prop_anchors
+                .iter()
+                .filter(|a| a.id == PropId::Car)
+                .collect();
+            assert!(
+                !cars.is_empty(),
+                "reference street must materialize a parked car"
+            );
+            let center = Tile3D::from_pos(pos, 0).center();
+            let base = resolve_tile_support(&game.stage, Tile3D::from_pos(pos, 0)).0;
+            let mut colliders = Vec::new();
+            game.prop_colliders_in(
+                Aabb3::new(
+                    center.extend(base - 0.1) - Vec3::new(2.0, 2.0, 0.0),
+                    center.extend(base + PLAYER_HEIGHT) + Vec3::new(2.0, 2.0, 0.1),
+                ),
+                &mut colliders,
+            );
+            let normal = axis.normal();
+            let dir = Vec2::new(normal.0 as f32, normal.1 as f32);
+            for sign in [-1.0, 1.0] {
+                assert!(
+                    colliders.iter().all(|c| sweep_circle_rect_2d(
+                        center - dir * (sign * 0.8),
+                        dir * (sign * 1.6),
+                        PLAYER_RADIUS,
+                        c.bounds.min.xy(),
+                        c.bounds.max.xy()
+                    )
+                    .is_none()),
+                    "prop blocks entrance at {pos:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn support_fixture_stairs_transition_in_both_directions() {
+        let world = World::with_fixture(42, crate::CountyFixture::SupportLot);
+        let structure = &world.fixture_plan().expect("support fixture").structures[0];
+        let stair = structure
+            .transform
+            .local_to_world(structure.blueprint.stairs[0].lower);
+        let lower_landing = structure
+            .transform
+            .local_to_world(structure.blueprint.stairs[0].lower_landing);
+        let mut game = ActionGame::county_with_world(world);
+        assert_eq!(
+            game.teleport(Tile3D::from_pos(lower_landing, 0))
+                .unwrap()
+                .pos(),
+            lower_landing
+        );
+        for _ in 0..40 {
+            game.step(ActionInput::default());
+        }
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert_eq!(game.player_pose().floor, 1);
+        assert!(game.events().iter().any(|event| matches!(
+            event,
+            ActionEvent::FloorChanged {
+                from_floor: 0,
+                to_floor: 1,
+                via: FloorTransition::Stairs,
+                ..
+            }
+        )));
+        // Leave the stair and allow the transition cooldown to expire before returning.
+        let landing = game.player.position;
+        for _ in 0..40 {
+            game.step(ActionInput::default());
+        }
+        assert_ne!(landing, Tile3D::from_pos(stair, 1).center());
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert_eq!(game.player_pose().floor, 0);
+        assert!(game.events().iter().any(|event| matches!(
+            event,
+            ActionEvent::FloorChanged {
+                from_floor: 1,
+                to_floor: 0,
+                via: FloorTransition::Stairs,
+                ..
+            }
+        )));
+    }
+
+    #[test]
     fn stairs_transition_to_floor_1_and_f1_window_drop_returns_to_floor_0() {
         let mut game = ActionGame::residential(42);
         let origin = game.stage.residential().unwrap().origin();
