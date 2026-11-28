@@ -3,11 +3,13 @@ use std::time::Instant;
 use zombiebox_core::{ActionEvent, ActionGame, FLOOR_H, SpatialWorld, TileKind};
 
 use crate::animation::ActorAnimator;
+use crate::animation::zombie::{ZombieArchetype, ZombieDrawRecord, ZombieSkeleton};
 use crate::coords::render_to_sim_point;
 use crate::effects::Effects;
 use crate::gpu::{
     FrameStats, GpuContext, GpuError, GpuRenderer, InstanceBatch, InstanceRaw, PrototypeMeshId,
-    RenderPipelineConfig, SceneLightingUniforms, SurfaceFrameOutcome,
+    RenderPipelineConfig, SceneLightingUniforms, SkinnedActorDraw, SkinnedPrototypeMeshId,
+    SurfaceFrameOutcome,
 };
 use crate::mesh::actors::{ActorMeshLibrary, ActorPart};
 use crate::mesh::buildings::build_chunk_building_shell;
@@ -20,6 +22,7 @@ use crate::mesh::motorcycle_appearance::{
 };
 use crate::mesh::props::{build_chunk_props_mesh, cache_instances, cache_mesh};
 use crate::mesh::vehicles::{MOTORCYCLE_SCALE, MotorcycleTransforms};
+use crate::mesh::zombie_asset::{SkinnedZombieMesh, bundled_zombie_lod};
 use crate::telemetry::{FramePercentiles, FrameTelemetry, FrameTiming};
 use crate::{
     CameraFrame, CameraMode, CameraRig, CameraTarget, ChunkCoord, FrameSnapshot, RgbaImage,
@@ -35,6 +38,10 @@ pub struct Presentation {
     renderer: GpuRenderer,
     actors: ActorAnimator,
     actor_prototypes: [PrototypeMeshId; ActorPart::MESH_COUNT],
+    zombie_prototypes: [[SkinnedPrototypeMeshId; 4]; 5],
+    zombie_skeletons: Vec<(ZombieArchetype, ZombieSkeleton)>,
+    zombie_bounds: [crate::RenderAabb; 5],
+    last_zombie_lod_counts: [u32; 4],
     cache_prototypes: [PrototypeMeshId; 2],
     motorcycle_prototypes: [Option<MotorcyclePrototypeSet>; MOTORCYCLE_SLOT_COUNT],
     door_prototype: PrototypeMeshId,
@@ -65,6 +72,26 @@ const MOTORCYCLE_BATCH_COUNT: usize = MOTORCYCLE_SLOT_COUNT * MOTORCYCLE_PARTS.l
 const DOOR_BATCH: usize = ActorPart::MESH_COUNT + CACHE_BATCH_COUNT + MOTORCYCLE_BATCH_COUNT;
 const BATCH_COUNT: usize = DOOR_BATCH + 1;
 
+struct PreparedZombie {
+    mesh: SkinnedPrototypeMeshId,
+    record: ZombieDrawRecord,
+}
+
+const ZOMBIE_ARCHETYPES: [ZombieArchetype; 5] = [
+    ZombieArchetype::Walker,
+    ZombieArchetype::Woman,
+    ZombieArchetype::Runner,
+    ZombieArchetype::Bloated,
+    ZombieArchetype::Soldier,
+];
+
+fn zombie_archetype_index(archetype: ZombieArchetype) -> usize {
+    ZOMBIE_ARCHETYPES
+        .iter()
+        .position(|item| *item == archetype)
+        .unwrap()
+}
+
 impl Presentation {
     pub fn new(ctx: &GpuContext, width: u32, height: u32) -> Self {
         let mut renderer = GpuRenderer::new(ctx, RenderPipelineConfig::default());
@@ -74,6 +101,41 @@ impl Presentation {
             let label = format!("actor_mesh_{index}");
             renderer.register_prototype(ctx, &label, actors.mesh(part))
         });
+        let zombie_prototypes = std::array::from_fn(|archetype_index| {
+            let archetype = ZOMBIE_ARCHETYPES[archetype_index];
+            std::array::from_fn(|lod| {
+                let bytes = bundled_zombie_lod(archetype, lod as u8);
+                let mesh = SkinnedZombieMesh::from_bytes(bytes).unwrap_or_else(|error| {
+                    panic!("invalid bundled {archetype:?} LOD {lod}: {error:?}")
+                });
+                renderer.register_skinned_prototype(
+                    ctx,
+                    &format!("zombie_{archetype:?}_lod{lod}"),
+                    &mesh,
+                )
+            })
+        });
+        let zombie_bounds = std::array::from_fn(|archetype_index| {
+            let bytes = bundled_zombie_lod(ZOMBIE_ARCHETYPES[archetype_index], 0);
+            SkinnedZombieMesh::from_bytes(bytes)
+                .expect("valid bundled zombie LOD 0")
+                .compute_aabb()
+                .expect("non-empty bundled zombie LOD 0")
+        });
+        let zombie_skeletons = crate::mesh::zombie_skeletons::all_zombie_skeletons()
+            .into_iter()
+            .map(|(name, skeleton)| {
+                let archetype = match name {
+                    "walker" => ZombieArchetype::Walker,
+                    "woman" => ZombieArchetype::Woman,
+                    "runner" => ZombieArchetype::Runner,
+                    "bloated" => ZombieArchetype::Bloated,
+                    "soldier" => ZombieArchetype::Soldier,
+                    _ => unreachable!("unknown bundled zombie archetype"),
+                };
+                (archetype, skeleton)
+            })
+            .collect();
         let cache_prototypes = [
             renderer.register_prototype(ctx, "closed_cache", cache_mesh(false)),
             renderer.register_prototype(ctx, "open_cache", cache_mesh(true)),
@@ -91,6 +153,10 @@ impl Presentation {
             renderer,
             actors: ActorAnimator::new(),
             actor_prototypes,
+            zombie_prototypes,
+            zombie_skeletons,
+            zombie_bounds,
+            last_zombie_lod_counts: [0; 4],
             cache_prototypes,
             motorcycle_prototypes,
             door_prototype,
@@ -179,6 +245,12 @@ impl Presentation {
         self.renderer.last_frame_stats()
     }
 
+    /// Visible zombie instance counts by LOD for the most recently prepared frame.
+    #[must_use]
+    pub fn last_zombie_lod_counts(&self) -> [u32; 4] {
+        self.last_zombie_lod_counts
+    }
+
     pub fn set_adaptive_resolution(&mut self, enabled: bool) {
         if self.adaptive_resolution != enabled {
             self.telemetry = FrameTelemetry::default();
@@ -250,6 +322,7 @@ impl Presentation {
         FrameSnapshot,
         SceneLightingUniforms,
         [Vec<InstanceRaw>; BATCH_COUNT],
+        Vec<PreparedZombie>,
     ) {
         let mut camera = Self::update_camera(&mut self.camera, game, dt);
         if matches!(camera.mode, CameraMode::Orbit | CameraMode::Chase) {
@@ -322,6 +395,18 @@ impl Presentation {
             },
         );
         for (part, part_instances) in actors {
+            if matches!(
+                part,
+                ActorPart::ZombieBody
+                    | ActorPart::ZombieHead
+                    | ActorPart::ZombieArmL
+                    | ActorPart::ZombieArmR
+                    | ActorPart::ZombieLegL
+                    | ActorPart::ZombieLegR
+                    | ActorPart::BoltLauncher
+            ) {
+                continue;
+            }
             instances[part.mesh_index()].extend(part_instances.into_iter().map(|actor| {
                 let mut instance =
                     InstanceRaw::from_transform(Mat4::from_cols_array_2d(&actor.model))
@@ -333,6 +418,47 @@ impl Presentation {
                 instance.instance_meta[..2].copy_from_slice(&actor.meta_override);
                 instance
             }));
+        }
+        let mut zombies = Vec::new();
+        self.last_zombie_lod_counts = [0; 4];
+        for record in self
+            .actors
+            .prepare_zombie_records(&frame.dynamic, &self.zombie_skeletons)
+        {
+            let archetype_index = zombie_archetype_index(record.archetype);
+            let local_bounds = self.zombie_bounds[archetype_index];
+            let world_bounds = crate::lod::transformed_actor_bounds(record.root, local_bounds);
+            if !camera.frustum.intersects_aabb(world_bounds) {
+                continue;
+            }
+            // In-frustum actors crossing the perspective near plane stay at full detail.
+            let lod = crate::lod::projected_actor_height_px(&camera, record.root, local_bounds)
+                .map_or(0, crate::lod::zombie_lod_for_pixel_height);
+            self.last_zombie_lod_counts[lod as usize] += 1;
+            if let Some(weapon) = record.shooter_weapon {
+                instances[ActorPart::BoltLauncher.mesh_index()].push(
+                    InstanceRaw::from_transform(
+                        weapon * Mat4::from_scale(Vec3::new(0.12, 0.12, 0.42)),
+                    )
+                    .with_hit_flash_and_emissive(
+                        0,
+                        (record.telegraph_progress.clamp(0.0, 1.0) * 180.0) as u8,
+                    )
+                    .with_meta_override(
+                        crate::mesh::VertexMeta::DEFAULT
+                            .with_tag(crate::mesh::GeometryTag::Actor)
+                            .with_floor((record.meta_override[0] >> 8) as u8)
+                            .with_flags(
+                                crate::mesh::MaterialFlags::ACTOR_MIN_LIGHT
+                                    | crate::mesh::MaterialFlags::CUTAWAY_EXEMPT,
+                            ),
+                    ),
+                );
+            }
+            zombies.push(PreparedZombie {
+                mesh: self.zombie_prototypes[archetype_index][lod as usize],
+                record,
+            });
         }
         for cache in cache_instances(&frame.dynamic.caches) {
             instances[ActorPart::MESH_COUNT + usize::from(cache.opened)]
@@ -382,7 +508,7 @@ impl Presentation {
                     .push(InstanceRaw::from_transform(transforms.part_transform(part)));
             }
         }
-        (camera, frame, lighting, instances)
+        (camera, frame, lighting, instances, zombies)
     }
 
     fn batches<'a>(
@@ -437,7 +563,7 @@ impl Presentation {
         dt: f32,
     ) -> Result<RgbaImage, GpuError> {
         let started = Instant::now();
-        let (camera, frame, lighting, instances) = self.prepare(ctx, game, dt);
+        let (camera, frame, lighting, instances, zombies) = self.prepare(ctx, game, dt);
         let effects = self.effects.prepare(&frame, dt);
         let batches = Self::batches(
             self.actor_prototypes,
@@ -448,9 +574,15 @@ impl Presentation {
         );
         let prepare_time = started.elapsed();
         let render_started = Instant::now();
-        let rendered =
-            self.renderer
-                .render_offscreen_rgba8(ctx, &camera, &lighting, &batches, Some(&effects));
+        let skinned_draws = Self::skinned_draws(&zombies);
+        let rendered = self.renderer.render_offscreen_rgba8_with_skinned(
+            ctx,
+            &camera,
+            &lighting,
+            &batches,
+            Some(&effects),
+            &skinned_draws,
+        );
         if rendered.is_ok() {
             self.telemetry.record(
                 started,
@@ -461,6 +593,27 @@ impl Presentation {
             );
         }
         rendered
+    }
+
+    fn skinned_draws(zombies: &[PreparedZombie]) -> Vec<SkinnedActorDraw<'_>> {
+        zombies
+            .iter()
+            .map(|zombie| {
+                let record = &zombie.record;
+                let mut instance = InstanceRaw::from_transform(record.root)
+                    .with_tint(record.color_tint)
+                    .with_hit_flash_and_emissive(
+                        (record.emissive_flash[0].clamp(0.0, 1.0) * 255.0) as u8,
+                        (record.emissive_flash[1].clamp(0.0, 1.0) * 255.0) as u8,
+                    );
+                instance.instance_meta[..2].copy_from_slice(&record.meta_override);
+                SkinnedActorDraw {
+                    mesh: zombie.mesh,
+                    instance,
+                    palette: &record.skin_palette,
+                }
+            })
+            .collect()
     }
 
     pub fn render_to_surface(
@@ -488,7 +641,7 @@ impl Presentation {
             let ratio = self.camera.internal_size().y as f32 / reference_size.y as f32;
             self.camera.config_mut().iso_pixels_per_unit *= ratio;
         }
-        let (camera, frame, lighting, instances) = self.prepare(ctx, game, dt);
+        let (camera, frame, lighting, instances, zombies) = self.prepare(ctx, game, dt);
         self.camera.config_mut().iso_pixels_per_unit = original_iso_scale;
         self.camera.set_display_surface(config.width, config.height);
         let effects = self.effects.prepare(&frame, dt);
@@ -501,7 +654,8 @@ impl Presentation {
         );
         let prepare_time = started.elapsed();
         let render_started = Instant::now();
-        let rendered = self.renderer.render_to_surface(
+        let skinned_draws = Self::skinned_draws(&zombies);
+        let rendered = self.renderer.render_to_surface_with_skinned(
             ctx,
             surface,
             config,
@@ -509,6 +663,7 @@ impl Presentation {
             &lighting,
             &batches,
             Some(&effects),
+            &skinned_draws,
         );
         if let Ok(SurfaceFrameOutcome::Presented { stats, .. }) = rendered {
             self.telemetry.record(

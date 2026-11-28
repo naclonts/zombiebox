@@ -13,6 +13,7 @@ pub mod gpu;
 mod interaction;
 pub mod materials;
 pub mod mesh;
+pub mod lod;
 mod player_rig;
 #[cfg(feature = "gpu")]
 mod presentation;
@@ -47,6 +48,7 @@ pub use gpu::{
     ChunkGpuSlot, ChunkMeshPool, FrameStats, GpuContext, GpuError, GpuMesh, GpuRenderer,
     InstanceBatch, InstanceRaw, InternalResolutionPolicy, OffscreenTarget, PointLightGpu,
     PrototypeMeshId, RenderPipelineConfig, SceneLightingUniforms, SurfaceFrameOutcome,
+    SkinnedActorDraw, SkinnedPrototypeMeshId,
     render_smoke_cube, select_surface_format, write_rgba8_png,
 };
 

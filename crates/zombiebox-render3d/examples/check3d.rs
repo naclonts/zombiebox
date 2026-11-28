@@ -1,4 +1,5 @@
 //! Reproducible headless presentation smoke run. `cargo run -p zombiebox-render3d --example check3d --features gpu`.
+use glam::UVec2;
 use std::{error::Error, path::Path, time::Instant};
 use zombiebox_core::{
     ActionGame, ActionInput, DamageKind, Ground, LandmarkKind, Position, Tile3D, TileKind, Vec2,
@@ -27,12 +28,13 @@ fn capture(
     img.save_png(Path::new(OUT).join(format!("{name}.png")))?;
     let s = p.last_frame_stats();
     println!(
-        "{name}: {:.1}ms, {unique} colors, {} / {} chunks, {} instances, {} triangles",
+        "{name}: {:.1}ms, {unique} colors, {} / {} chunks, {} instances, {} triangles, zombie LODs {:?}",
         elapsed.as_secs_f64() * 1000.0,
         s.chunks_drawn,
         s.chunks_resident,
         s.instances_drawn,
-        s.triangles_submitted
+        s.triangles_submitted,
+        p.last_zombie_lod_counts()
     );
     Ok(())
 }
@@ -118,14 +120,59 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     assert!(birch.hud().indoors, "walk never reached the Birch interior");
     capture(&ctx, &mut p, &birch, "birch-walk")?;
+    let stairs = (house.y..house.y + house.height)
+        .flat_map(|y| (house.x..house.x + house.width).map(move |x| Position::new(x, y)))
+        .find(|&pos| {
+            birch
+                .tile_render_info(pos, 0)
+                .is_some_and(|tile| tile.kind == TileKind::StairsUp)
+        })
+        .ok_or("no Birch stairs")?;
+    let stair_center = Tile3D::from_pos(stairs, 0).center();
+    for _ in 0..180 {
+        birch.step(ActionInput {
+            movement: (stair_center - birch.player_pose().position).normalized(),
+            ..Default::default()
+        });
+        p.observe_tick(&birch);
+        if birch.player_pose().floor == 1 {
+            break;
+        }
+    }
+    assert_eq!(
+        birch.player_pose().floor,
+        1,
+        "Birch stairs did not reach F1"
+    );
+    capture(&ctx, &mut p, &birch, "birch-upstairs")?;
     let mut horde = ActionGame::residential(42);
     horde.spawn_stress_monsters(160);
     p.reset();
     capture(&ctx, &mut p, &horde, "birch-horde")?;
-    assert!(
-        p.last_frame_stats().instances_drawn > 100,
-        "horde did not exercise batched draws"
-    );
+    let normal_horde_count: u32 = p.last_zombie_lod_counts().into_iter().sum();
+    assert!(normal_horde_count > 20, "horde did not draw enough zombies");
+
+    // Keep the same framing and internal render size while exercising all four output-pixel bands.
+    let internal = UVec2::new(640, 360);
+    let mut previous_triangles = 0;
+    for (lod, viewport) in [
+        (3, internal),
+        (2, internal * 2),
+        (1, internal * 5),
+        (0, internal * 11),
+    ] {
+        p.camera_mut()
+            .set_viewport_and_internal_size(viewport, internal);
+        p.render_offscreen(&ctx, &horde, 0.0)?;
+        let counts = p.last_zombie_lod_counts();
+        let triangles = p.last_frame_stats().triangles_submitted;
+        println!("Horde at {viewport:?}: zombie LODs {counts:?}, {triangles} total triangles");
+        assert_eq!(counts.into_iter().sum::<u32>(), normal_horde_count);
+        assert!(counts[lod] > 0, "no zombies drawn at LOD {lod}");
+        assert!(triangles > previous_triangles);
+        previous_triangles = triangles;
+    }
+    p.camera_mut().set_viewport(640, 360);
     let mut county = ActionGame::county(42);
     p.reset();
     capture(&ctx, &mut p, &county, "county-spawn")?;

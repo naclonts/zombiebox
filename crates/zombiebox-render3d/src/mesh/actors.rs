@@ -3,7 +3,6 @@ use super::{
     FaceMask, GeometryTag, MaterialFlags, MeshBuffer, MeshBuilder, VertexMeta, emit_cuboid,
     survivor::{SurvivorNode, survivor_mesh},
     weapons::{WeaponModel, weapon_mesh, weapon_nodes},
-    zombie::{ZombieMeshPart, zombie_mesh},
 };
 use glam::{Mat4, Vec3};
 
@@ -44,14 +43,8 @@ const SURVIVOR_RENDER_NODES: [SurvivorNode; 15] = [
     SurvivorNode::ShinR,
     SurvivorNode::FootR,
 ];
-const ACTOR_PARTS: [ActorPart; 26] = [
+const ACTOR_PARTS: [ActorPart; 20] = [
     ActorPart::Body,
-    ActorPart::ZombieBody,
-    ActorPart::ZombieHead,
-    ActorPart::ZombieArmL,
-    ActorPart::ZombieArmR,
-    ActorPart::ZombieLegL,
-    ActorPart::ZombieLegR,
     ActorPart::Survivor(SurvivorNode::Pelvis),
     ActorPart::Survivor(SurvivorNode::Torso),
     ActorPart::Survivor(SurvivorNode::Head),
@@ -73,7 +66,7 @@ const ACTOR_PARTS: [ActorPart; 26] = [
     ActorPart::RocketLauncher,
 ];
 impl ActorPart {
-    pub const MESH_PARTS: [Self; 26] = ACTOR_PARTS;
+    pub const MESH_PARTS: [Self; 20] = ACTOR_PARTS;
     pub const MESH_COUNT: usize = Self::MESH_PARTS.len();
     #[must_use]
     pub fn mesh_index(self) -> usize {
@@ -87,7 +80,6 @@ impl ActorPart {
 #[derive(Clone, Debug)]
 pub struct ActorMeshLibrary {
     unit: MeshBuffer,
-    zombie: [MeshBuffer; 6],
     survivor: Vec<(SurvivorNode, MeshBuffer)>,
     weapons: Vec<(ActorPart, MeshBuffer)>,
 }
@@ -110,14 +102,6 @@ impl ActorMeshLibrary {
                 .with_tag(GeometryTag::Actor)
                 .with_flags(MaterialFlags::ACTOR_MIN_LIGHT | MaterialFlags::CUTAWAY_EXEMPT),
         );
-        let zombie = [
-            zombie_mesh(ZombieMeshPart::Body),
-            zombie_mesh(ZombieMeshPart::Head),
-            zombie_mesh(ZombieMeshPart::ArmL),
-            zombie_mesh(ZombieMeshPart::ArmR),
-            zombie_mesh(ZombieMeshPart::LegL),
-            zombie_mesh(ZombieMeshPart::LegR),
-        ];
         let survivor = SURVIVOR_RENDER_NODES
             .into_iter()
             .filter_map(|n| survivor_mesh(n).map(|m| (n, m)))
@@ -150,7 +134,6 @@ impl ActorMeshLibrary {
         .collect();
         Self {
             unit: b.build(),
-            zombie,
             survivor,
             weapons,
         }
@@ -158,12 +141,6 @@ impl ActorMeshLibrary {
     #[must_use]
     pub fn mesh(&self, part: ActorPart) -> &MeshBuffer {
         match part {
-            ActorPart::ZombieBody => &self.zombie[0],
-            ActorPart::ZombieHead => &self.zombie[1],
-            ActorPart::ZombieArmL => &self.zombie[2],
-            ActorPart::ZombieArmR => &self.zombie[3],
-            ActorPart::ZombieLegL => &self.zombie[4],
-            ActorPart::ZombieLegR => &self.zombie[5],
             ActorPart::Survivor(n) => self
                 .survivor
                 .iter()

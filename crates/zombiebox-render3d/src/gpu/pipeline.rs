@@ -3,7 +3,8 @@
 use glam::{UVec2, Vec3};
 
 use super::buffers::{
-    ChunkMeshPool, GpuMesh, InstanceBatch, InstanceRaw, PrototypeMeshId, instance_raw_layout,
+    ChunkMeshPool, GpuMesh, InstanceBatch, InstanceRaw, PrototypeMeshId, SkinnedActorDraw,
+    SkinnedGpuMesh, SkinnedPrototypeMeshId, instance_raw_layout, skinned_vertex_layout,
     world_vertex_layout,
 };
 use super::instance_buffer::DynamicInstanceBuffer;
@@ -70,9 +71,18 @@ struct PrototypeRecord {
     mesh: GpuMesh,
 }
 
+struct SkinnedPrototypeRecord {
+    mesh: SkinnedGpuMesh,
+}
+
+const SKIN_PALETTE_JOINTS: usize = 128;
+const SKIN_PALETTE_BYTES: u64 = (SKIN_PALETTE_JOINTS * 64) as u64;
+
 pub struct GpuRenderer {
     config: RenderPipelineConfig,
     world_pipeline: wgpu::RenderPipeline,
+    skinned_pipeline: wgpu::RenderPipeline,
+    skinned_palette_layout: wgpu::BindGroupLayout,
     upscale_pipeline_cache: std::collections::HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     world_bind_group: wgpu::BindGroup,
     visibility: super::visibility::VisibilityTexture,
@@ -87,6 +97,12 @@ pub struct GpuRenderer {
     chunk_pool: ChunkMeshPool,
     prototypes: Vec<PrototypeRecord>,
     dynamic_instance_buffer: DynamicInstanceBuffer,
+    skinned_prototypes: Vec<SkinnedPrototypeRecord>,
+    skinned_palette_buffer: Option<wgpu::Buffer>,
+    skinned_palette_bind_group: Option<wgpu::BindGroup>,
+    skinned_palette_capacity: usize,
+    skinned_instance_buffer: Option<wgpu::Buffer>,
+    skinned_instance_capacity: usize,
 
     internal_target: Option<OffscreenTarget>,
     upscale_readback_target: Option<UpscaleReadbackTarget>,
@@ -358,6 +374,71 @@ impl GpuRenderer {
                 cache: None,
             });
 
+        let skinned_palette_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("skinned_palette_layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: wgpu::BufferSize::new(SKIN_PALETTE_BYTES),
+                        },
+                        count: None,
+                    }],
+                });
+        let skinned_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("skinned_pipeline_layout"),
+                    bind_group_layouts: &[Some(&bind_group_layout), Some(&skinned_palette_layout)],
+                    immediate_size: 0,
+                });
+        let skinned_vertex_buffers = [Some(skinned_vertex_layout()), Some(instance_raw_layout())];
+        let skinned_pipeline = ctx
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("skinned_actor_pipeline"),
+                layout: Some(&skinned_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &world_shader,
+                    entry_point: Some("vs_skinned"),
+                    buffers: &skinned_vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &world_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nearest_sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -420,6 +501,8 @@ impl GpuRenderer {
         Self {
             config,
             world_pipeline,
+            skinned_pipeline,
+            skinned_palette_layout,
             upscale_pipeline_cache: std::collections::HashMap::new(),
             world_bind_group,
             visibility,
@@ -432,6 +515,12 @@ impl GpuRenderer {
             chunk_pool: ChunkMeshPool::new(),
             prototypes: Vec::new(),
             dynamic_instance_buffer: DynamicInstanceBuffer::new(),
+            skinned_prototypes: Vec::new(),
+            skinned_palette_buffer: None,
+            skinned_palette_bind_group: None,
+            skinned_palette_capacity: 0,
+            skinned_instance_buffer: None,
+            skinned_instance_capacity: 0,
             internal_target: None,
             upscale_readback_target: None,
             last_stats: FrameStats::default(),
@@ -512,6 +601,136 @@ impl GpuRenderer {
                 record.mesh = gpu_mesh;
             }
         }
+    }
+
+    pub fn register_skinned_prototype(
+        &mut self,
+        ctx: &GpuContext,
+        label: &str,
+        mesh: &crate::mesh::zombie_asset::SkinnedZombieMesh,
+    ) -> SkinnedPrototypeMeshId {
+        let gpu_mesh = SkinnedGpuMesh::upload(&ctx.device, label, mesh).unwrap_or_else(|| {
+            let fallback = crate::mesh::zombie_asset::SkinnedZombieMesh {
+                vertices: vec![crate::mesh::zombie_asset::SkinnedZombieVertex {
+                    position: Vec3::ZERO,
+                    normal: Vec3::Y,
+                    color: [255; 4],
+                    joints: [0; 4],
+                    weights: [u16::MAX, 0, 0, 0],
+                }],
+                indices: vec![0, 0, 0],
+            };
+            SkinnedGpuMesh::upload(&ctx.device, label, &fallback).unwrap()
+        });
+        let id = self.skinned_prototypes.len() as u32;
+        self.skinned_prototypes
+            .push(SkinnedPrototypeRecord { mesh: gpu_mesh });
+        SkinnedPrototypeMeshId(id)
+    }
+
+    fn prepare_skinned_buffers(&mut self, ctx: &GpuContext, draws: &[SkinnedActorDraw<'_>]) {
+        if draws.is_empty() {
+            return;
+        }
+        let alignment = ctx
+            .device
+            .limits()
+            .min_uniform_buffer_offset_alignment
+            .max(1) as usize;
+        let palette_stride = (SKIN_PALETTE_BYTES as usize).div_ceil(alignment) * alignment;
+        let palette_required = palette_stride * draws.len();
+        if palette_required > self.skinned_palette_capacity || self.skinned_palette_buffer.is_none()
+        {
+            self.skinned_palette_capacity =
+                palette_required.max(palette_stride).next_power_of_two();
+            self.skinned_palette_buffer = Some(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("skinned_palette_ring"),
+                size: self.skinned_palette_capacity as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            let buffer = self.skinned_palette_buffer.as_ref().unwrap();
+            self.skinned_palette_bind_group =
+                Some(ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("skinned_palette_bind_group"),
+                    layout: &self.skinned_palette_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer,
+                            offset: 0,
+                            size: wgpu::BufferSize::new(SKIN_PALETTE_BYTES),
+                        }),
+                    }],
+                }));
+        }
+        let instance_required = std::mem::size_of::<InstanceRaw>() * draws.len();
+        if instance_required > self.skinned_instance_capacity
+            || self.skinned_instance_buffer.is_none()
+        {
+            self.skinned_instance_capacity = instance_required.max(96).next_power_of_two();
+            self.skinned_instance_buffer =
+                Some(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("skinned_instance_buffer"),
+                    size: self.skinned_instance_capacity as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+        }
+        let instances: Vec<_> = draws.iter().map(|draw| draw.instance).collect();
+        ctx.queue.write_buffer(
+            self.skinned_instance_buffer.as_ref().unwrap(),
+            0,
+            bytemuck::cast_slice(&instances),
+        );
+        for (index, draw) in draws.iter().enumerate() {
+            let mut palette = [glam::Mat4::IDENTITY; SKIN_PALETTE_JOINTS];
+            let count = draw.palette.len().min(SKIN_PALETTE_JOINTS);
+            palette[..count].copy_from_slice(&draw.palette[..count]);
+            ctx.queue.write_buffer(
+                self.skinned_palette_buffer.as_ref().unwrap(),
+                (index * palette_stride) as u64,
+                bytemuck::cast_slice(&palette),
+            );
+        }
+    }
+
+    fn draw_skinned_actors(
+        &self,
+        ctx: &GpuContext,
+        pass: &mut wgpu::RenderPass<'_>,
+        draws: &[SkinnedActorDraw<'_>],
+    ) -> (u32, u32, u64) {
+        if draws.is_empty() {
+            return (0, 0, 0);
+        }
+        pass.set_pipeline(&self.skinned_pipeline);
+        pass.set_bind_group(0, &self.world_bind_group, &[]);
+        let palette_group = self.skinned_palette_bind_group.as_ref().unwrap();
+        let instance_buffer = self.skinned_instance_buffer.as_ref().unwrap();
+        let alignment = ctx
+            .device
+            .limits()
+            .min_uniform_buffer_offset_alignment
+            .max(1) as usize;
+        let palette_stride = (SKIN_PALETTE_BYTES as usize).div_ceil(alignment) * alignment;
+        let mut instances_drawn = 0;
+        let mut triangles_submitted = 0;
+        for (index, draw) in draws.iter().enumerate() {
+            let Some(proto) = self.skinned_prototypes.get(draw.mesh.0 as usize) else {
+                continue;
+            };
+            pass.set_bind_group(1, palette_group, &[(index * palette_stride) as u32]);
+            pass.set_vertex_buffer(0, proto.mesh.vertex_buffer.slice(..));
+            let instance_start = (index * std::mem::size_of::<InstanceRaw>()) as u64;
+            let instance_end = instance_start + std::mem::size_of::<InstanceRaw>() as u64;
+            pass.set_vertex_buffer(1, instance_buffer.slice(instance_start..instance_end));
+            pass.set_index_buffer(proto.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..proto.mesh.index_count, 0, 0..1);
+            instances_drawn += 1;
+            triangles_submitted += (proto.mesh.index_count / 3) as u64;
+        }
+        (instances_drawn, instances_drawn, triangles_submitted)
     }
 
     /// Number of retained prototype slots (test-only budget assertion).
@@ -598,6 +817,25 @@ impl GpuRenderer {
         instances: &[InstanceBatch<'_>],
         transient_mesh: Option<&MeshBuffer>,
     ) -> Result<RgbaImage, GpuError> {
+        self.render_offscreen_rgba8_with_skinned(
+            ctx,
+            camera,
+            lighting,
+            instances,
+            transient_mesh,
+            &[],
+        )
+    }
+
+    pub fn render_offscreen_rgba8_with_skinned(
+        &mut self,
+        ctx: &GpuContext,
+        camera: &CameraFrame,
+        lighting: &SceneLightingUniforms,
+        instances: &[InstanceBatch<'_>],
+        transient_mesh: Option<&MeshBuffer>,
+        skinned_draws: &[SkinnedActorDraw<'_>],
+    ) -> Result<RgbaImage, GpuError> {
         let (internal_size, output_size) = self.resolve_dimensions(camera);
 
         if self
@@ -645,6 +883,7 @@ impl GpuRenderer {
             bytemuck::bytes_of(&local_lighting),
         );
 
+        self.prepare_skinned_buffers(ctx, skinned_draws);
         let target = self.internal_target.as_ref().unwrap();
         let mut encoder = ctx
             .device
@@ -667,6 +906,7 @@ impl GpuRenderer {
         let mut prototype_batches_drawn = 0_u32;
         let mut instances_drawn = 0_u32;
         let mut triangles_submitted = 0_u64;
+        let chunks_resident = self.chunk_pool.len() as u32;
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -703,7 +943,6 @@ impl GpuRenderer {
 
             // Draw chunks
             let sorted_coords = self.chunk_pool.sorted_coords();
-            let chunks_resident = sorted_coords.len() as u32;
 
             for coord in sorted_coords {
                 if let Some(slot) = self.chunk_pool.get(coord) {
@@ -763,18 +1002,25 @@ impl GpuRenderer {
                 }
             }
 
-            self.last_stats = FrameStats {
-                internal_size,
-                output_size,
-                used_upscale_pass: needs_upscale,
-                chunks_resident,
-                chunks_drawn,
-                chunks_culled,
-                prototype_batches_drawn,
-                instances_drawn,
-                triangles_submitted,
-            };
+            let (skinned_batches, skinned_instances, skinned_triangles) =
+                self.draw_skinned_actors(ctx, &mut pass, skinned_draws);
+            prototype_batches_drawn += skinned_batches;
+            instances_drawn += skinned_instances;
+            triangles_submitted += skinned_triangles;
+
         }
+
+        self.last_stats = FrameStats {
+            internal_size,
+            output_size,
+            used_upscale_pass: needs_upscale,
+            chunks_resident,
+            chunks_drawn,
+            chunks_culled,
+            prototype_batches_drawn,
+            instances_drawn,
+            triangles_submitted,
+        };
 
         if needs_upscale {
             let upscale_target = self.upscale_readback_target.as_ref().unwrap();
@@ -848,6 +1094,30 @@ impl GpuRenderer {
         instances: &[InstanceBatch<'_>],
         transient_mesh: Option<&MeshBuffer>,
     ) -> Result<SurfaceFrameOutcome, GpuError> {
+        self.render_to_surface_with_skinned(
+            ctx,
+            surface,
+            surface_config,
+            camera,
+            lighting,
+            instances,
+            transient_mesh,
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_to_surface_with_skinned(
+        &mut self,
+        ctx: &GpuContext,
+        surface: &wgpu::Surface<'_>,
+        surface_config: &wgpu::SurfaceConfiguration,
+        camera: &CameraFrame,
+        lighting: &SceneLightingUniforms,
+        instances: &[InstanceBatch<'_>],
+        transient_mesh: Option<&MeshBuffer>,
+        skinned_draws: &[SkinnedActorDraw<'_>],
+    ) -> Result<SurfaceFrameOutcome, GpuError> {
         let (surface_texture, suboptimal) = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => (tex, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(tex) => (tex, true),
@@ -890,6 +1160,7 @@ impl GpuRenderer {
             bytemuck::bytes_of(&local_lighting),
         );
 
+        self.prepare_skinned_buffers(ctx, skinned_draws);
         let target = self.internal_target.as_ref().unwrap();
         let mut encoder = ctx
             .device
@@ -911,6 +1182,7 @@ impl GpuRenderer {
         let mut prototype_batches_drawn = 0_u32;
         let mut instances_drawn = 0_u32;
         let mut triangles_submitted = 0_u64;
+        let chunks_resident = self.chunk_pool.len() as u32;
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -946,7 +1218,6 @@ impl GpuRenderer {
             pass.set_bind_group(0, &self.world_bind_group, &[]);
 
             let sorted_coords = self.chunk_pool.sorted_coords();
-            let chunks_resident = sorted_coords.len() as u32;
 
             for coord in sorted_coords {
                 if let Some(slot) = self.chunk_pool.get(coord) {
@@ -1004,18 +1275,25 @@ impl GpuRenderer {
                 }
             }
 
-            self.last_stats = FrameStats {
-                internal_size,
-                output_size,
-                used_upscale_pass: internal_size != output_size,
-                chunks_resident,
-                chunks_drawn,
-                chunks_culled,
-                prototype_batches_drawn,
-                instances_drawn,
-                triangles_submitted,
-            };
+            let (skinned_batches, skinned_instances, skinned_triangles) =
+                self.draw_skinned_actors(ctx, &mut pass, skinned_draws);
+            prototype_batches_drawn += skinned_batches;
+            instances_drawn += skinned_instances;
+            triangles_submitted += skinned_triangles;
+
         }
+
+        self.last_stats = FrameStats {
+            internal_size,
+            output_size,
+            used_upscale_pass: internal_size != output_size,
+            chunks_resident,
+            chunks_drawn,
+            chunks_culled,
+            prototype_batches_drawn,
+            instances_drawn,
+            triangles_submitted,
+        };
 
         // Upscale pass into surface texture view
         let surface_view = surface_texture

@@ -13,8 +13,8 @@ pub mod terrain;
 pub mod vehicles;
 #[allow(clippy::excessive_precision)] // generated authored mesh tables
 pub mod weapons;
-#[allow(clippy::excessive_precision)] // generated f32 literal table
-pub mod zombie;
+pub mod zombie_asset;
+pub mod zombie_skeletons;
 
 pub use primitives::*;
 pub use props::*;

@@ -33,6 +33,9 @@ struct SceneLighting {
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var<uniform> lighting: SceneLighting;
 @group(0) @binding(2) var visibility: texture_2d<u32>;
+// Dynamic uniform offset selects one actor's 128-joint palette; this is supported by
+// downlevel GLES/WebGL adapters without requiring vertex-stage storage buffers.
+@group(1) @binding(0) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -94,6 +97,50 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     out.normal = world_n;
     out.world_pos = world_p.xyz;
     out.v_meta = v_meta;
+    out.inst_fx = vec2<u32>(in.instance_meta.z, in.instance_meta.w);
+    return out;
+}
+
+struct SkinnedVertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec4<f32>,
+    @location(4) model_col0: vec4<f32>,
+    @location(5) model_col1: vec4<f32>,
+    @location(6) model_col2: vec4<f32>,
+    @location(7) model_col3: vec4<f32>,
+    @location(8) color_tint: vec4<f32>,
+    @location(9) instance_meta: vec4<u32>,
+    @location(10) joints: vec4<u32>,
+    @location(11) weights: vec4<f32>,
+};
+
+@vertex
+fn vs_skinned(in: SkinnedVertexInput) -> VertexOutput {
+    var skin = mat4x4<f32>(vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let weight = in.weights[i];
+        let joint = joint_palette[min(in.joints[i], 127u)];
+        skin = skin + joint * weight;
+    }
+    let model = mat4x4<f32>(
+        in.model_col0,
+        in.model_col1,
+        in.model_col2,
+        vec4<f32>(in.model_col3.xyz - camera.render_origin.xyz, in.model_col3.w),
+    );
+    let world_p = model * (skin * vec4<f32>(in.position, 1.0));
+    let model_normal = mat3x3<f32>(in.model_col0.xyz, in.model_col1.xyz, in.model_col2.xyz);
+    let skin_normal = mat3x3<f32>(skin[0].xyz, skin[1].xyz, skin[2].xyz);
+    let world_n = normalize(model_normal * (skin_normal * in.normal));
+    let tint_color = in.color * in.color_tint;
+    let hit_flash = f32(in.instance_meta.z & 0xFFu) / 255.0;
+    var out: VertexOutput;
+    out.clip_position = camera.view_proj * world_p;
+    out.color = mix(tint_color, vec4<f32>(1.0, 1.0, 1.0, tint_color.a), hit_flash);
+    out.normal = world_n;
+    out.world_pos = world_p.xyz;
+    out.v_meta = in.instance_meta.xy;
     out.inst_fx = vec2<u32>(in.instance_meta.z, in.instance_meta.w);
     return out;
 }

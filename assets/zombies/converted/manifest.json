@@ -1,0 +1,461 @@
+{
+  "format": "ZBZS v1",
+  "targets_triangles": [
+    10065,
+    4973,
+    1836,
+    632
+  ],
+  "assets": {
+    "bloated": {
+      "title": "Bloated Zombie",
+      "source_filename": "zombie-bloated.glb",
+      "source_sha256": "97eb9f7d02547481e578e366f01da3536271f6df71ca515128fbd46d672f46bf",
+      "author": "vinish.dev",
+      "source_url": "https://vinish.dev/free-3d-models/",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modification": "Reduced geometry into four LODs, baked base-color textures and factors to RGBA8 vertex colors, normalized local height to 1m, and converted to ZBZS v1.",
+      "skeleton": "bloated-skeleton.json",
+      "skeleton_binary": "bloated-skeleton.zbsk",
+      "joint_count": 66,
+      "source_triangles": 78382,
+      "lods": [
+        {
+          "file": "bloated-lod0.zbzs",
+          "sha256": "bddfeeb053ab6a3b6b99a62f05e38113cb50328771622e7c95710c85cd412d89",
+          "vertices": 6075,
+          "triangles": 10064,
+          "bounds_min": [
+            -0.5151360034942627,
+            0.00108299998100847,
+            -0.10596299916505814
+          ],
+          "bounds_max": [
+            0.5148059725761414,
+            0.9999129772186279,
+            0.1059890016913414
+          ]
+        },
+        {
+          "file": "bloated-lod1.zbzs",
+          "sha256": "fea7bc2fb9847f00e93d508b66b66dccb3942a585c90ccf13f740dbea7176870",
+          "vertices": 3141,
+          "triangles": 4973,
+          "bounds_min": [
+            -0.5141310095787048,
+            0.00101200002245605,
+            -0.10596299916505814
+          ],
+          "bounds_max": [
+            0.5148059725761414,
+            0.9994360208511353,
+            0.1059890016913414
+          ]
+        },
+        {
+          "file": "bloated-lod2.zbzs",
+          "sha256": "5788d58888348f75013de8ce434a3aa938295fda14bf7736266edf979053fb90",
+          "vertices": 1221,
+          "triangles": 1836,
+          "bounds_min": [
+            -0.5141310095787048,
+            0.0015670000575482845,
+            -0.10724099725484848
+          ],
+          "bounds_max": [
+            0.5145589709281921,
+            0.9991300106048584,
+            0.1059890016913414
+          ]
+        },
+        {
+          "file": "bloated-lod3.zbzs",
+          "sha256": "b11a34ad722ece50b5a82713e3c6ba0105892bf350a8b48f33238246d935304a",
+          "vertices": 513,
+          "triangles": 632,
+          "bounds_min": [
+            -0.5141310095787048,
+            0.00481100007891655,
+            -0.10467399656772614
+          ],
+          "bounds_max": [
+            0.5053449869155884,
+            1.000249981880188,
+            0.1059890016913414
+          ]
+        }
+      ],
+      "source_animation_clips": [
+        "Idle",
+        "Walk",
+        "Run",
+        "Attack",
+        "Bite",
+        "Hit",
+        "Death",
+        "Scream"
+      ]
+    },
+    "runner": {
+      "title": "Runner Zombie",
+      "source_filename": "zombie-runner.glb",
+      "source_sha256": "c15d32e0dc927d1c7f8735ed93237e082fd0c5eddc821e6c6e9bb8fba71e02e9",
+      "author": "vinish.dev",
+      "source_url": "https://vinish.dev/free-3d-models/",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modification": "Reduced geometry into four LODs, baked base-color textures and factors to RGBA8 vertex colors, normalized local height to 1m, and converted to ZBZS v1.",
+      "skeleton": "runner-skeleton.json",
+      "skeleton_binary": "runner-skeleton.zbsk",
+      "joint_count": 66,
+      "source_triangles": 85780,
+      "lods": [
+        {
+          "file": "runner-lod0.zbzs",
+          "sha256": "12dbe708eddd9edeac73574c2cc76861372bfa381867b919e0442b3be15cf432",
+          "vertices": 6263,
+          "triangles": 10064,
+          "bounds_min": [
+            -0.4911929965019226,
+            -0.001383999944664538,
+            -0.09898599982261658
+          ],
+          "bounds_max": [
+            0.49171000719070435,
+            0.9996330142021179,
+            0.09948699921369553
+          ]
+        },
+        {
+          "file": "runner-lod1.zbzs",
+          "sha256": "32fd2965f4baac19961f2bfe13e804b870cf8854c879c3729bed2da6d054c3d6",
+          "vertices": 3076,
+          "triangles": 4972,
+          "bounds_min": [
+            -0.4911929965019226,
+            -0.0027719999197870493,
+            -0.10088299959897995
+          ],
+          "bounds_max": [
+            0.49171000719070435,
+            0.999629020690918,
+            0.10052700340747833
+          ]
+        },
+        {
+          "file": "runner-lod2.zbzs",
+          "sha256": "892574675fe590d4dc507cd5fb37d4005f6b9294a4b74937aa6077693019b521",
+          "vertices": 1251,
+          "triangles": 1835,
+          "bounds_min": [
+            -0.49064499139785767,
+            -0.00369199994020164,
+            -0.10607899725437164
+          ],
+          "bounds_max": [
+            0.490229994058609,
+            0.9997220039367676,
+            0.10018900036811829
+          ]
+        },
+        {
+          "file": "runner-lod3.zbzs",
+          "sha256": "01c82a3585a847c366bfdf93887c92a580204b67b0ba2ee72f24e5c9f06080e6",
+          "vertices": 529,
+          "triangles": 631,
+          "bounds_min": [
+            -0.47691598534584045,
+            0.0070420000702142715,
+            -0.1043969988822937
+          ],
+          "bounds_max": [
+            0.47514399886131287,
+            0.9988290071487427,
+            0.09002500027418137
+          ]
+        }
+      ],
+      "source_animation_clips": [
+        "Idle",
+        "Walk",
+        "Run",
+        "Attack",
+        "Bite",
+        "Hit",
+        "Death",
+        "Scream"
+      ]
+    },
+    "soldier": {
+      "title": "Soldier Zombie",
+      "source_filename": "zombie-soldier.glb",
+      "source_sha256": "3b462deb7e33066b29ea6aeffb0c8c3f0dbc8f9886b8e2c59f5f343ba76d1d8d",
+      "author": "vinish.dev",
+      "source_url": "https://vinish.dev/free-3d-models/",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modification": "Reduced geometry into four LODs, baked base-color textures and factors to RGBA8 vertex colors, normalized local height to 1m, and converted to ZBZS v1.",
+      "skeleton": "soldier-skeleton.json",
+      "skeleton_binary": "soldier-skeleton.zbsk",
+      "joint_count": 66,
+      "source_triangles": 81662,
+      "lods": [
+        {
+          "file": "soldier-lod0.zbzs",
+          "sha256": "eb592ff5cf55fc404acdfdd516c7cc6d40a63e9016204a2d14d5ddcf5556548f",
+          "vertices": 5991,
+          "triangles": 10065,
+          "bounds_min": [
+            -0.5121859908103943,
+            -0.003350999904796481,
+            -0.1150979995727539
+          ],
+          "bounds_max": [
+            0.512503981590271,
+            1.000527024269104,
+            0.11560700088739395
+          ]
+        },
+        {
+          "file": "soldier-lod1.zbzs",
+          "sha256": "b8b72746560684174823ee6dd9bccc3f7e27fc56c829746fc0722e65c6b61661",
+          "vertices": 3114,
+          "triangles": 4972,
+          "bounds_min": [
+            -0.5103330016136169,
+            -0.005237999837845564,
+            -0.11652600020170212
+          ],
+          "bounds_max": [
+            0.5124329924583435,
+            1.0006359815597534,
+            0.11560700088739395
+          ]
+        },
+        {
+          "file": "soldier-lod2.zbzs",
+          "sha256": "92c66b6106df2e65c391d13bfb536b3f2722b943648cb2d85e9997fa71fcd062",
+          "vertices": 1270,
+          "triangles": 1836,
+          "bounds_min": [
+            -0.5103330016136169,
+            -0.002836999949067831,
+            -0.1206350028514862
+          ],
+          "bounds_max": [
+            0.5078290104866028,
+            1.0015380382537842,
+            0.11880400031805038
+          ]
+        },
+        {
+          "file": "soldier-lod3.zbzs",
+          "sha256": "f3ae36838d5d5e8d6f96420c7e1f5bfa7d1a98f75fdaa0df050612b05428b269",
+          "vertices": 530,
+          "triangles": 633,
+          "bounds_min": [
+            -0.48651400208473206,
+            0.017023000866174698,
+            -0.09386900067329407
+          ],
+          "bounds_max": [
+            0.4961079955101013,
+            0.9870330095291138,
+            0.09336300194263458
+          ]
+        }
+      ],
+      "source_animation_clips": [
+        "Idle",
+        "Walk",
+        "Run",
+        "Attack",
+        "Bite",
+        "Hit",
+        "Death",
+        "Scream"
+      ]
+    },
+    "walker": {
+      "title": "Walker Zombie",
+      "source_filename": "zombie-walker.glb",
+      "source_sha256": "caa8c17bb4a3188e46854304d935e64bb353b90a16732c01541b227f8601382e",
+      "author": "vinish.dev",
+      "source_url": "https://vinish.dev/free-3d-models/",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modification": "Reduced geometry into four LODs, baked base-color textures and factors to RGBA8 vertex colors, normalized local height to 1m, and converted to ZBZS v1.",
+      "skeleton": "walker-skeleton.json",
+      "skeleton_binary": "walker-skeleton.zbsk",
+      "joint_count": 66,
+      "source_triangles": 83292,
+      "lods": [
+        {
+          "file": "walker-lod0.zbzs",
+          "sha256": "76a7d52a624683b6657bf3b156ff0f5a387728dd28603ae65fc877d167361de8",
+          "vertices": 6240,
+          "triangles": 10065,
+          "bounds_min": [
+            -0.5156720280647278,
+            -0.004648000001907349,
+            -0.09851200133562088
+          ],
+          "bounds_max": [
+            0.5153260231018066,
+            0.9996970295906067,
+            0.09988799691200256
+          ]
+        },
+        {
+          "file": "walker-lod1.zbzs",
+          "sha256": "010ceb9842f12eabbd435d31a9759c8d7ea76f9ae166cd6f8ea297ca6d162b05",
+          "vertices": 3095,
+          "triangles": 4973,
+          "bounds_min": [
+            -0.5148209929466248,
+            -0.004544000141322613,
+            -0.09977500140666962
+          ],
+          "bounds_max": [
+            0.5153260231018066,
+            0.9996569752693176,
+            0.09988799691200256
+          ]
+        },
+        {
+          "file": "walker-lod2.zbzs",
+          "sha256": "03b3bfa5f84ca351e1bf3ceb04bbe5b47d0c25d9a18f9f5b99177e048b4eb88c",
+          "vertices": 1233,
+          "triangles": 1835,
+          "bounds_min": [
+            -0.5124729871749878,
+            -0.003172999946400523,
+            -0.1001340001821518
+          ],
+          "bounds_max": [
+            0.5148109793663025,
+            0.9996569752693176,
+            0.1055070012807846
+          ]
+        },
+        {
+          "file": "walker-lod3.zbzs",
+          "sha256": "e3050fb1c8b0f78a7f508f837bebb5dcb86a7cf3b9ff0e013a6507d76411bbb5",
+          "vertices": 499,
+          "triangles": 632,
+          "bounds_min": [
+            -0.5077090263366699,
+            0.0,
+            -0.09485200047492981
+          ],
+          "bounds_max": [
+            0.5081930160522461,
+            1.002431035041809,
+            0.08971299976110458
+          ]
+        }
+      ],
+      "source_animation_clips": [
+        "Idle",
+        "Walk",
+        "Run",
+        "Attack",
+        "Bite",
+        "Hit",
+        "Death",
+        "Scream"
+      ]
+    },
+    "woman": {
+      "title": "Woman Zombie",
+      "source_filename": "zombie-woman.glb",
+      "source_sha256": "cc6df718b3a4e9d796a797ea3dde448e73e5fca8a236a160265a481a9cd0b639",
+      "author": "vinish.dev",
+      "source_url": "https://vinish.dev/free-3d-models/",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "modification": "Reduced geometry into four LODs, baked base-color textures and factors to RGBA8 vertex colors, normalized local height to 1m, and converted to ZBZS v1.",
+      "skeleton": "woman-skeleton.json",
+      "skeleton_binary": "woman-skeleton.zbsk",
+      "joint_count": 66,
+      "source_triangles": 80407,
+      "lods": [
+        {
+          "file": "woman-lod0.zbzs",
+          "sha256": "5c4fa0e4d5c973e415a67f80dcb8ce12971f2ebb3bc4945f7e297d5ff6c6bc04",
+          "vertices": 6375,
+          "triangles": 10065,
+          "bounds_min": [
+            -0.49097201228141785,
+            0.0008430000161752105,
+            -0.1186939999461174
+          ],
+          "bounds_max": [
+            0.49049100279808044,
+            0.9995489716529846,
+            0.11818499863147736
+          ]
+        },
+        {
+          "file": "woman-lod1.zbzs",
+          "sha256": "c680618f50ef145f65577aa0347a54f8c94be49245e2109e0e5c1a2635332d03",
+          "vertices": 3223,
+          "triangles": 4972,
+          "bounds_min": [
+            -0.490462988615036,
+            0.0014009999576956034,
+            -0.11861299723386765
+          ],
+          "bounds_max": [
+            0.49028000235557556,
+            0.9990530014038086,
+            0.11775700002908707
+          ]
+        },
+        {
+          "file": "woman-lod2.zbzs",
+          "sha256": "82b14de0b89d6f6898235934be89a03af829a99c231f35d609d0d3cb51b6ac32",
+          "vertices": 1292,
+          "triangles": 1686,
+          "bounds_min": [
+            -0.4727180004119873,
+            0.007908999919891357,
+            -0.09166699647903442
+          ],
+          "bounds_max": [
+            0.47623300552368164,
+            1.003728985786438,
+            0.11775700002908707
+          ]
+        },
+        {
+          "file": "woman-lod3.zbzs",
+          "sha256": "e943827bc0ea83650a929b415a52be7e0bba12ff16514e9f1e98e9abcb90db33",
+          "vertices": 778,
+          "triangles": 632,
+          "bounds_min": [
+            -0.4727180004119873,
+            0.007908999919891357,
+            -0.09161999821662903
+          ],
+          "bounds_max": [
+            0.47623300552368164,
+            1.003728985786438,
+            0.11775700002908707
+          ]
+        }
+      ],
+      "source_animation_clips": [
+        "Idle",
+        "Walk",
+        "Run",
+        "Attack",
+        "Bite",
+        "Hit",
+        "Death",
+        "Scream"
+      ]
+    }
+  }
+}

@@ -47,6 +47,9 @@ def buildZombieboxRust = tasks.register('buildZombieboxRust', Exec) {
     inputs.file(rustScript)
     inputs.files(rustSources.file('Cargo.toml'), rustSources.file('Cargo.lock'))
     inputs.dir(rustSources.dir('crates'))
+    inputs.files(fileTree(rustSources.dir('assets/zombies/converted').asFile) {
+        include '*.zbzs', '*.zbsk'
+    })
     inputs.file(jniSource)
     inputs.property('abis', zombieboxAbis.join(','))
     outputs.dir(rustLibraries)

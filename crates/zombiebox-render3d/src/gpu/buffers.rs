@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::coords::{ChunkCoord, RenderAabb};
-use crate::mesh::{MeshBuffer, VertexMeta, WorldVertex};
+use crate::mesh::{MeshBuffer, VertexMeta, WorldVertex, zombie_asset::SkinnedZombieMesh};
 
 /// 96-byte per-instance payload (`@location(4..=9)`).
 #[repr(C)]
@@ -154,6 +154,113 @@ pub fn instance_raw_layout() -> wgpu::VertexBufferLayout<'static> {
         step_mode: wgpu::VertexStepMode::Instance,
         attributes: ATTRIBUTES,
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SkinnedGpuVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub color: [u8; 4],
+    pub joints: [u16; 4],
+    pub weights: [u16; 4],
+}
+
+#[must_use]
+pub fn skinned_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
+    const ATTRIBUTES: &[wgpu::VertexAttribute] = &[
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x3,
+            offset: 12,
+            shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Unorm8x4,
+            offset: 24,
+            shader_location: 2,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Uint16x4,
+            offset: 28,
+            shader_location: 10,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Unorm16x4,
+            offset: 36,
+            shader_location: 11,
+        },
+    ];
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<SkinnedGpuVertex>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: ATTRIBUTES,
+    }
+}
+
+#[derive(Debug)]
+pub struct SkinnedGpuMesh {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub index_count: u32,
+    pub aabb: RenderAabb,
+}
+
+impl SkinnedGpuMesh {
+    #[must_use]
+    pub fn upload(device: &wgpu::Device, label: &str, mesh: &SkinnedZombieMesh) -> Option<Self> {
+        if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            return None;
+        }
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        let vertices: Vec<_> = mesh
+            .vertices
+            .iter()
+            .map(|vertex| {
+                min = min.min(vertex.position);
+                max = max.max(vertex.position);
+                SkinnedGpuVertex {
+                    position: vertex.position.to_array(),
+                    normal: vertex.normal.to_array(),
+                    color: vertex.color,
+                    joints: vertex.joints,
+                    weights: vertex.weights,
+                }
+            })
+            .collect();
+        use wgpu::util::DeviceExt;
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{label}_vertex_buffer")),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{label}_index_buffer")),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        Some(Self {
+            vertex_buffer,
+            index_buffer,
+            index_count: mesh.indices.len() as u32,
+            aabb: RenderAabb::new(min, max),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SkinnedPrototypeMeshId(pub u32);
+
+#[derive(Clone, Copy, Debug)]
+pub struct SkinnedActorDraw<'a> {
+    pub mesh: SkinnedPrototypeMeshId,
+    pub instance: InstanceRaw,
+    pub palette: &'a [glam::Mat4],
 }
 
 #[derive(Debug)]
