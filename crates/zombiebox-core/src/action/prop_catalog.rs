@@ -142,4 +142,6 @@ define_props! {
     Sign = 39, "sign", [1, 1], [0.50, 0.06, 0.40], None, WallMount, WoodLight, 25, None;
     Note = 40, "note", [1, 1], [0.32, 0.04, 0.24], None, WallMount, WoodLight, 10, None;
     Journal = 41, "journal", [1, 1], [0.38, 0.22, 0.08], None, Floor, WoodLight, 15, None;
+    TvStand = 42, "tv-stand", [2, 1], [0.60, 0.22, 0.42], Low, Floor, WoodLight, 60, None;
+    Nightstand = 43, "nightstand", [1, 1], [0.26, 0.24, 0.58], Low, Floor, WoodLight, 40, None;
 }

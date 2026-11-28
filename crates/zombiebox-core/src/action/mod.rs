@@ -1986,12 +1986,21 @@ impl ActionGame {
                 PropFacing::West => Vec2::new(-1.0, 0.0),
             };
             let (support_z, _, _) = resolve_tile_support(&self.stage, anchor.tile);
+            // The readable's own collider sits on its pivot, so sight lines aim
+            // at its front face. The 0.04 m ray margin then ignores that face.
+            let def = anchor.id.def();
+            let depth = if matches!(anchor.facing, PropFacing::East | PropFacing::West) {
+                def.collision_max.x
+            } else {
+                def.collision_max.y
+            };
+            let sight = anchor.pivot(support_z) + Vec3::new(front.x * depth, front.y * depth, 0.0);
             if anchor.tile.floor == floor
                 && read_dist <= INTERACT_FEATURE_RADIUS
                 && read_dist > 0.05
                 && read_delta.normalized().dot(facing) >= 0.20
                 && facing.dot(front) <= -0.20
-                && self.has_line_of_sight_to_point(anchor.pivot(support_z))
+                && self.has_line_of_sight_to_point(sight)
             {
                 return Some(InteractAction::Read(*id, anchor.tile));
             }

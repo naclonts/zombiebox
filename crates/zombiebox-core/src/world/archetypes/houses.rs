@@ -16,7 +16,7 @@ use super::super::furnish;
 use crate::world::blueprint::{
     BlueprintAnchor, BlueprintCell, BlueprintGrid, BlueprintKind, CompoundPlanner, DoorIntent,
     DoorKind, FitError, Frontage, GridRect, LocalCell, LocalPlacementKey, OutdoorLayer,
-    ParcelContext, ParcelPlan, PlannedSign, RoomMeta, SpaceId, StructureContext,
+    ParcelContext, ParcelPlan, PlannedSign, RoomMeta, RuleKey, SpaceId, StructureContext,
     StructureGenerator, parcel_id, place_blueprint_along_frontage,
 };
 
@@ -305,16 +305,18 @@ fn craftsman_bungalow(_context: &StructureContext) -> Result<BlueprintGrid, FitE
         });
     }
 
-    // A readable on the bedside table. The furnisher always places the
-    // required nightstand at this authored anchor, so the note stays supported.
+    // A readable on the bedside table. `host` ties it to the required
+    // nightstand (RuleKey 31); furnishing re-anchors the sign to that prop's
+    // placed anchor, facing and surface height, so the note stays supported.
     bp.signs.push(PlannedSign {
         key: LocalPlacementKey(0x6000),
-        anchor: BlueprintAnchor::new(3, 12, 0),
+        anchor: BlueprintAnchor::new(0, 0, 0),
         prop: PropId::Note,
         attachment: CellAttachment::CounterTop,
         offset_m: Vec3::new(0.0, 0.0, 1.2),
         facing: PropFacing::North,
         readable: Some(ReadableId::CraftsmanNote),
+        host: Some(RuleKey(31)),
     });
 
     Ok(bp)
@@ -441,7 +443,7 @@ mod tests {
         // The note anchor must sit on the required nightstand anchor so the
         // readable is physically supported in the live scene.
         assert!(bp.props.iter().any(|prop| {
-            prop.prop == PropId::Counter
+            prop.prop == PropId::Nightstand
                 && prop.anchor.u == note.anchor.u
                 && prop.anchor.v == note.anchor.v
                 && prop.anchor.floor == note.anchor.floor

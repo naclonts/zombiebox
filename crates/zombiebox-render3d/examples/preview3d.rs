@@ -22,6 +22,7 @@ enum SceneChoice {
     CountyRiverBridge,
     CountyDowntown,
     CountyWoods,
+    CountyCraftsman,
     CountyMountains,
 }
 
@@ -35,6 +36,7 @@ impl SceneChoice {
             "river-bridge" | "county-river-bridge" => Ok(Self::CountyRiverBridge),
             "downtown" | "county-downtown" => Ok(Self::CountyDowntown),
             "woods" | "county-woods" => Ok(Self::CountyWoods),
+            "craftsman" | "craftsman-lot" => Ok(Self::CountyCraftsman),
             "mountains" | "county-mountains" => Ok(Self::CountyMountains),
             other => Err(format!("Unknown --scene '{other}'")),
         }
@@ -546,6 +548,11 @@ fn focus_for_county_scene(world: &World, county: &mut ActionGame, scene: SceneCh
         SceneChoice::CountyRiverBridge => find_river_bridge(world),
         SceneChoice::CountyDowntown => find_landmark(world, LandmarkKind::Downtown),
         SceneChoice::CountyWoods => find_landmark(world, LandmarkKind::Cabin),
+        SceneChoice::CountyCraftsman => world.fixture_plan().map_or_else(
+            || county.player_tile().pos(),
+            // Stand on the street-side access tile so the roof is not cut away.
+            |plan| plan.frontage.access,
+        ),
         SceneChoice::CountyMountains => find_landmark(world, LandmarkKind::Mountain),
         _ => county.player_tile().pos(),
     };
@@ -711,6 +718,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SceneChoice::CountyRiverBridge => "terrain-county-s42-river-bridge.png",
                 SceneChoice::CountyDowntown => "terrain-county-s42-downtown.png",
                 SceneChoice::CountyWoods => "terrain-county-s42-woods.png",
+                SceneChoice::CountyCraftsman => "terrain-county-s42-craftsman.png",
                 SceneChoice::CountyMountains => "terrain-county-s42-mountains.png",
                 _ => "terrain-county-s42.png",
             };

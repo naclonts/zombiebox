@@ -410,20 +410,40 @@ pub struct LocalPropOffset {
     pub facing: PropFacing,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PlacementStrategy {
+    /// Back against a matching wall. The physical back face is then pushed to
+    /// the wall with a small gap (see `furnish::wall_alignment_offset`).
     WallRun {
         preference: WallPreference,
         segments: (u8, u8),
+    },
+    /// Like `WallRun`, but only walls whose facing points toward the placed
+    /// `host` across the room. Used for a TV stand opposite a sofa.
+    WallFacing {
+        host: RuleKey,
+        preference: WallPreference,
     },
     AisleRun {
         clear_gap: u8,
         end_margin: u8,
         endcap: Option<PropId>,
     },
+    /// Legacy tile-offset placement from a parent's anchor.
     RelativeTo {
         parent: RuleKey,
         offsets: &'static [LocalPropOffset],
+    },
+    /// Physical placement beside a parent's rotated bounds, with a gap range.
+    /// `requires` gates the rule on another placed rule (no candidates until
+    /// that rule has a placed instance).
+    Adjacent {
+        parent: RuleKey,
+        side: ParentSide,
+        gap_m: (f32, f32),
+        align: Align,
+        face: ChildFacing,
+        requires: Option<RuleKey>,
     },
     FloorOpen {
         min_wall_clearance: u8,
@@ -433,6 +453,37 @@ pub enum PlacementStrategy {
         layer: CellAttachment,
         host: RuleKey,
     },
+}
+
+/// Which side of a parent's rotated bounds an `Adjacent` child occupies.
+/// Sides are relative to the parent's facing (`Front` is its facing direction).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParentSide {
+    Front,
+    Back,
+    Left,
+    Right,
+    /// Left or right, whichever is tried first.
+    Sides,
+    Any,
+}
+
+/// Lateral alignment of an `Adjacent` child against its parent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Align {
+    /// Centered on the parent along the shared edge.
+    Center,
+    /// Back face flush with the parent's back face.
+    Back,
+}
+
+/// Orientation of an `Adjacent` child.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChildFacing {
+    /// Face the parent (chairs, coffee table).
+    Toward,
+    /// Share the parent's facing (nightstands beside a bed).
+    Parent,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -477,6 +528,9 @@ pub struct PlannedSign {
     pub offset_m: Vec3,
     pub facing: PropFacing,
     pub readable: Option<ReadableId>,
+    /// When set, furnishing re-anchors the sign to this rule's first placed
+    /// prop (keeping its facing and surface height) instead of `anchor`.
+    pub host: Option<RuleKey>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

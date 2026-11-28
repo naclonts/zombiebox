@@ -115,7 +115,7 @@ assets! {
     DESK_OPENED => "desk-opened.mesh", BATHROOM_SINK => "bathroom-sink.mesh", BATHTUB => "bathtub.mesh", TOILET => "toilet.mesh",
     KITCHEN_FRIDGE_CLOSED => "kitchen-fridge-closed.mesh", KITCHEN_FRIDGE_OPENED => "kitchen-fridge-opened.mesh",
     KITCHEN_SINK => "kitchen-sink.mesh", KITCHEN_STOVE => "kitchen-stove-electric.mesh", KITCHEN_CABINET => "kitchen-cabinet.mesh",
-    TELEVISION => "television-vintage.mesh", BOOKCASE_OPEN => "bookcase-open.mesh", BOOKCASE_CLOSED => "bookcase-closed-doors.mesh",
+    BOOKCASE_OPEN => "bookcase-open.mesh", BOOKCASE_CLOSED => "bookcase-closed-doors.mesh",
     CRATE => "crate.mesh", BOX_CLOSED => "cardboard-box-closed.mesh", BOX_OPENED => "cardboard-box-opened.mesh",
     CHECKOUT_CLOSED => "assisted-checkout-till-closed.mesh", CHECKOUT_OPENED => "assisted-checkout-till-opened.mesh",
     SHOPPING_CART => "shopping-cart.mesh", FIRST_AID => "first-aid-kit.mesh", HOSPITAL_BED => "hospital-bed.mesh",
@@ -140,6 +140,11 @@ impl PropMeshLibrary {
         for (id, mesh) in [
             (PropId::GondolaShelf, kit::build_gondola_shelf(2)),
             (PropId::CheckoutLane, kit::build_checkout_lane(2)),
+            // The converted `television-vintage` asset is a microwave, so the
+            // Television key is served by a procedural CRT instead.
+            (PropId::Television, kit::build_crt_television()),
+            (PropId::TvStand, kit::build_tv_stand()),
+            (PropId::Nightstand, kit::build_nightstand()),
             (PropId::Sign, signage::build_sign("BIRCH →", 0.96)),
             (PropId::Note, signage::build_sign("NOTE", 0.42)),
             (PropId::Journal, signage::build_sign("LOG", 0.48)),

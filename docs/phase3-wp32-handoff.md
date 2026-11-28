@@ -65,7 +65,8 @@ v=13      rear wall
 - Searchable container: the kitchen `Fridge` (the existing prop carries
   medical loot and container behavior).
 - Readable: `ReadableId::CraftsmanNote`, a `Note` on the required bedside
-  nightstand at local `(3,12)`, facing into the room.
+  nightstand (`RuleKey(31)`, beside the bed head). `PlannedSign.host` ties the
+  note to that rule, and furnishing re-anchors it to the placed nightstand.
 - Windows are preserved as lighting/vault candidates. `HighBlocker` props are
   rejected when they would sit in front of a window.
 
