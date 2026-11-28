@@ -2,8 +2,8 @@
 //! visited. Neighbors sharing a building resolve the same immutable parcel.
 use super::{
     District, Lot, ParcelPlan, Position, Sites, Tile, WORLD_SIZE,
-    archetypes::{self, CountyFixture, FixtureParcel, ParcelContext},
-    blueprint::{BlueprintKind, CompoundPlanner, Frontage, GridRect, ZoneKind},
+    archetypes::{self, CountyFixture, ParcelContext, plan_fixture},
+    blueprint::{BlueprintKind, Frontage, GridRect, ZoneKind},
     dressing, sites,
 };
 use std::ops::{Index, IndexMut};
@@ -98,8 +98,8 @@ impl Parcels {
             });
         }
         let mut fixture_index = None;
-        if fixture == CountyFixture::BlueprintLot {
-            fixture_index = Self::select_fixture_parcel(seed, &mut parcels, spawn);
+        if fixture != CountyFixture::None {
+            fixture_index = Self::select_fixture_parcel(seed, &mut parcels, spawn, fixture);
         }
         Self {
             parcels,
@@ -109,7 +109,12 @@ impl Parcels {
         }
     }
 
-    fn select_fixture_parcel(seed: u64, parcels: &mut [Parcel], spawn: Position) -> Option<usize> {
+    fn select_fixture_parcel(
+        seed: u64,
+        parcels: &mut [Parcel],
+        spawn: Position,
+        fixture: CountyFixture,
+    ) -> Option<usize> {
         let mut candidates: Vec<usize> = parcels
             .iter()
             .enumerate()
@@ -147,9 +152,13 @@ impl Parcels {
                 },
                 zone: zone_for(lot.district),
             };
-            let Ok(plan) = FixtureParcel.plan(&context) else {
+            let Ok(plan) = plan_fixture(fixture, &context) else {
                 continue;
             };
+            if fixture != CountyFixture::BlueprintLot {
+                parcels[index].plan = Some(plan);
+                return Some(index);
+            }
             let crosses_seam = plan.structures.iter().any(|structure| {
                 structure.props_world().iter().any(|prop| {
                     let tiles: Vec<_> = prop.span.covered_tiles(prop.tile).collect();

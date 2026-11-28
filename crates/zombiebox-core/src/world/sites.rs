@@ -80,6 +80,8 @@ pub enum RoomKind {
     Living,
     Kitchen,
     Bedroom,
+    Bathroom,
+    Hall,
     Shop,
     Office,
     Apartment,

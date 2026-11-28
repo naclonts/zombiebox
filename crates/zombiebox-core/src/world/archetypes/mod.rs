@@ -1,8 +1,9 @@
 //! Static archetype definitions and the parcel-composition registration seam.
 //!
-//! Phase 3.1 registers one authored fixture through this module. Later house
-//! and retail packages add their definitions here and resolve through the same
-//! [`CompoundPlanner`] path, so the county never special-cases an archetype.
+//! Phase 3 registers authored fixtures and house families through this module.
+//! Later retail packages add their definitions here and resolve through the
+//! same [`CompoundPlanner`] path, so the county never special-cases an
+//! archetype.
 
 use crate::Position;
 use crate::action::{BuildingStyle, DoorAxis, Material, PropFacing, PropId, Surface, Vec3};
@@ -16,6 +17,8 @@ use super::blueprint::{
     place_blueprint_in_lot,
 };
 
+pub mod houses;
+
 /// Opt-in generation fixture used while the Phase 3 rendering gates are open.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CountyFixture {
@@ -23,6 +26,23 @@ pub enum CountyFixture {
     None,
     /// Replace one existing county lot with a single authored blueprint room.
     BlueprintLot,
+    /// Replace one existing county lot with the furnished WP 3.2 Craftsman.
+    CraftsmanLot,
+}
+
+/// Resolve the selected fixture through the same parcel-composition seam the
+/// county uses for every authored archetype.
+pub fn plan_fixture(
+    fixture: CountyFixture,
+    context: &ParcelContext,
+) -> Result<ParcelPlan, FitError> {
+    match fixture {
+        CountyFixture::None => Err(FitError::InvalidLot {
+            reason: "no fixture selected",
+        }),
+        CountyFixture::BlueprintLot => FixtureParcel.plan(context),
+        CountyFixture::CraftsmanLot => houses::CraftsmanParcel.plan(context),
+    }
 }
 
 pub struct FixtureRoom;

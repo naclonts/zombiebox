@@ -627,6 +627,7 @@ fn readable_fixtures(spawn: Tile3D, county: bool) -> Vec<(ReadableId, PropAnchor
                     ReadableId::CountyDirectory => PropId::Sign,
                     ReadableId::MaintenanceNote => PropId::Note,
                     ReadableId::SurvivorJournal => PropId::Journal,
+                    ReadableId::CraftsmanNote => PropId::Note,
                 },
                 span: PropSpan::new(1, 1),
                 attachment: CellAttachment::WallMount,
@@ -676,6 +677,7 @@ pub struct ActionGame {
     prop_tile_index: std::collections::HashMap<Tile3D, u64>,
     prop_revision: u64,
     blueprint_prop_cursor: usize,
+    blueprint_readable_cursor: usize,
     readable_fixtures: Vec<(ReadableId, PropAnchor)>,
     readable_id: ReadableId,
     read_open: bool,
@@ -765,11 +767,13 @@ impl ActionGame {
             prop_tile_index: Default::default(),
             prop_revision: 0,
             blueprint_prop_cursor: 0,
+            blueprint_readable_cursor: 0,
             readable_fixtures: readable,
             readable_id: ReadableId::CountyDirectory,
             read_open: false,
         };
         game.sync_county_blueprint_props();
+        game.sync_county_blueprint_readables();
         game
     }
 
@@ -840,6 +844,7 @@ impl ActionGame {
             prop_tile_index: Default::default(),
             prop_revision: 0,
             blueprint_prop_cursor: 0,
+            blueprint_readable_cursor: 0,
             readable_fixtures: readable,
             readable_id: ReadableId::BirchDirectory,
             read_open: false,
@@ -972,6 +977,7 @@ impl ActionGame {
         self.must_leave_stair = Some(dest.pos());
         county.update_visibility(self.player.position, self.player.floor);
         self.sync_county_blueprint_props();
+        self.sync_county_blueprint_readables();
         Some(dest)
     }
 
@@ -1043,6 +1049,7 @@ impl ActionGame {
             county.sync_active_window(&self.world, focus, &mut self.monsters);
         }
         self.sync_county_blueprint_props();
+        self.sync_county_blueprint_readables();
 
         // 4. On-foot aim / facing update (right-stick retains facing on release).
         // Vehicle heading is authoritative while mounted; carried look input is ignored.
@@ -2672,6 +2679,41 @@ impl ActionGame {
         }
     }
 
+    /// Ingest readable signs/notes authored inside blueprint structures. This
+    /// runs after the prop sync so the readable's wall/floor anchor already
+    /// exists in the shared prop registry.
+    fn sync_county_blueprint_readables(&mut self) {
+        let pending = match &self.stage {
+            Stage::County(county) => {
+                let all = county.blueprint_readables();
+                let start = self.blueprint_readable_cursor.min(all.len());
+                if start == all.len() {
+                    return;
+                }
+                all[start..].to_vec()
+            }
+            Stage::Residential(_) => return,
+        };
+        for (id, anchor) in pending {
+            if !self
+                .prop_anchors
+                .iter()
+                .any(|existing| existing.anchor_uid == anchor.anchor_uid)
+            {
+                // The anchor's chunk window is not fully materialized yet.
+                return;
+            }
+            if !self
+                .readable_fixtures
+                .iter()
+                .any(|(_, existing)| existing.anchor_uid == anchor.anchor_uid)
+            {
+                self.readable_fixtures.push((id, anchor));
+            }
+            self.blueprint_readable_cursor += 1;
+        }
+    }
+
     /// Persistent prop anchors in stable placement order.
     pub fn prop_anchors(&self) -> &[PropAnchor] {
         &self.prop_anchors
@@ -2710,10 +2752,23 @@ impl ActionGame {
                 return false;
             }
         }
-        if anchor.span.covered_tiles(anchor.tile).any(|t| {
-            !self.stage.is_walkable(t, false)
+        let covered = anchor.span.covered_tiles(anchor.tile).collect::<Vec<_>>();
+        if anchor.attachment == CellAttachment::WallMount {
+            if !covered.iter().any(|tile| {
+                matches!(
+                    self.stage.tile_kind(*tile),
+                    TileKind::ExteriorWall
+                        | TileKind::InteriorWall
+                        | TileKind::Window
+                        | TileKind::Pillar
+                )
+            }) {
+                return false;
+            }
+        } else if covered.iter().any(|t| {
+            !self.stage.is_walkable(*t, false)
                 || matches!(
-                    self.stage.tile_kind(t),
+                    self.stage.tile_kind(*t),
                     TileKind::Door { .. }
                         | TileKind::StairsUp
                         | TileKind::StairsDown
@@ -3330,6 +3385,146 @@ mod tests {
         assert_eq!(hud.read_id, ReadableId::BirchDirectory as u8);
         game.player.facing = Vec2::new(0.0, 1.0);
         assert_ne!(game.hud().interact_prompt, InteractPrompt::Read);
+    }
+
+    #[test]
+    fn craftsman_fridge_searches_without_chunk_rebuild_and_persists() {
+        let mut game = ActionGame::county(42);
+        let structure = game
+            .world
+            .fixture_plan()
+            .expect("Craftsman fixture")
+            .structures[0]
+            .clone();
+        let fridge = structure
+            .props_world()
+            .into_iter()
+            .find(|prop| prop.id == PropId::Fridge)
+            .expect("Craftsman fridge");
+        let approach = match fridge.facing {
+            PropFacing::North => Tile3D::new(fridge.tile.x, fridge.tile.y - 1, 0),
+            PropFacing::South => Tile3D::new(
+                fridge.tile.x,
+                fridge.tile.y + i32::from(fridge.span.height),
+                0,
+            ),
+            PropFacing::East => Tile3D::new(
+                fridge.tile.x + i32::from(fridge.span.width),
+                fridge.tile.y,
+                0,
+            ),
+            PropFacing::West => Tile3D::new(fridge.tile.x - 1, fridge.tile.y, 0),
+        };
+        game.teleport(approach).expect("fridge approach streams");
+        // Stand just outside the fridge collider, as a walking player would.
+        let pivot = fridge.to_anchor().pivot(0.0);
+        let front = match fridge.facing {
+            PropFacing::North => Vec2::new(0.0, -1.0),
+            PropFacing::East => Vec2::new(1.0, 0.0),
+            PropFacing::South => Vec2::new(0.0, 1.0),
+            PropFacing::West => Vec2::new(-1.0, 0.0),
+        };
+        game.player.position = Vec2::new(pivot.x + front.x * 0.9, pivot.y + front.y * 0.9);
+        let terrain_before = game.stage.terrain_version();
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        assert!(
+            game.prop_opened.contains(&fridge.anchor_uid),
+            "the supported fridge container should open"
+        );
+        assert!(
+            game.prop_views().iter().any(|view| {
+                view.anchor_uid == fridge.anchor_uid && view.state == PropState::Opened
+            }),
+            "the opened prototype is exposed to the renderer"
+        );
+        assert_eq!(
+            game.stage.terrain_version(),
+            terrain_before,
+            "container state must not rebuild static chunks"
+        );
+
+        let wake = game.world.wake_position();
+        game.teleport(Tile3D::from_pos(wake, 0))
+            .expect("teleport away from the Craftsman");
+        game.teleport(approach)
+            .expect("teleport back to the Craftsman");
+        assert_eq!(
+            game.prop_anchors()
+                .iter()
+                .filter(|anchor| anchor.anchor_uid == fridge.anchor_uid)
+                .count(),
+            1,
+            "revisiting must not duplicate the fridge anchor"
+        );
+        assert!(game.prop_opened.contains(&fridge.anchor_uid));
+    }
+
+    #[test]
+    fn craftsman_note_is_readable_and_wall_breach_persists() {
+        let mut game = ActionGame::county(42);
+        let (readable, anchor) = *game
+            .readable_fixtures
+            .iter()
+            .find(|(id, _)| *id == ReadableId::CraftsmanNote)
+            .expect("Craftsman note is synced from the blueprint");
+        let front = match anchor.facing {
+            PropFacing::North => Vec2::new(0.0, -1.0),
+            PropFacing::East => Vec2::new(1.0, 0.0),
+            PropFacing::South => Vec2::new(0.0, 1.0),
+            PropFacing::West => Vec2::new(-1.0, 0.0),
+        };
+        let approach = Tile3D::new(
+            anchor.tile.x + front.x as i32,
+            anchor.tile.y + front.y as i32,
+            0,
+        );
+        game.teleport(approach).expect("note approach streams");
+        game.player.facing = -front;
+        assert_eq!(game.hud().interact_prompt, InteractPrompt::Read);
+        game.step(ActionInput {
+            interact: true,
+            ..ActionInput::default()
+        });
+        let hud = game.hud();
+        assert!(hud.read_open);
+        assert_eq!(hud.read_id, readable as u8);
+
+        let structure = game.world.fixture_plan().unwrap().structures[0].clone();
+        let (wall_local, _) = structure
+            .blueprint
+            .cells
+            .iter()
+            .find(|(local, cell)| {
+                local.floor == 0 && cell.kind == crate::BlueprintKind::ExteriorWall
+            })
+            .expect("Craftsman exterior wall");
+        let wall = Tile3D::from_pos(structure.transform.local_to_world(*wall_local), 0);
+        let inside = Tile3D::from_pos(
+            structure.transform.local_to_world(crate::LocalCell::new(
+                wall_local.u,
+                wall_local.v + 1,
+                0,
+            )),
+            0,
+        );
+        game.teleport(inside).expect("interior approach streams");
+        let result = game
+            .damage_tile(wall, DamageKind::RocketBlast)
+            .expect("wall takes rocket damage");
+        assert!(result.destroyed);
+        assert_eq!(game.stage.tile_kind(wall), TileKind::Rubble);
+        let wake = game.world.wake_position();
+        game.teleport(Tile3D::from_pos(wake, 0))
+            .expect("teleport away from the breach");
+        game.teleport(inside).expect("teleport back to the breach");
+        assert_eq!(
+            game.stage.tile_kind(wall),
+            TileKind::Rubble,
+            "breached walls stay breached on revisit"
+        );
     }
 
     #[test]

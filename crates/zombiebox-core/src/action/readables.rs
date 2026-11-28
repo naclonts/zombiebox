@@ -9,6 +9,7 @@ pub enum ReadableId {
     MaintenanceNote = 2,
     SurvivorJournal = 3,
     CountyDirectory = 4,
+    CraftsmanNote = 5,
 }
 
 impl ReadableId {
@@ -18,6 +19,7 @@ impl ReadableId {
             2 => Some(Self::MaintenanceNote),
             3 => Some(Self::SurvivorJournal),
             4 => Some(Self::CountyDirectory),
+            5 => Some(Self::CraftsmanNote),
             _ => None,
         }
     }
@@ -27,6 +29,7 @@ impl ReadableId {
             Self::MaintenanceNote => "Maintenance note",
             Self::SurvivorJournal => "Survivor journal",
             Self::CountyDirectory => "County directory",
+            Self::CraftsmanNote => "Craftsman house note",
         }
     }
     pub const fn body(self) -> &'static str {
@@ -43,6 +46,9 @@ impl ReadableId {
             Self::CountyDirectory => {
                 "County roads radiate from the town center. Bridges and marked routes are safest after dusk."
             }
+            Self::CraftsmanNote => {
+                "Porch light stays on. The spare key is under the kitchen sink, and the pantry is stocked."
+            }
         }
     }
     pub const fn title_c(self) -> &'static std::ffi::CStr {
@@ -51,6 +57,7 @@ impl ReadableId {
             Self::MaintenanceNote => c"Maintenance note",
             Self::SurvivorJournal => c"Survivor journal",
             Self::CountyDirectory => c"County directory",
+            Self::CraftsmanNote => c"Craftsman house note",
         }
     }
     pub const fn body_c(self) -> &'static std::ffi::CStr {
@@ -59,6 +66,7 @@ impl ReadableId {
             Self::MaintenanceNote => c"The spare key is taped beneath the third shelf. Check the door before you leave.",
             Self::SurvivorJournal => c"Noise carries after dusk. Move quietly, and keep an exit in view.",
             Self::CountyDirectory => c"County roads radiate from the town center. Bridges and marked routes are safest after dusk.",
+            Self::CraftsmanNote => c"Porch light stays on. The spare key is under the kitchen sink, and the pantry is stocked.",
         }
     }
 }

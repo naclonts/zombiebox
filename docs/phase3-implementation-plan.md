@@ -13,7 +13,7 @@ Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [
 
 Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
 
-> Current WP 3.1 testing override: `World::new` now selects `CountyFixture::BlueprintLot` by default so normal county entry exercises the authored structure. `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
+> Current WP 3.2 testing override: `World::new` selects `CountyFixture::CraftsmanLot` by default so normal county entry streams the furnished Craftsman. `CountyFixture::BlueprintLot` remains available for the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
 
 ## 1. Ownership and shared contracts
 
@@ -262,6 +262,8 @@ Handoff: [WP 3.1 handoff](phase3-wp31-handoff.md).
 - **Hand off** the fixture selector, coordinate examples including an even-sized span, and the names of the parcel, placement and validation entry points.
 
 ### WP 3.2 — First furnished Craftsman
+
+Handoff: [WP 3.2 handoff](phase3-wp32-handoff.md).
 
 - **Owns** `world/archetypes/houses.rs`, `world/furnish.rs`, and the first residential fixture.
 - **Build** arrangement A with the current county frontage, main mass and porch, one furnished kitchen, living room, bedroom and primary bath. Begin with authored room masks and deterministic wall/relative placement using existing IDs. Include one supported searchable container and one readable. Use the seed-based decision and placement rules in Sections 1–2.

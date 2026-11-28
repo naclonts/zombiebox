@@ -3,6 +3,7 @@
 pub mod archetypes;
 pub mod blueprint;
 mod dressing;
+pub mod furnish;
 mod geography;
 mod parcels;
 use parcels::{ParcelTiles, Parcels};
@@ -11,10 +12,11 @@ mod sites;
 mod vehicles;
 pub use archetypes::CountyFixture;
 pub use blueprint::{
-    BlueprintCell, BlueprintGrid, BlueprintKind, BlueprintPropPlacement, CardinalDir,
-    CompoundPlanner, DoorIntent, DoorKind, FitError, Frontage, GridRect, LocalCell, LotTransform,
-    ParcelContext, ParcelId, ParcelPlan, PlacedStructure, PlacementId, PlannedProp, RoomMeta,
-    StructureContext, StructureGenerator, StructureId, ZoneKind,
+    BlueprintCell, BlueprintGrid, BlueprintKind, BlueprintPropPlacement, BlueprintSignPlacement,
+    CardinalDir, CompoundPlanner, DoorIntent, DoorKind, FitError, Frontage, GridRect, LocalCell,
+    LocalPlacementKey, LocalPropOffset, LotTransform, ParcelContext, ParcelId, ParcelPlan,
+    PlacedStructure, PlacementId, PlacementStrategy, PlannedProp, RoomMeta, RuleKey,
+    StructureContext, StructureGenerator, StructureId, WallPreference, ZoneKind,
 };
 pub use sites::*;
 #[cfg(test)]
@@ -187,11 +189,11 @@ pub struct World {
 }
 
 impl World {
-    /// Default county generation. Phase 3.1 replaces one existing lot with the
-    /// authored blueprint fixture so normal game entry points exercise the new
-    /// generation path.
+    /// Default county generation. Phase 3 replaces one existing lot with the
+    /// authored furnished Craftsman fixture so normal game entry points
+    /// exercise the new generation path.
     pub fn new(seed: u64) -> Self {
-        Self::with_fixture(seed, CountyFixture::BlueprintLot)
+        Self::with_fixture(seed, CountyFixture::CraftsmanLot)
     }
 
     /// Explicitly build the pre-Phase-3 baseline for regression comparisons.
@@ -200,7 +202,7 @@ impl World {
     }
 
     /// Select the generation fixture explicitly. `CountyFixture::None` retains
-    /// the legacy baseline; `BlueprintLot` streams the authored structure.
+    /// the legacy baseline; the other variants stream authored structures.
     pub fn with_fixture(seed: u64, fixture: CountyFixture) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
         let (landmarks, lots, valley_meta) = geography::generate_with_meta(seed, &mut tiles);

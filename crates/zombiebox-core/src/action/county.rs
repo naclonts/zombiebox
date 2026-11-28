@@ -12,7 +12,7 @@ use crate::spatial::{
 };
 use crate::{
     Building, BuildingKind, CHUNK_SIZE, CHUNKS_PER_SIDE, District, Feature, Ground, MonsterId,
-    PlacedStructure, Position, PropAnchor, RoomKind, StructureId, WORLD_SIZE, World,
+    PlacedStructure, Position, PropAnchor, ReadableId, RoomKind, StructureId, WORLD_SIZE, World,
 };
 
 use super::ai::Monster;
@@ -116,6 +116,8 @@ pub struct CountyStage {
     registered_blueprints: HashMap<StructureId, BuildingId>,
     blueprint_props: Vec<PropAnchor>,
     blueprint_prop_uids: HashSet<u64>,
+    blueprint_readables: Vec<(ReadableId, PropAnchor)>,
+    blueprint_readable_uids: HashSet<u64>,
     cache_index_by_id: HashMap<CacheId, usize>,
     window_max_floors: u8,
     window_buildings: Vec<BuildingInfo>,
@@ -156,6 +158,8 @@ impl CountyStage {
             registered_blueprints: HashMap::new(),
             blueprint_props: Vec::new(),
             blueprint_prop_uids: HashSet::new(),
+            blueprint_readables: Vec::new(),
+            blueprint_readable_uids: HashSet::new(),
             cache_index_by_id: HashMap::new(),
             window_max_floors: 1,
             window_buildings: Vec::new(),
@@ -549,6 +553,16 @@ impl CountyStage {
                 self.blueprint_props.push(anchor);
             }
         }
+        for sign in structure.signs_world() {
+            if self.blueprint_prop_uids.insert(sign.anchor.anchor_uid) {
+                self.blueprint_props.push(sign.anchor);
+            }
+            if let Some(readable) = sign.readable
+                && self.blueprint_readable_uids.insert(sign.anchor.anchor_uid)
+            {
+                self.blueprint_readables.push((readable, sign.anchor));
+            }
+        }
         id
     }
 
@@ -556,6 +570,11 @@ impl CountyStage {
     /// layer ingests these through the existing `PropAnchor` registry.
     pub fn blueprint_prop_anchors(&self) -> &[PropAnchor] {
         &self.blueprint_props
+    }
+
+    /// Readable signs/notes authored inside blueprint structures.
+    pub fn blueprint_readables(&self) -> &[(ReadableId, PropAnchor)] {
+        &self.blueprint_readables
     }
 
     fn materialize_chunk(&mut self, world: &World, cx: i32, cy: i32) {
@@ -2794,7 +2813,9 @@ fn room_at_building(b: &Building, p: Position, floor: Floor) -> Option<RoomKind>
 
 fn surface_for_room(room: Option<RoomKind>) -> Surface {
     match room {
-        Some(RoomKind::Kitchen | RoomKind::Pharmacy | RoomKind::Ward) => Surface::KitchenTile,
+        Some(RoomKind::Kitchen | RoomKind::Bathroom | RoomKind::Pharmacy | RoomKind::Ward) => {
+            Surface::KitchenTile
+        }
         Some(RoomKind::Bedroom | RoomKind::Office | RoomKind::Apartment | RoomKind::Lobby) => {
             Surface::Carpet
         }
@@ -2806,14 +2827,16 @@ fn surface_for_room(room: Option<RoomKind>) -> Surface {
             | RoomKind::Storage
             | RoomKind::Barracks,
         ) => Surface::Driveway,
-        Some(RoomKind::Living | RoomKind::Shop) | None => Surface::WoodFloor,
+        Some(RoomKind::Living | RoomKind::Hall | RoomKind::Shop) | None => Surface::WoodFloor,
     }
 }
 
 fn prop_for_room(room: Option<RoomKind>, p: Position) -> PropKind {
     match room {
         Some(RoomKind::Bedroom | RoomKind::Barracks | RoomKind::Ward) => PropKind::Bed,
-        Some(RoomKind::Kitchen | RoomKind::Pharmacy | RoomKind::Shop) => PropKind::Counter,
+        Some(RoomKind::Kitchen | RoomKind::Bathroom | RoomKind::Pharmacy | RoomKind::Shop) => {
+            PropKind::Counter
+        }
         Some(RoomKind::Living | RoomKind::Apartment | RoomKind::Lobby) => {
             if (p.x + p.y).rem_euclid(2) == 0 {
                 PropKind::Sofa
@@ -2821,7 +2844,7 @@ fn prop_for_room(room: Option<RoomKind>, p: Position) -> PropKind {
                 PropKind::Table
             }
         }
-        Some(RoomKind::Office) | None => PropKind::Table,
+        Some(RoomKind::Office | RoomKind::Hall) | None => PropKind::Table,
         Some(RoomKind::Cells) => PropKind::Bench,
         Some(RoomKind::Armory | RoomKind::Storage | RoomKind::Garage | RoomKind::MotorPool) => {
             PropKind::Crate
@@ -3380,12 +3403,20 @@ mod tests {
     }
 
     #[test]
-    fn default_county_entry_uses_blueprint_fixture_and_legacy_is_explicit() {
+    fn default_county_entry_uses_craftsman_fixture_and_legacy_is_explicit() {
         let seed = 42;
         let world = World::new(seed);
-        assert_eq!(world.fixture(), CountyFixture::BlueprintLot);
+        assert_eq!(world.fixture(), CountyFixture::CraftsmanLot);
         let plan = world.fixture_plan().expect("default fixture plan");
-        let prop = plan.structures[0].props_world()[0];
+        let fridge = plan.structures[0]
+            .props_world()
+            .into_iter()
+            .find(|prop| prop.id == crate::action::PropId::Fridge)
+            .expect("Craftsman fixture furnishes a fridge");
+        assert_eq!(
+            World::with_fixture(seed, CountyFixture::BlueprintLot).fixture(),
+            CountyFixture::BlueprintLot
+        );
         assert_eq!(World::legacy(seed).fixture(), CountyFixture::None);
         assert!(World::legacy(seed).fixture_plan().is_none());
 
@@ -3393,9 +3424,91 @@ mod tests {
         assert!(
             game.prop_anchors()
                 .iter()
-                .any(|anchor| anchor.anchor_uid == prop.anchor_uid),
-            "default county run should stream the blueprint prop"
+                .any(|anchor| anchor.anchor_uid == fridge.anchor_uid),
+            "default county run should stream the Craftsman fixtures"
         );
+    }
+
+    fn assert_blueprint_door_sweep(stage: &mut CountyStage, structure: &PlacedStructure) {
+        use crate::spatial::SpatialWorld;
+        use crate::spatial::collision::sweep_circle_rect_2d;
+        for door in &structure.blueprint.doors {
+            let door_pos = structure.transform.local_to_world(door.cell);
+            let axis = structure
+                .door_axis_at(door.cell)
+                .expect("world door axis for authored intent");
+            let tile = Tile3D::from_pos(door_pos, door.cell.floor);
+            let cell = *stage.cell_at_world(tile).expect("materialized door cell");
+            let TileKind::Door { exterior, .. } = cell.kind else {
+                panic!("authored door at {door_pos:?} became {:?}", cell.kind);
+            };
+            assert_eq!(cell.door_axis, Some(axis));
+            let info = stage.building_by_id(cell.building_id).expect("door owner");
+            assert_eq!(info.uid, BuildingUid(structure.id.0));
+            let base = info.foundation_z;
+            let normal = axis.normal();
+            let direction = Vec2::new(normal.0 as f32, normal.1 as f32);
+            let center = tile.center();
+            for open in [true, false] {
+                stage
+                    .cell_mut_world(tile)
+                    .unwrap()
+                    .set_kind(TileKind::Door { open, exterior }, Material::WoodDoor);
+                let query = Aabb3::new(
+                    center.extend(base) - Vec3::new(1.5, 1.5, 0.01),
+                    center.extend(base + crate::action::PLAYER_HEIGHT) + Vec3::new(1.5, 1.5, 0.01),
+                );
+                let mut colliders = Vec::new();
+                stage.colliders_in(query, &mut colliders);
+                for sign in [-1.0, 1.0] {
+                    let start = center - direction * (sign * 0.8);
+                    let delta = direction * (sign * 1.6);
+                    let hit = colliders.iter().find(|c| {
+                        c.bounds.max.z > base + 0.001
+                            && c.bounds.min.z < base + crate::action::PLAYER_HEIGHT - 0.001
+                            && sweep_circle_rect_2d(
+                                start,
+                                delta,
+                                crate::action::PLAYER_RADIUS,
+                                c.bounds.min.xy(),
+                                c.bounds.max.xy(),
+                            )
+                            .is_some()
+                    });
+                    let valid = if open {
+                        hit.is_none()
+                    } else {
+                        hit.is_some_and(
+                            |c| matches!(c.kind, ColliderKind::ClosedDoor { tile: t } if t == tile),
+                        )
+                    };
+                    assert!(
+                        valid,
+                        "door at {door_pos:?} open={open} sign={sign} hit={hit:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn craftsman_fixture_selection_works_across_representative_seeds() {
+        for seed in [0, 1, 2, 7, 42, 63, u64::MAX] {
+            let world = World::new(seed);
+            assert_eq!(world.fixture(), CountyFixture::CraftsmanLot, "seed {seed}");
+            let plan = world
+                .fixture_plan()
+                .unwrap_or_else(|| panic!("seed {seed} selected no Craftsman fixture"));
+            let structure = &plan.structures[0];
+            assert_eq!(plan.structures.len(), 1);
+            assert!(plan.bounds.contains(structure.bounds.min));
+            assert!(plan.bounds.contains(structure.bounds.max));
+            assert_eq!(structure.floors(), 1);
+            assert!(
+                !structure.blueprint.doors.is_empty(),
+                "seed {seed} house must have doors"
+            );
+        }
     }
 
     #[test]
@@ -3511,6 +3624,52 @@ mod tests {
                 assert!(valid, "open={open} sign={sign} hit={hit:?}");
             }
         }
+    }
+
+    #[test]
+    fn craftsman_fixture_streams_stable_cells_and_every_door_passes_capsule_sweep() {
+        let seed = 42;
+        let world = World::with_fixture(seed, CountyFixture::CraftsmanLot);
+        let plan = world.fixture_plan().expect("Craftsman fixture plan");
+        let structure = &plan.structures[0];
+        assert_eq!(structure.floors(), 1);
+        let ids: Vec<crate::action::PropId> = structure
+            .props_world()
+            .into_iter()
+            .map(|prop| prop.id)
+            .collect();
+        for required in [
+            crate::action::PropId::KitchenSink,
+            crate::action::PropId::KitchenStove,
+            crate::action::PropId::Fridge,
+            crate::action::PropId::Sofa,
+            crate::action::PropId::Toilet,
+            crate::action::PropId::BathroomSink,
+            crate::action::PropId::Bathtub,
+        ] {
+            assert!(ids.contains(&required), "missing {required:?}");
+        }
+        assert!(!structure.blueprint.signs.is_empty());
+
+        let chunks = fixture_chunks(structure);
+        let (mut forward, _, _) = CountyStage::new(&world, seed);
+        for &(cx, cy) in &chunks {
+            forward.materialize_chunk(&world, cx, cy);
+        }
+        let (mut reverse, _, _) = CountyStage::new(&world, seed);
+        for &(cx, cy) in chunks.iter().rev() {
+            reverse.materialize_chunk(&world, cx, cy);
+        }
+        let a = blueprint_snapshot(&forward, structure);
+        let b = blueprint_snapshot(&reverse, structure);
+        assert_eq!(a.0.uid, BuildingUid(structure.id.0));
+        assert_eq!(a.0.floors, 1);
+        assert_eq!(a.1.len(), structure.blueprint.cells.len());
+        assert_eq!(a, b, "chunk visitation order must not change the plan");
+        assert!(a.1.iter().all(|cell| cell.2 == BuildingUid(structure.id.0)));
+
+        assert_blueprint_door_sweep(&mut forward, structure);
+        assert_blueprint_door_sweep(&mut reverse, structure);
     }
 
     #[test]

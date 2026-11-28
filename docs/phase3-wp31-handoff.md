@@ -1,7 +1,11 @@
 # Phase 3 WP 3.1 handoff — blueprint-to-county
 
-Status: implemented and verified on host tests. The legacy county remains the
-default; the blueprint path is opt-in.
+Status: implemented and verified on host tests.
+
+> Superseded default: WP 3.2 now makes `CountyFixture::CraftsmanLot` the
+> `World::new` default. This handoff still describes the smaller
+> `CountyFixture::BlueprintLot` contract fixture, which remains available
+> explicitly. See [WP 3.2 handoff](phase3-wp32-handoff.md).
 
 ## Fixture selector
 

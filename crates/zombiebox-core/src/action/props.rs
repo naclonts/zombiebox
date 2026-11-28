@@ -32,7 +32,7 @@ impl PropSpan {
         })
     }
 }
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum CellAttachment {
     #[default]
     Floor,

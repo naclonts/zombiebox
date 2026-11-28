@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::action::{
     BuildingStyle, CellAttachment, DoorAxis, Material, PropAnchor, PropFacing, PropId, PropSpan,
-    Surface, Tile3D, TileKind, Vec3, mix64,
+    ReadableId, Surface, Tile3D, TileKind, Vec3, mix64,
 };
 use crate::{Floor, Position};
 
@@ -392,15 +392,47 @@ pub enum WallPreference {
     Any,
     Interior,
     Exterior,
+    /// The fixture requires a window in its back wall.
+    Window,
+    /// Prefer a window, but accept any solid wall.
+    WindowThenAny,
+}
+
+/// Stable authored rule identity inside one room kind.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RuleKey(pub u32);
+
+/// Offset from a placed parent rule. `facing` orients the child.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LocalPropOffset {
+    pub du: i32,
+    pub dv: i32,
+    pub facing: PropFacing,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlacementStrategy {
-    WallRun { preference: WallPreference },
-    AisleRun,
-    RelativeTo,
-    FloorOpen,
-    Attachment { layer: CellAttachment },
+    WallRun {
+        preference: WallPreference,
+        segments: (u8, u8),
+    },
+    AisleRun {
+        clear_gap: u8,
+        end_margin: u8,
+        endcap: Option<PropId>,
+    },
+    RelativeTo {
+        parent: RuleKey,
+        offsets: &'static [LocalPropOffset],
+    },
+    FloorOpen {
+        min_wall_clearance: u8,
+        prefer_corner: bool,
+    },
+    Attachment {
+        layer: CellAttachment,
+        host: RuleKey,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -436,11 +468,15 @@ impl BlueprintAnchor {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlannedSign {
+    pub key: LocalPlacementKey,
     pub anchor: BlueprintAnchor,
-    pub readable: Option<u64>,
-    pub rotation: PropFacing,
+    pub prop: PropId,
+    pub attachment: CellAttachment,
+    pub offset_m: Vec3,
+    pub facing: PropFacing,
+    pub readable: Option<ReadableId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -611,6 +647,39 @@ impl PlacedStructure {
             .collect()
     }
 
+    /// Stable world-space readables and wall/floor signs authored in the
+    /// blueprint. Signs use their own placement keys so a readable cannot
+    /// collide with a furniture anchor.
+    pub fn signs_world(&self) -> Vec<BlueprintSignPlacement> {
+        self.blueprint
+            .signs
+            .iter()
+            .map(|sign| {
+                let world = self.transform.local_to_world(sign.anchor.local());
+                BlueprintSignPlacement {
+                    structure: self.id,
+                    readable: sign.readable,
+                    anchor: PropAnchor {
+                        anchor_uid: placement_id(self.id, sign.key).0,
+                        tile: Tile3D::new(world.x, world.y, sign.anchor.floor),
+                        id: sign.prop,
+                        span: PropSpan::new(1, 1),
+                        attachment: sign.attachment,
+                        facing: self.transform.world_facing(sign.facing),
+                        offset: self.transform.world_offset(sign.offset_m),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    pub fn planned_signs(&self) -> Vec<PropAnchor> {
+        self.signs_world()
+            .into_iter()
+            .map(|sign| sign.anchor)
+            .collect()
+    }
+
     /// Set the final foundation after relief. Pads and world bounds are already
     /// final at this point; only the elevation changes.
     pub fn set_foundation(&mut self, foundation_z: f32) {
@@ -652,6 +721,13 @@ impl BlueprintPropPlacement {
             offset: self.offset,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlueprintSignPlacement {
+    pub structure: StructureId,
+    pub readable: Option<ReadableId>,
+    pub anchor: PropAnchor,
 }
 
 impl PlannedProp {
@@ -883,6 +959,31 @@ impl BlueprintGrid {
                 });
             }
         }
+        let mut keys = std::collections::BTreeSet::new();
+        for prop in &self.props {
+            if !keys.insert(prop.key) {
+                return Err(FitError::ImpossibleRoom {
+                    reason: "duplicate prop placement key",
+                });
+            }
+        }
+        for sign in &self.signs {
+            if !keys.insert(sign.key) {
+                return Err(FitError::ImpossibleRoom {
+                    reason: "duplicate prop or sign placement key",
+                });
+            }
+            let Some(cell) = self.cells.get(&sign.anchor.local()) else {
+                return Err(FitError::AccessFailure {
+                    reason: "sign anchor is outside the blueprint",
+                });
+            };
+            if sign.attachment == CellAttachment::Floor && !cell.kind.walkable() {
+                return Err(FitError::AccessFailure {
+                    reason: "floor sign anchor is not walkable",
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -940,6 +1041,7 @@ pub struct StructureContext {
 /// Small deterministic search that places an authored blueprint in a lot.
 /// It prefers an origin where a multi-tile prop straddles a chunk seam so the
 /// streaming acceptance fixture exercises seam ownership.
+#[allow(clippy::too_many_arguments)]
 pub fn place_blueprint_in_lot(
     seed: u64,
     parcel: ParcelId,
@@ -1017,6 +1119,82 @@ pub fn place_blueprint_in_lot(
         .map(|(_, structure)| structure)
         .ok_or(FitError::BudgetExhausted)?;
     Ok(best)
+}
+
+/// Place an authored structure against the public frontage rather than
+/// searching the lot for a seam-crossing prop. The structure's local `v = 0`
+/// edge sits one tile inside the lot frontage, and the lateral position gets a
+/// small deterministic seed-based offset inside the remaining frontage.
+#[allow(clippy::too_many_arguments)]
+pub fn place_blueprint_along_frontage(
+    seed: u64,
+    parcel: ParcelId,
+    lot: GridRect,
+    frontage: Frontage,
+    blueprint: BlueprintGrid,
+    name: &'static str,
+    archetype: &'static str,
+    style: BuildingStyle,
+) -> Result<PlacedStructure, FitError> {
+    blueprint.validate()?;
+    let rel = blueprint.world_bounds(LotTransform::new(Position::new(0, 0), frontage.side));
+    let span_w = rel.width();
+    let span_h = rel.height();
+    const MARGIN: i32 = 1;
+    const FRONTAGE_SALT: u64 = 0x4652_4f4e_5453_4554; // "FRONTSET"
+
+    let (lateral_min, lateral_max, desired_min) = match frontage.side {
+        CardinalDir::North => {
+            let min_x = lot.min.x + MARGIN;
+            let max_x = lot.max.x - MARGIN - span_w + 1;
+            (min_x, max_x, Position::new(0, lot.min.y + MARGIN))
+        }
+        CardinalDir::South => {
+            let min_x = lot.min.x + MARGIN;
+            let max_x = lot.max.x - MARGIN - span_w + 1;
+            (
+                min_x,
+                max_x,
+                Position::new(0, lot.max.y - MARGIN - span_h + 1),
+            )
+        }
+        CardinalDir::West => {
+            let min_y = lot.min.y + MARGIN;
+            let max_y = lot.max.y - MARGIN - span_h + 1;
+            (min_y, max_y, Position::new(lot.min.x + MARGIN, 0))
+        }
+        CardinalDir::East => {
+            let min_y = lot.min.y + MARGIN;
+            let max_y = lot.max.y - MARGIN - span_h + 1;
+            (
+                min_y,
+                max_y,
+                Position::new(lot.max.x - MARGIN - span_w + 1, 0),
+            )
+        }
+    };
+    if lateral_max < lateral_min {
+        return Err(FitError::InvalidLot {
+            reason: "blueprint does not fit inside the frontage setback",
+        });
+    }
+    let center = lateral_min + (lateral_max - lateral_min) / 2;
+    let jitter = (mix64(seed ^ parcel.0 ^ FRONTAGE_SALT) % 5) as i32 - 2;
+    let lateral = (center + jitter).clamp(lateral_min, lateral_max);
+    let desired_min = match frontage.side {
+        CardinalDir::North | CardinalDir::South => Position::new(lateral, desired_min.y),
+        CardinalDir::West | CardinalDir::East => Position::new(desired_min.x, lateral),
+    };
+    let origin = Position::new(desired_min.x - rel.min.x, desired_min.y - rel.min.y);
+    Ok(PlacedStructure::new(
+        parcel,
+        0,
+        name,
+        archetype,
+        style,
+        LotTransform::new(origin, frontage.side),
+        blueprint,
+    ))
 }
 
 #[cfg(test)]
