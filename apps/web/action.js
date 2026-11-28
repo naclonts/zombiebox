@@ -19,6 +19,8 @@
   // Direct mouse-look sensitivity (radians of view rotation per CSS pixel).
   const MOUSE_LOOK_RADIANS_PER_PX = 0.0025;
   const MOUSE_LOOK_MAX_RADIANS = 1.2;
+  let pointerLockPending = false;
+  let pointerLockUnavailable = false;
 
   const STATUS_WON = 1 << 0;
   const STATUS_DEAD = 1 << 1;
@@ -546,7 +548,10 @@
   function updateHud(hud) {
     const previousControlMode = state.controlMode;
     state.controlMode = hud.controlKind;
-    if (previousControlMode !== state.controlMode) clearHeldInput();
+    if (previousControlMode !== state.controlMode) {
+      clearHeldInput();
+      if (state.controlMode !== 0) releaseMouseLock();
+    }
     syncEngineLoop(hud);
     state.hud = hud;
     state.playerX = hud.playerX;
@@ -676,6 +681,7 @@
   function openModal(kind, customCopy) {
     state.modalKind = kind;
     state.playing = false;
+    releaseMouseLock();
     syncEngineLoop({ controlKind: 0 });
     clearHeldInput();
     overlayEl.hidden = false;
@@ -1112,6 +1118,7 @@
     const wasPlaying = state.playing;
     if (wasPlaying) {
       state.playing = false;
+      releaseMouseLock();
       clearHeldInput();
     }
     if (state.runId) {
@@ -1228,6 +1235,30 @@
     return mode === CAMERA_CHASE || mode === CAMERA_FIRST_PERSON;
   }
 
+  function releaseMouseLock() {
+    if (document.pointerLockElement === canvas && document.exitPointerLock) {
+      document.exitPointerLock();
+    }
+    input.mouseTracking = false;
+    input.mouseLookYaw = 0;
+    input.mouseLookPitch = 0;
+    input.mouseHold = false;
+  }
+
+  function requestMouseLock() {
+    if (pointerLockPending) return true;
+    if (pointerLockUnavailable || !canvas.requestPointerLock) return false;
+    pointerLockPending = true;
+    try {
+      // Older implementations return undefined and report errors via an event.
+      canvas.requestPointerLock()?.catch?.(handleMouseLockError);
+      return true;
+    } catch {
+      handleMouseLockError();
+      return false;
+    }
+  }
+
   function accumulateMouseLook(clientX, clientY) {
     if (!input.mouseTracking) {
       input.mouseTracking = true;
@@ -1239,21 +1270,14 @@
     const dy = clientY - input.mouseLastClientY;
     input.mouseLastClientX = clientX;
     input.mouseLastClientY = clientY;
+    accumulateMouseDelta(dx, dy);
+  }
+
+  function accumulateMouseDelta(dx, dy) {
     if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-    input.mouseLookYaw = Math.max(
-      -MOUSE_LOOK_MAX_RADIANS,
-      Math.min(
-        MOUSE_LOOK_MAX_RADIANS,
-        input.mouseLookYaw + dx * MOUSE_LOOK_RADIANS_PER_PX,
-      ),
-    );
-    input.mouseLookPitch = Math.max(
-      -MOUSE_LOOK_MAX_RADIANS,
-      Math.min(
-        MOUSE_LOOK_MAX_RADIANS,
-        input.mouseLookPitch + dy * MOUSE_LOOK_RADIANS_PER_PX,
-      ),
-    );
+    const limit = MOUSE_LOOK_MAX_RADIANS;
+    input.mouseLookYaw = Math.max(-limit, Math.min(limit, input.mouseLookYaw + dx * MOUSE_LOOK_RADIANS_PER_PX));
+    input.mouseLookPitch = Math.max(-limit, Math.min(limit, input.mouseLookPitch + dy * MOUSE_LOOK_RADIANS_PER_PX));
   }
 
   function updateMouseAim(clientX, clientY) {
@@ -1278,7 +1302,7 @@
     if (!state.playing) return;
     e.preventDefault();
 
-      if (e.pointerType === "touch") {
+    if (e.pointerType === "touch") {
       const rect = canvas.getBoundingClientRect();
       const isLeft = e.clientX < rect.left + rect.width * 0.5;
       try {
@@ -1309,7 +1333,12 @@
 
     if (e.button === 0) {
       updateMouseAim(e.clientX, e.clientY);
-      if (isLookCamera()) {
+      if (isLookCamera() && state.controlMode === 0 && document.pointerLockElement !== canvas) {
+        // The first click only captures the pointer. It must not fire a shot.
+        if (requestMouseLock()) return;
+      }
+      if (isLookCamera() && document.pointerLockElement !== canvas) {
+        try { canvas.setPointerCapture(e.pointerId); } catch { /* optional fallback */ }
         input.mouseTracking = true;
         input.mouseLastClientX = e.clientX;
         input.mouseLastClientY = e.clientY;
@@ -1362,19 +1391,49 @@
       }
       return;
     }
+    if (document.pointerLockElement === canvas) return;
     updateMouseAim(e.clientX, e.clientY);
-    if (isLookCamera() && state.playing) {
+    if (isLookCamera() && state.playing && state.controlMode === 0) {
       accumulateMouseLook(e.clientX, e.clientY);
     } else {
       input.mouseTracking = false;
     }
   });
 
+  document.addEventListener("mousemove", (e) => {
+    if (document.pointerLockElement === canvas && state.playing && state.controlMode === 0 && isLookCamera()) {
+      accumulateMouseDelta(e.movementX, e.movementY);
+    }
+  });
+
   canvas.addEventListener("pointerleave", () => {
+    if (document.pointerLockElement !== canvas) {
+      input.mouseTracking = false;
+      input.mouseLookYaw = 0;
+      input.mouseLookPitch = 0;
+    }
+  });
+
+  document.addEventListener("pointerlockchange", () => {
+    pointerLockPending = false;
     input.mouseTracking = false;
     input.mouseLookYaw = 0;
     input.mouseLookPitch = 0;
+    if (document.pointerLockElement !== canvas) {
+      input.mouseHold = false;
+    } else if (!state.playing || state.controlMode !== 0 || !isLookCamera()) {
+      releaseMouseLock();
+    }
   });
+
+  function handleMouseLockError() {
+    if (!pointerLockPending) return;
+    pointerLockPending = false;
+    pointerLockUnavailable = true;
+    input.mouseTracking = false;
+  }
+
+  document.addEventListener("pointerlockerror", handleMouseLockError);
 
   function releasePointer(e) {
     if (e.pointerType === "touch") {
@@ -1398,6 +1457,9 @@
     }
     if (e.button === 0) {
       input.mouseHold = false;
+      if (e.pointerType === "mouse" && document.pointerLockElement !== canvas) {
+        try { canvas.releasePointerCapture(e.pointerId); } catch { /* optional fallback */ }
+      }
     }
   }
 
@@ -1526,6 +1588,10 @@
 
   function cycleCamera() {
     state.cameraMode = (state.cameraMode + 1) % 5;
+    if (!isLookCamera()) {
+      releaseMouseLock();
+      pointerLockUnavailable = false;
+    }
     state.mountedIsometric = state.cameraMode === 0;
     input.mouseLookYaw = 0;
     input.mouseLookPitch = 0;

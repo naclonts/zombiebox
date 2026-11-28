@@ -1549,25 +1549,29 @@ mod tests {
             "shroud blocked cutaway {open:?}"
         );
 
-        let mut first_person_rig = CameraRig::new(100, 100);
-        first_person_rig.set_mode(crate::CameraMode::FirstPerson);
-        let first_person = first_person_rig.update(crate::CameraTarget::default(), 0.0);
+        let mut interior_rig = CameraRig::new(100, 100);
+        for mode in [crate::CameraMode::Chase, crate::CameraMode::FirstPerson] {
+            interior_rig.set_mode(mode);
+            let interior = interior_rig.update(crate::CameraTarget::default(), 0.0);
+            let interior_lighting = SceneLightingUniforms::for_scene(&scene, &interior);
+            assert_ne!(
+                interior_lighting.counts_and_flags[1]
+                    & super::super::uniforms::shading_flags::KEEP_INTERIORS,
+                0
+            );
+            // Use the same overhead pose for pixel comparisons across visibility policies.
+            let closed = renderer
+                .render_offscreen_rgba8(&ctx, &camera, &interior_lighting, &[], Some(&mesh))
+                .unwrap()
+                .pixel(50, 50);
+            assert!(
+                closed[0] < 30 && closed[1] < 30,
+                "{mode:?} cutaway or shroud leaked floor color {closed:?}"
+            );
+        }
+
+        let first_person = interior_rig.current_frame();
         let first_person_lighting = SceneLightingUniforms::for_scene(&scene, &first_person);
-        assert_ne!(
-            first_person_lighting.counts_and_flags[1]
-                & super::super::uniforms::shading_flags::FIRST_PERSON,
-            0
-        );
-        // Keep the overhead camera for this pixel comparison while exercising the
-        // first-person visibility policy against the same fully open cutaway.
-        let closed_in_first_person = renderer
-            .render_offscreen_rgba8(&ctx, &camera, &first_person_lighting, &[], Some(&mesh))
-            .unwrap()
-            .pixel(50, 50);
-        assert!(
-            closed_in_first_person[0] < 30 && closed_in_first_person[1] < 30,
-            "first-person cutaway or shroud leaked floor color {closed_in_first_person:?}"
-        );
 
         // The underside belongs to the visible room below even if the floor
         // above has never been discovered.
@@ -1593,8 +1597,8 @@ mod tests {
                 .with_building(1, 0)
                 .with_flags(MaterialFlags::UNLIT),
         );
-        first_person_rig.adjust_first_person_look(0.0, -1.3);
-        let upward_camera = first_person_rig.update(crate::CameraTarget::default(), 0.0);
+        interior_rig.adjust_first_person_look(0.0, -1.3);
+        let upward_camera = interior_rig.update(crate::CameraTarget::default(), 0.0);
         let ceiling_color = renderer
             .render_offscreen_rgba8(
                 &ctx,

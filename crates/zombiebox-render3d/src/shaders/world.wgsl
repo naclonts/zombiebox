@@ -159,9 +159,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let tag = in.v_meta.x & 0xFFu;
     let floor_index = (in.v_meta.x >> 8u) & 0xFFu;
     let building = in.v_meta.y & 0xFFFFu;
-    let first_person = (lighting.counts_and_flags.y & 8u) != 0u;
+    let keep_interiors = (lighting.counts_and_flags.y & 8u) != 0u;
     // A slab's underside belongs to the room below, not the floor above it.
-    let ceiling = first_person && building != 0u &&
+    let ceiling = keep_interiors && building != 0u &&
         (tag == 4u || tag == 8u) && floor_index > 0u && in.normal.y < -0.01;
     let shading_floor = floor_index - select(0u, 1u, ceiling);
     let active_floor = lighting.counts_and_flags.z;
@@ -169,7 +169,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var explored = false;
     var shrouded = false;
     if (lighting.counts_and_flags.y & 4u) != 0u {
-        if building != 0u && (flags & 8u) == 0u && !first_person {
+        if building != 0u && (flags & 8u) == 0u && !keep_interiors {
             let view_side = camera.eye_pos.xz - lighting.player_position.xz;
             let offset = in.world_pos.xz - lighting.player_position.xz;
             let front_wall = tag == 6u && length(offset) < 5.0 && dot(view_side, offset) > 0.0;

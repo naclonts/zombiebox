@@ -13,7 +13,7 @@ pub mod shading_flags {
     pub const ENABLE_LOWER_FLOOR_DIM: u32 = 1 << 1;
     pub const ENABLE_WORLD_VISIBILITY: u32 = 1 << 2;
     /// Keep ceilings and walls intact when the camera is inside the world.
-    pub const FIRST_PERSON: u32 = 1 << 3;
+    pub const KEEP_INTERIORS: u32 = 1 << 3;
 }
 
 /// 32-byte point light (streetlamp, porch lamp, survivor halo, muzzle/explosion flash).
@@ -124,8 +124,11 @@ impl SceneLightingUniforms {
             .to_array();
         result.counts_and_flags[1] |=
             shading_flags::ENABLE_WORLD_VISIBILITY | shading_flags::ENABLE_LOWER_FLOOR_DIM;
-        if camera.mode == crate::CameraMode::FirstPerson {
-            result.counts_and_flags[1] |= shading_flags::FIRST_PERSON;
+        if matches!(
+            camera.mode,
+            crate::CameraMode::Chase | crate::CameraMode::FirstPerson
+        ) {
+            result.counts_and_flags[1] |= shading_flags::KEEP_INTERIORS;
         }
         result.counts_and_flags[2] = u32::from(scene.active_floor);
         let mut candidates = Vec::with_capacity(scene.lights.len() + scene.dynamic_flashes.len());

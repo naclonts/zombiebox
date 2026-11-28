@@ -32,6 +32,22 @@ use crate::{
 use std::collections::BTreeMap;
 use zombiebox_core::VehicleView;
 
+fn chase_clearance(world: &impl SpatialWorld, rig: &CameraRig, frame: &CameraFrame) -> f32 {
+    let config = rig.config();
+    let aspect = rig.internal_size().x as f32 / rig.internal_size().y as f32;
+    let half_height = config.perspective_near * (config.chase_fov_y * 0.5).tan();
+    let radius = (config.perspective_near.powi(2) + half_height.powi(2) * (1.0 + aspect * aspect))
+        .sqrt()
+        + 0.04;
+    world
+        .sphere_cast(
+            render_to_sim_point(frame.focus),
+            render_to_sim_point(frame.eye),
+            radius,
+        )
+        .map_or(config.chase_distance, |hit| (hit.distance - 0.04).max(0.0))
+}
+
 /// Shared camera, scene, and rendering state for a single action run.
 pub struct Presentation {
     camera: CameraRig,
@@ -341,14 +357,23 @@ impl Presentation {
         Vec<PreparedZombie>,
     ) {
         let mut camera = Self::update_camera(&mut self.camera, game, dt);
-        if matches!(camera.mode, CameraMode::Orbit | CameraMode::Chase) {
-            let start = render_to_sim_point(camera.focus);
-            let end = render_to_sim_point(camera.eye);
-            if let Some(hit) = game.spatial().sphere_cast(start, end, 0.08) {
-                self.camera
-                    .set_obstruction_distance(Some((hit.distance - 0.04).max(0.0)));
+        match camera.mode {
+            CameraMode::Chase => {
+                // Enclose the near-plane corners so walls and ceilings stay clear of the lens.
+                let distance = chase_clearance(&game.spatial(), &self.camera, &camera);
+                self.camera.update_chase_obstruction(distance, dt);
                 camera = self.camera.current_frame();
             }
+            CameraMode::Orbit => {
+                let start = render_to_sim_point(camera.focus);
+                let end = render_to_sim_point(camera.eye);
+                if let Some(hit) = game.spatial().sphere_cast(start, end, 0.08) {
+                    self.camera
+                        .set_obstruction_distance(Some((hit.distance - 0.04).max(0.0)));
+                    camera = self.camera.current_frame();
+                }
+            }
+            _ => {}
         }
         let frame = self.scene.prepare(game, &camera, dt);
         let is_active = |coord: ChunkCoord| {
@@ -410,6 +435,14 @@ impl Presentation {
                 ))
             },
         );
+        // Keep the view clear when the boom puts the lens close to the survivor.
+        let survivor_opacity =
+            if camera.mode == CameraMode::Chase && game.mounted_vehicle().is_none() {
+                let distance = camera.eye.distance(camera.focus);
+                (255.0 * ((distance - 0.55) / 0.70).clamp(0.0, 1.0)).round() as u8
+            } else {
+                255
+            };
         for (part, part_instances) in actors {
             if matches!(
                 part,
@@ -423,10 +456,19 @@ impl Presentation {
             ) {
                 continue;
             }
+            let opacity = match part {
+                ActorPart::Survivor(_)
+                | ActorPart::Axe
+                | ActorPart::Pistol
+                | ActorPart::Shotgun
+                | ActorPart::RocketLauncher => survivor_opacity,
+                _ => 255,
+            };
             instances[part.mesh_index()].extend(part_instances.into_iter().map(|actor| {
                 let mut instance =
                     InstanceRaw::from_transform(Mat4::from_cols_array_2d(&actor.model))
                         .with_tint(actor.color_tint)
+                        .with_dither_opacity(opacity)
                         .with_hit_flash_and_emissive(
                             (actor.emissive_flash[0] * 255.0) as u8,
                             (actor.emissive_flash[1] * 255.0) as u8,
@@ -753,6 +795,57 @@ impl Presentation {
 mod tests {
     use super::*;
     use zombiebox_core::{ActionGame, ActionInput, Tile3D};
+
+    #[test]
+    fn chase_sweep_detects_walls_ceiling_and_near_plane_edges() {
+        use zombiebox_core::{
+            Aabb3, Collider, ColliderKind, Material, SupportSurface, TerrainSample,
+            Vec2 as SimVec2, Vec3 as SimVec3,
+        };
+        struct BoxWorld(Collider);
+        impl SpatialWorld for BoxWorld {
+            fn terrain_at(&self, _: SimVec2) -> Option<TerrainSample> {
+                None
+            }
+            fn supports_at(&self, _: SimVec2, out: &mut Vec<SupportSurface>) {
+                out.clear();
+            }
+            fn colliders_in(&self, _: Aabb3, out: &mut Vec<Collider>) {
+                out.clear();
+                out.push(self.0);
+            }
+        }
+        let mut rig = CameraRig::new(1280, 720);
+        rig.set_mode(CameraMode::Chase);
+        let frame = rig.update(CameraTarget::default(), 0.016);
+        let start = render_to_sim_point(frame.focus);
+        let end = render_to_sim_point(frame.eye);
+        let middle = start + (end - start) * 0.5;
+        let wall = ColliderKind::Wall {
+            tile: Tile3D::new(0, 0, 0),
+        };
+        let slab = ColliderKind::BuildingSlab {
+            building_id: 1,
+            floor: 1,
+            is_roof: false,
+        };
+        for (kind, center, half) in [
+            (wall, middle, SimVec3::new(0.1, 1.0, 1.0)),
+            (slab, middle, SimVec3::new(1.0, 1.0, 0.1)),
+            (
+                wall,
+                middle + SimVec3::new(0.0, 0.16, 0.0),
+                SimVec3::new(0.05, 0.02, 0.05),
+            ),
+        ] {
+            let world = BoxWorld(Collider {
+                bounds: Aabb3::from_center_half_extents(center, half),
+                kind,
+                material: Material::None,
+            });
+            assert!(chase_clearance(&world, &rig, &frame) < rig.config().chase_distance);
+        }
+    }
 
     fn make_test_game() -> ActionGame {
         let mut game = ActionGame::county(42);

@@ -65,7 +65,6 @@ fn gallery_cameras(meshes: &[(&str, &str, &MeshBuffer)]) -> [Mat4; CameraMode::C
         orbit_focus_height: min.y + height * 0.5,
         chase_distance: diameter * 1.45,
         chase_focus_height: min.y + height * 0.46,
-        chase_forward_look: 0.0,
         first_person_eye_height: min.y + height * 0.65,
         ..CameraConfig::default()
     };

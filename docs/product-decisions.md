@@ -8,7 +8,7 @@ Check marks indicate what is in the current build or world scaffold. For work on
 
 Aim for moderate visual fidelity with the finish of a high-quality Sega Genesis or early PlayStation game. Give the county detailed, recognizable places, characters and vehicles with distinct silhouettes and expressive movement, and lighting and effects that make combat and high-speed traversal easy to read. Use the console era as an art reference and choose rendering techniques that suit the game.
 
-On foot, the game uses an isometric view. While riding vehicles (starting with motorcycles), exploring an alternate **behind-overhead / chase-aligned camera** is explicitly in scope if it makes handlebar steering and left/right body leaning more intuitive on touchscreens.
+Isometric is the default on foot. Chase and First Person are selectable on foot. While riding vehicles (starting with motorcycles), exploring an alternate **behind-overhead / chase-aligned camera** is explicitly in scope if it makes handlebar steering and left/right body leaning more intuitive on touchscreens.
 
 For visual changes, use Birch Street (and, as new regions and vehicles land, representative procedural district and road scenes from a fixed reference seed) as review scenes. During movement, riding, and combat, the player should be able to pick out the survivor, threats, entrances, loot, and hazards at a glance. Check substantial rendering changes on a modest physical Android handset and record the device and frame pacing during movement, aiming, repeated shots, and high-speed travel. Responsive touch input and smooth action are part of the target. [Device criteria](architecture.md#first-device-decision)
 
@@ -23,6 +23,13 @@ For visual changes, use Birch Street (and, as new regions and vehicles land, rep
 - [x] **Procedural county and field atlas.** Generator v2 builds a 512 × 512 county from an unsigned 64-bit seed. Streets, bridges, district buildings and their interiors, caches, and infected have stable world positions. The Android and browser atlas share the same survey data and support landmark inspection and walking across chunk boundaries. [Atlas controls](../README.md#explore-a-procedural-county) · [Generator](../crates/zombiebox-core/src/world.rs)
 - [x] **Real-time county play.** The default run streams and renders procedural terrain, roads, bridges, and multi-floor district buildings around the player. Scavenging and combat use the action runtime. The atlas offers direct entry and same-seed teleports, with gear and world edits retained within the run. [County runtime](../crates/zombiebox-core/src/action/county.rs) · [County controls](../README.md#run-the-browser-playtest)
 
+
+## Camera completion checks
+
+- **Chase indoors:** Turn fully around after entering a Birch Street house and inside a multi-floor seed `42` county building. Walk through doorways, along walls, and up and down stairs. Check that the camera holds its heading, the lens stays clear of walls and ceilings, and the view opens smoothly as space returns. When the boom retracts close to the survivor, check that the model leaves the room visible.
+- **Browser mouse look:** In First Person and Chase, click the scene to capture the mouse without firing. Turn through 360 degrees in one direction, look up and down, and then click to fire. Release capture with Escape, pause, and switch camera modes. Mount and dismount in a look mode and verify that mouse lean takes over while riding and mouse look can be recaptured on foot. Check screen-relative aiming and touch controls.
+
+- **Host verification (2026-11-27).** Offscreen Chase captures covered Birch Street entry, a full turn, and its stairs in both directions, plus full turns on both floors of a seed `42` duplex. The GPU renderer and web host tests passed. Chrome 157 sent 6.75 radians of First Person yaw from mouse motion while the cursor stayed fixed. Capture, firing, Escape, blur, riding, and switching back to screen-relative aim were exercised. Physical Android play and frame pacing remain open.
 
 ## Planned milestones and completion checks
 

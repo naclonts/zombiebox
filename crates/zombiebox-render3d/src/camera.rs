@@ -187,7 +187,6 @@ pub struct CameraConfig {
     pub chase_pitch: f32,
     pub chase_distance: f32,
     pub chase_focus_height: f32,
-    pub chase_forward_look: f32,
     pub chase_fov_y: f32,
     pub chase_min_pitch: f32,
     pub chase_max_pitch: f32,
@@ -248,7 +247,6 @@ impl Default for CameraConfig {
             chase_pitch: 0.42,
             chase_distance: 6.5,
             chase_focus_height: 0.85,
-            chase_forward_look: 1.2,
             chase_fov_y: 55.0_f32.to_radians(),
             chase_min_pitch: 0.0,
             chase_max_pitch: 1.30,
@@ -720,6 +718,7 @@ pub struct CameraRig {
     orbit_distance: f32,
 
     obstruction_distance: Option<f32>,
+    chase_boom_distance: Option<f32>,
     shake_amplitude: f32,
     shake_clock_s: f32,
 }
@@ -750,6 +749,7 @@ impl CameraRig {
             orbit_pitch: config.orbit_default_pitch,
             orbit_distance: config.orbit_default_distance,
             obstruction_distance: None,
+            chase_boom_distance: None,
             shake_amplitude: 0.0,
             shake_clock_s: 0.0,
         }
@@ -777,6 +777,9 @@ impl CameraRig {
             }
         }
         self.obstruction_distance = None;
+        if changed {
+            self.chase_boom_distance = None;
+        }
     }
 
     #[must_use]
@@ -833,6 +836,7 @@ impl CameraRig {
         self.view_yaw_initialized = false;
         self.shake_amplitude = 0.0;
         self.obstruction_distance = None;
+        self.chase_boom_distance = None;
     }
 
     /// Snaps the Chase/FirstPerson view yaw to the actor heading (`renderer yaw = heading + π`).
@@ -948,6 +952,19 @@ impl CameraRig {
         self.obstruction_distance = max_distance.filter(|d| d.is_finite() && *d >= 0.0);
     }
 
+    /// Retract immediately when obstructed, then ease back out as space opens.
+    pub fn update_chase_obstruction(&mut self, limit: f32, dt: f32) {
+        let limit = limit.clamp(0.0, self.config.chase_distance);
+        let previous = self.chase_boom_distance.unwrap_or(limit);
+        let distance = if limit <= previous {
+            limit
+        } else {
+            previous + (limit - previous) * damp_factor(dt.clamp(0.0, 0.1), 0.25)
+        };
+        self.chase_boom_distance = Some(distance);
+        self.set_obstruction_distance(Some(distance));
+    }
+
     /// Triggers screen shake in internal-pixel units (e.g. `2.5` shotgun, `6.5` rocket blast).
     pub fn add_shake(&mut self, impulse_px: f32) {
         if impulse_px.is_finite() && impulse_px > 0.0 {
@@ -1023,17 +1040,15 @@ impl CameraRig {
             }
         }
 
-        let desired_look =
-            if !self.config.look_ahead_enabled || self.mode == CameraMode::FirstPerson {
-                SimVec2::ZERO
-            } else if self.mode == CameraMode::Chase {
-                SimVec2::new(-self.view_yaw.cos(), -self.view_yaw.sin())
-                    * self.config.chase_forward_look
-            } else {
-                aim_dir * target.look_ahead_distance
-            };
+        let desired_look = if !self.config.look_ahead_enabled
+            || matches!(self.mode, CameraMode::FirstPerson | CameraMode::Chase)
+        {
+            SimVec2::ZERO
+        } else {
+            aim_dir * target.look_ahead_distance
+        };
 
-        if should_snap || mounted_first_person {
+        if should_snap || mounted_first_person || self.mode == CameraMode::Chase {
             self.anchor_sim = target.position;
             self.look_offset_sim = desired_look;
             self.initialized = true;
@@ -1212,12 +1227,12 @@ impl CameraRig {
                     .clamp(self.config.chase_min_pitch, self.config.chase_max_pitch);
                 let (right, up, forward) = basis_from_yaw_pitch(yaw, pitch);
                 let focus = sim_to_render_point(
-                    self.anchor_sim + SimVec3::new(look.x, look.y, self.config.chase_focus_height),
+                    self.anchor_sim + SimVec3::new(0.0, 0.0, self.config.chase_focus_height),
                 );
                 let dist = self.config.chase_distance;
-                let eff_dist = self.obstruction_distance.map_or(dist, |obs| {
-                    dist.min(obs.max(self.config.perspective_near * 2.0))
-                });
+                let eff_dist = self
+                    .obstruction_distance
+                    .map_or(dist, |obs| dist.min(obs.max(0.0)));
                 let eye = focus - forward * eff_dist;
                 let fov_y = self.config.chase_fov_y;
                 let proj = Mat4::perspective_rh(
@@ -1331,6 +1346,36 @@ mod tests {
 
     use super::*;
     use crate::coords::ChunkCoord;
+
+    #[test]
+    fn chase_anchor_and_boom_remain_stable_in_tight_spaces() {
+        let mut rig = CameraRig::new(1280, 720);
+        rig.set_mode(CameraMode::Chase);
+        let mut target = CameraTarget::default();
+        let _ = rig.update(target, 0.016);
+        target.position = SimVec3::new(1.0, 2.0, 0.2);
+        let frame = rig.update(target, 0.016);
+        let focus = crate::coords::render_to_sim_point(frame.focus);
+        assert!(
+            (focus - (target.position + SimVec3::new(0.0, 0.0, rig.config.chase_focus_height)))
+                .length()
+                < 1e-5
+        );
+        rig.adjust_first_person_look(0.8, 0.0);
+        let turned = rig.update(target, 0.016);
+        assert!(turned.focus.distance(frame.focus) < 1e-5);
+
+        rig.update_chase_obstruction(0.05, 0.016);
+        assert!((rig.current_frame().eye.distance(rig.current_frame().focus) - 0.05).abs() < 1e-5);
+        rig.update_chase_obstruction(6.5, 0.016);
+        let extended = rig.current_frame().eye.distance(rig.current_frame().focus);
+        assert!(extended > 0.05 && extended < 6.5);
+        rig.update_chase_obstruction(0.02, 0.016);
+        assert!((rig.current_frame().eye.distance(rig.current_frame().focus) - 0.02).abs() < 1e-5);
+        rig.notify_teleport();
+        rig.update_chase_obstruction(6.5, 0.016);
+        assert!((rig.current_frame().eye.distance(rig.current_frame().focus) - 6.5).abs() < 1e-5);
+    }
 
     #[test]
     fn isometric_exact_pixel_stepping_calibration() {
