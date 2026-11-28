@@ -416,36 +416,42 @@ Each package is sized for a single lightweight subagent session with explicit fi
 * **Files:** `world/parcels.rs`, `world/blueprint.rs`, `world/archetypes/mod.rs`, `action/prop_catalog.rs`, `zombiebox-render3d/src/mesh/props.rs`.
 * **Deliverables:** Define `ParcelPlan`, `PlacedStructure`, `OutdoorLayer`, `BlueprintGrid`, `CompoundPlanner`, `StructureGenerator`, and `PlaceholderBlockSpec`. Add the 12 `ASSET_TODO_*` entries to `prop_catalog.rs` and render them in `mesh/props.rs` as tinted boxes matching `size_m` and facing. Add a `#[cfg(test)]` check that iterates over every `RoomFurnishRule` in the registry and asserts every `prop_id` resolves in `prop_catalog.rs`.
 * **Acceptance Gate:** `cargo test -p zombiebox-core` and `cargo test -p zombiebox-render3d` pass; a unit test verifies `BlueprintGrid` doorway `3×3` apron reservation rejects overlapping walls/props.
+* **Status:** Not started.
 
 ### WP 3.2: Massing Composer & Topology-First Floorplan Solver
 
 * **Files:** `world/massing.rs`, `world/floorplan.rs`.
 * **Deliverables:** Implement the 5 massing shapes (`Rect`, `LWing`, `TWing`, `SteppedSplit`, `Duplex`) with per-wing `WingId` and per-cell `RoofStyle`. Implement graph-first constrained BSP room allocation, stairwell alignment across floors, exterior windows, and the `3×3` doorway stencil.
 * **Acceptance Gate:** Unit test across 64 seeds proves every generated building has: (a) 100% room connectivity from exterior entrance via BFS, (b) zero doorway apron violations, (c) aligned stairwells on 2F structures.
+* **Status:** Not started.
 
 ### WP 3.3: Hierarchical Furnishing Solver
 
 * **Files:** `world/furnish.rs`.
 * **Deliverables:** Implement the 3-pass furnishing solver (walk-spine BFS reservation → wall-hugging pass → anchor-child clusters → floor fill), respecting `PropSpan` footprints, window clearance, and `CounterTop`/`WallMount` attachment layers from Phase 2.
 * **Acceptance Gate:** Unit test verifies zero props overlap walls, zero props intrude into `DOOR_APRON` or block the room `WALK_SPINE`, and anchor-child clusters (e.g., sofa + coffee table, table + chairs) orient toward each other.
+* **Status:** Not started.
 
 ### WP 3.4: 5 Residential House Archetypes
 
 * **Files:** `world/archetypes/houses.rs`.
 * **Deliverables:** Author `StructureGenerator` + `RoomFurnishRule` definitions for Craftsman Bungalow, L-Wing Suburban Ranch (with garage + driveway car slot), 2-Story Center-Hall Colonial, Stepped Split-Level, and Side-by-Side Duplex using existing Kenney meshes + `WARDROBE`/`NIGHTSTAND`/`PORCH_RAIL`/`MAILBOX` placeholders.
 * **Acceptance Gate:** 64-seed generation test confirms all 5 sub-archetypes produce distinct footprints, distinct room counts, furnished kitchens/baths/bedrooms/living rooms, and pass the bilateral `0.23m` doorway capsule sweep.
+* **Status:** Not started.
 
 ### WP 3.5: Grocery Store & Highway Gas Station Archetypes
 
 * **Files:** `world/archetypes/retail.rs`.
 * **Deliverables:** Implement the open-span Grocery Store (vestibule, checkout lanes with `assisted-checkout-till`, `TileKind::Pillar` grid, `HighBlocker` gondola aisles, perimeter freezers, public restrooms with `signage.rs` plaques, rear stockroom/loading dock) and Highway Gas Station (overhead `FuelCanopy` + `ASSET_TODO_FUEL_PUMP` islands + convenience mart + highway pylon sign).
 * **Acceptance Gate:** Unit test verifies `TileKind::Pillar` spacing, 2-tile aisle navigability from entrance to stockroom and restrooms, `HighBlocker` collider flags on gondola shelves, and readable exterior/aisle signage.
+* **Status:** Not started.
 
 ### WP 3.6: Organic Town Planner, Highways & Subdivisions
 
 * **Files:** `world/geography.rs`, `world/town_planner.rs`, `world/dressing.rs`.
 * **Deliverables:** Replace the `5×5` town stamp with terrain-aware highway polylines, morphology-driven contour-hugging block accretion, detached cul-de-sac subdivisions, and OBB lot subdivision. Wire `OutdoorLayer` dressing (driveways, sidewalks, parking lots, fences, dumpsters, streetlights).
 * **Acceptance Gate:** Determinism test (same seed → identical `ParcelPlan` hashes); multi-seed geometry test confirms zero lots overlap water, 100% of lots touch a road edge, and every town spawns at least one Grocery Store, multiple House archetypes, and highway Gas Stations.
+* **Status:** Not started.
 
 ### WP 3.7: Legacy Teardown, `CountyStage` Wiring & Headless 3D Verification
 
@@ -455,5 +461,6 @@ Each package is sized for a single lightweight subagent session with explicit fi
 1. `cargo test -p zombiebox-core --lib generated_doors_and_gates_pass_runtime_bilateral_capsule_sweep` passes across seeds `0..63`.
 2. Full `cargo test --workspace` passes.
 3. Headless `check3d` / `preview3d` renders a seed-42 town showing non-rectangular houses, grocery aisles, gas station canopy, and organic road layout without chunk-seam panics or cutaway artifacts.
+* **Status:** Not started.
 
 
