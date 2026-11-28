@@ -87,7 +87,10 @@ impl CompoundPlanner for CraftsmanParcel {
             frontage: context.frontage,
             zone: context.zone,
             outdoor: OutdoorLayer {
-                paths: vec![(context.frontage.access, structure.front_door)],
+                paths: crate::world::floorplan::frontage_path(
+                    context.frontage,
+                    structure.front_door,
+                ),
                 ..OutdoorLayer::default()
             },
             structures: vec![structure],
@@ -137,7 +140,10 @@ impl CompoundPlanner for CraftsmanStreetParcel {
             frontage: context.frontage,
             zone: context.zone,
             outdoor: OutdoorLayer {
-                paths: vec![(context.frontage.access, structure.front_door)],
+                paths: crate::world::floorplan::frontage_path(
+                    context.frontage,
+                    structure.front_door,
+                ),
                 ..OutdoorLayer::default()
             },
             structures: vec![structure],
@@ -1425,9 +1431,16 @@ mod tests {
                 zone: crate::world::blueprint::ZoneKind::Residential,
             };
             let plan = RanchParcel.plan(&context).unwrap();
+            assert_eq!(plan.outdoor.paths.first().unwrap().0, front);
             assert_eq!(
-                plan.outdoor.paths,
-                vec![(front, plan.structures[0].front_door)]
+                plan.outdoor.paths.last().unwrap().1,
+                plan.structures[0].front_door
+            );
+            assert!(
+                plan.outdoor
+                    .paths
+                    .iter()
+                    .all(|(a, b)| a.x == b.x || a.y == b.y)
             );
             assert_eq!(plan.outdoor.driveways.len(), 3);
             assert_eq!(plan.outdoor.vehicle_slots.len(), 1);

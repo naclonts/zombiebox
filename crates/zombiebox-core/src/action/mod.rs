@@ -3574,87 +3574,84 @@ mod tests {
     }
 
     #[test]
-    fn reference_street_pedestrian_paths_reach_both_entries() {
-        let world = World::with_fixture(42, crate::CountyFixture::ResidentialStreet);
-        let paths: Vec<_> = world
-            .fixture_plans()
-            .iter()
-            .map(|p| p.outdoor.paths[0])
-            .collect();
-        assert_eq!(paths.len(), 2);
-        let routes: Vec<_> = paths
-            .into_iter()
-            .map(|(access, end)| {
-                let road = [(0, -1), (1, 0), (0, 1), (-1, 0)]
-                    .into_iter()
-                    .map(|(dx, dy)| Position::new(access.x + dx, access.y + dy))
-                    .find(|p| world.tile_at(*p).is_some_and(|tile| tile.ground.is_road()))
-                    .expect("street adjacent to frontage access");
-                (road, access, end)
-            })
-            .collect();
-        let mut game = ActionGame::county_with_world(world);
-        for (road, start, end) in routes {
-            assert_eq!(
-                game.teleport(Tile3D::from_pos(road, 0)),
-                Some(Tile3D::from_pos(road, 0))
-            );
-            game.monsters.clear();
-            let direction =
-                (Tile3D::from_pos(start, 0).center() - game.player.position).normalized();
-            for _ in 0..90 {
-                if game
-                    .player
-                    .position
-                    .distance(Tile3D::from_pos(start, 0).center())
-                    < 0.22
-                {
-                    break;
+    fn reference_street_player_can_walk_from_spawn_to_all_three_entries() {
+        use std::collections::{HashMap, VecDeque};
+
+        for seed in [42, u64::MAX] {
+            let world = World::new(seed);
+            let plans = world.fixture_plans();
+            assert_eq!(plans.len(), 3);
+            let spawn = ActionGame::county_with_world(world.clone())
+                .player_tile()
+                .pos();
+            let mut previous = HashMap::from([(spawn, spawn)]);
+            let mut queue = VecDeque::from([spawn]);
+            while let Some(pos) = queue.pop_front() {
+                for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                    let next = Position::new(pos.x + dx, pos.y + dy);
+                    if let std::collections::hash_map::Entry::Vacant(entry) = previous.entry(next)
+                        && world
+                            .tile_at(next)
+                            .is_some_and(|tile| tile.ground.is_road() && tile.walkable())
+                    {
+                        entry.insert(pos);
+                        queue.push_back(next);
+                    }
                 }
-                game.step(ActionInput {
-                    movement: direction,
-                    ..ActionInput::default()
-                });
             }
-            assert!(
-                game.player
-                    .position
-                    .distance(Tile3D::from_pos(start, 0).center())
-                    < 0.22,
-                "street access blocked"
-            );
-            let mut next = start;
-            while next != end {
-                if next.x != end.x {
-                    next.x += (end.x - next.x).signum();
-                } else {
-                    next.y += (end.y - next.y).signum();
+            for plan in plans {
+                let access = plan.frontage.access;
+                let (dx, dy) = plan.frontage.side.inward();
+                let mut pos = Position::new(access.x - dx, access.y - dy);
+                let mut route = Vec::new();
+                while pos != spawn {
+                    route.push(pos);
+                    pos = *previous.get(&pos).expect("street connects to spawn");
                 }
-                let destination = Tile3D::from_pos(next, 0).center();
-                let mut opened = false;
-                for _ in 0..90 {
-                    let delta = destination - game.player.position;
-                    if delta.length() < 0.22 {
-                        break;
-                    }
-                    if next == end && !opened && delta.length() < 1.0 {
-                        game.step(ActionInput {
-                            interact: true,
-                            ..ActionInput::default()
-                        });
-                        opened = true;
-                    } else {
-                        game.step(ActionInput {
-                            movement: delta.normalized(),
-                            ..ActionInput::default()
-                        });
+                route.reverse();
+                route.push(access);
+                let name = plan.structures[0].name;
+                let door = plan.structures[0].front_door;
+                for &(mut start, end) in &plan.outdoor.paths {
+                    assert_eq!(route.last(), Some(&start));
+                    assert!(start.x == end.x || start.y == end.y);
+                    while start != end {
+                        start.x += (end.x - start.x).signum();
+                        start.y += (end.y - start.y).signum();
+                        route.push(start);
                     }
                 }
-                assert!(
-                    game.player.position.distance(destination) < 0.22,
-                    "approach from {start:?} to {end:?} blocked at {next:?}, player {:?}",
-                    game.player.position
-                );
+                assert_eq!(route.last(), Some(&door));
+                route.push(Position::new(door.x + dx, door.y + dy));
+
+                let mut game = ActionGame::county_with_world(world.clone());
+                game.monsters.clear();
+                for pos in route {
+                    let destination = Tile3D::from_pos(pos, 0).center();
+                    let mut opened = false;
+                    for _ in 0..90 {
+                        let delta = destination - game.player.position;
+                        if delta.length() < 0.22 {
+                            break;
+                        }
+                        let interact = pos == door && !opened && delta.length() < 0.9;
+                        opened |= interact;
+                        game.step(ActionInput {
+                            interact,
+                            movement: if interact {
+                                Vec2::ZERO
+                            } else {
+                                delta.normalized()
+                            },
+                            ..ActionInput::default()
+                        });
+                    }
+                    assert!(
+                        game.player.position.distance(destination) < 0.22,
+                        "seed {seed} path to {name} blocked at {pos:?}, player {:?}",
+                        game.player.position
+                    );
+                }
             }
         }
     }
@@ -3784,7 +3781,7 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect();
-        assert_eq!(doors.len(), 2);
+        assert_eq!(doors.len(), 3);
         let mut game = ActionGame::county_with_world(world);
         for (pos, axis) in doors {
             game.teleport(Tile3D::from_pos(pos, 0))
@@ -4306,25 +4303,37 @@ mod tests {
         assert_eq!(game.hud().equipped, Some(Weapon::Axe));
         assert_eq!(game.hud().objective_kind, ObjectiveKind::Explore);
 
-        // Find a Floor 0 window in the current window and break it with the Axe.
-        let (bmin, bmax) = game.block_bounds().unwrap();
-        let win_tile = (bmin.y..=bmax.y)
-            .flat_map(|y| (bmin.x..=bmax.x).map(move |x| Tile3D::new(x, y, 0)))
-            .find(|&t| {
-                game.stage.tile_kind(t) == TileKind::Window
-                    && [(0, 1), (0, -1), (1, 0), (-1, 0)]
-                        .into_iter()
-                        .any(|(dx, dy)| {
-                            game.stage
-                                .is_walkable(Tile3D::new(t.x + dx, t.y + dy, 0), false)
-                        })
+        // Use a window on the starter house's street wall. This gives the
+        // axe a perpendicular approach on the same foundation.
+        let plan = world.fixture_plan().unwrap();
+        let house = &plan.structures[0];
+        let front = house
+            .blueprint
+            .doors
+            .iter()
+            .find(|door| door.kind == crate::DoorKind::Exterior)
+            .unwrap()
+            .cell
+            .v;
+        let (win_tile, adj_walk) = house
+            .blueprint
+            .cells
+            .iter()
+            .filter(|(tile, cell)| {
+                tile.floor == 0 && tile.v == front && cell.kind == crate::BlueprintKind::Window
             })
-            .expect("window in starter window");
-        let adj_walk = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-            .into_iter()
-            .map(|(dx, dy)| Tile3D::new(win_tile.x + dx, win_tile.y + dy, 0))
-            .find(|&t| game.stage.is_walkable(t, false))
-            .unwrap();
+            .find_map(|(&window, _)| {
+                let stand = crate::LocalCell::new(window.u, window.v - 1, 0);
+                house
+                    .blueprint
+                    .cell(stand)
+                    .filter(|cell| cell.surface == Surface::Porch && cell.kind.walkable())?;
+                Some((
+                    Tile3D::from_pos(house.transform.local_to_world(window), 0),
+                    Tile3D::from_pos(house.transform.local_to_world(stand), 0),
+                ))
+            })
+            .expect("a front window reachable from the starter porch");
         assert!(game.teleport(adj_walk).is_some());
         game.player.facing = (win_tile.center() - game.player.position).normalized();
         game.step(ActionInput {

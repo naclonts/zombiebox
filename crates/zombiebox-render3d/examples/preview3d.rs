@@ -699,8 +699,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     plan.outdoor.vehicle_slots
                 );
             }
-            let plan = plans.first().ok_or("no compatible fixture lot")?;
-            let (ix, iy) = plan.frontage.side.inward();
+            let plan = world.fixture_plan().ok_or("no compatible fixture lot")?;
+            let (mut ix, mut iy) = plan.frontage.side.inward();
             let (target, scene_name, orbit_distance) = if scene == SceneChoice::CountyColonial {
                 let structure = &plan.structures[0];
                 let door = structure.front_door;
@@ -751,21 +751,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 (target, "colonial", distance)
             } else {
-                let other = plans.get(1).ok_or("no compatible reference street")?;
-                let a = plan.structures[0].front_door;
-                let b = other.structures[0].front_door;
                 let target = match focus_name.as_str() {
-                    "overview" => Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8),
-                    "ranch" | "craftsman" => {
+                    "overview" => {
+                        let front = plan.structures[0].front_door;
+                        let bounds = plans.iter().fold(
+                            zombiebox_core::GridRect::new(front, front),
+                            |bounds, plan| {
+                                let door = plan.structures[0].front_door;
+                                zombiebox_core::GridRect::new(
+                                    Position::new(
+                                        bounds.min.x.min(door.x),
+                                        bounds.min.y.min(door.y),
+                                    ),
+                                    Position::new(
+                                        bounds.max.x.max(door.x),
+                                        bounds.max.y.max(door.y),
+                                    ),
+                                )
+                            },
+                        );
+                        Position::new(
+                            (bounds.min.x + bounds.max.x) / 2 - ix * 6,
+                            (bounds.min.y + bounds.max.y) / 2 - iy * 6,
+                        )
+                    }
+                    "ranch" | "craftsman" | "colonial" => {
                         let plan = plans
                             .iter()
-                            .find(|p| {
-                                p.structures[0]
-                                    .name
-                                    .to_ascii_lowercase()
-                                    .contains(&focus_name)
-                            })
+                            .find(|p| p.structures[0].archetype.starts_with(&focus_name))
                             .ok_or("requested house not found")?;
+                        (ix, iy) = plan.frontage.side.inward();
                         let structure = &plan.structures[0];
                         let door = structure.front_door;
                         let bounds = structure.bounds;
@@ -779,9 +794,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Position::new(door.x - ix * 6, cy)
                         }
                     }
-                    _ => return Err("--focus must be overview, ranch or craftsman".into()),
+                    _ => {
+                        return Err("--focus must be overview, ranch, craftsman or colonial".into());
+                    }
                 };
-                let distance = if focus_name == "overview" { 2.5 } else { 1.3 };
+                let distance = if focus_name == "overview" { 3.8 } else { 1.3 };
                 (Tile3D::from_pos(target, 0), "residential-street", distance)
             };
             let arrived = county
@@ -792,9 +809,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut presentation = Presentation::new(&ctx, size.0, size.1);
             presentation.camera_mut().set_mode(mode);
             if mode == CameraMode::Orbit {
+                let pitch_delta =
+                    if scene == SceneChoice::CountyResidentialStreet && focus_name == "overview" {
+                        0.2
+                    } else {
+                        -0.15
+                    };
                 presentation.camera_mut().orbit_rotate(
                     (-(iy as f32)).atan2(-(ix as f32)) - std::f32::consts::FRAC_PI_4,
-                    -0.15,
+                    pitch_delta,
                 );
                 presentation
                     .camera_mut()

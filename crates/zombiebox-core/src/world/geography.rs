@@ -155,13 +155,14 @@ pub(super) struct ValleyMeta {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn generate(seed: u64, tiles: &mut [Tile]) -> (Vec<Landmark>, Vec<Lot>) {
-    let (landmarks, lots, _) = generate_with_meta(seed, tiles);
+    let (landmarks, lots, _) = generate_with_meta(seed, tiles, false);
     (landmarks, lots)
 }
 
 pub(super) fn generate_with_meta(
     seed: u64,
     tiles: &mut [Tile],
+    reserve_starting_houses: bool,
 ) -> (Vec<Landmark>, Vec<Lot>, ValleyMeta) {
     let plan = Plan {
         seed,
@@ -399,7 +400,11 @@ pub(super) fn generate_with_meta(
             } else {
                 District::Residential
             };
+            // The first three blocks face the starting street before rotation.
+            // Keep enough depth for the three furnished starter houses.
+            let starter_frontage = reserve_starting_houses && row == 0 && col < 3;
             if district == District::Residential
+                && !starter_frontage
                 && (bottom - y >= 33)
                 && !noise(seed, 31, col as i32, row as i32).is_multiple_of(3)
             {

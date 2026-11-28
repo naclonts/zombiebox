@@ -191,8 +191,8 @@ pub struct World {
 }
 
 impl World {
-    /// Default county generation includes the furnished reference street so
-    /// normal play exercises both house generators.
+    /// Default county generation includes all three furnished house families
+    /// near the starting point.
     pub fn new(seed: u64) -> Self {
         Self::with_fixture(seed, CountyFixture::ResidentialStreet)
     }
@@ -206,13 +206,17 @@ impl World {
     /// the legacy baseline; the other variants stream authored structures.
     pub fn with_fixture(seed: u64, fixture: CountyFixture) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
-        let (landmarks, lots, valley_meta) = geography::generate_with_meta(seed, &mut tiles);
+        let (landmarks, lots, valley_meta) = geography::generate_with_meta(
+            seed,
+            &mut tiles,
+            fixture == CountyFixture::ResidentialStreet,
+        );
         let spawn = landmarks
             .iter()
             .find(|l| l.kind == LandmarkKind::Residential)
             .expect("county has a residential entrance")
             .entrance;
-        let mut parcels = Parcels::new(seed, lots, spawn, fixture);
+        let mut parcels = Parcels::new(seed, lots, spawn, fixture, &tiles);
         let planned = parcels.planned_pads(seed, &tiles);
         let pads: Vec<_> = planned.iter().map(|(_, pad)| *pad).collect();
         let (terrain, foundations) = relief::generate(seed, &tiles, &valley_meta, &pads);

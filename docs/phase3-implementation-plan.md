@@ -13,7 +13,7 @@ Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [
 
 Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
 
-> The current testing override makes the Craftsman–Ranch reference street the default county entry, with the single Craftsman as a fallback. Select `CountyFixture::ColonialLot` to review the Colonial on an existing residential lot. `CountyFixture::BlueprintLot` remains available for the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
+> The current county start includes one furnished Craftsman, Ranch, and Colonial within walking distance of spawn. `CountyFixture::ColonialLot` isolates the Colonial for review, `CountyFixture::BlueprintLot` selects the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
 
 ## 1. Ownership and shared contracts
 
@@ -285,7 +285,7 @@ Working plan and host review are recorded in the [residential handoff](phase3-wp
 
 - **Owns** `world/floorplan.rs`, residential `world/massing.rs` and `world/archetypes/houses.rs`.
 - **Build** the bounded arrangement selector, bay cuts, common-space and landing reservations, and shared-wall opening candidates. Convert the first two house families to use these helpers where the fit remains equivalent. Add both Colonial layouts and their supported upper floors. Use a compact authored fallback when a feasible lot cannot fit the preferred arrangement.
-- **Accept** multi-seed and four-orientation fit for representative small, typical and large compatible lots. Verify required fixtures, exterior access, public-to-private circulation, two-way stair traversal and fallback behavior. Assert that the layout is stable when loot changes.
+- **Accept** multi-seed and four-orientation fit for representative small, typical and large compatible lots. Verify required fixtures, exterior access, public-to-private circulation, two-way stair traversal and fallback behavior. Assert that the layout is stable when loot changes. Check that normal county play starts within 90 walking tiles of a public door from each of the three furnished house families.
 
 ### WP 3.5 — Stepped split-level and duplex
 

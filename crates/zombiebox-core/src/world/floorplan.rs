@@ -1,6 +1,7 @@
 //! Bounded, deterministic residential fitting primitives.
 use std::ops::RangeInclusive;
 
+use crate::Position;
 use crate::action::DoorAxis;
 
 use super::blueprint::{
@@ -13,6 +14,19 @@ pub fn usable_dimensions(lot: GridRect, frontage: Frontage) -> (i32, i32) {
         CardinalDir::North | CardinalDir::South => (lot.width() - 2, lot.height() - 1),
         CardinalDir::East | CardinalDir::West => (lot.height() - 2, lot.width() - 1),
     }
+}
+
+/// Follow the lot boundary to line up with the entrance before walking inward.
+pub(super) fn frontage_path(frontage: Frontage, door: Position) -> Vec<(Position, Position)> {
+    let access = frontage.access;
+    let bend = match frontage.side {
+        CardinalDir::North | CardinalDir::South => Position::new(door.x, access.y),
+        CardinalDir::East | CardinalDir::West => Position::new(access.x, door.y),
+    };
+    [(access, bend), (bend, door)]
+        .into_iter()
+        .filter(|(start, end)| start != end)
+        .collect()
 }
 
 /// A fixed-size, independently salted preference order; never depends on loot.

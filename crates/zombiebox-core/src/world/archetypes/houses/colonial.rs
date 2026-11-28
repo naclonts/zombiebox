@@ -1,11 +1,10 @@
 //! Two-storey Colonial house, fitted within a frontage lot.
-use crate::Position;
 use crate::action::{BuildingStyle, DoorAxis, Material, Surface};
 use crate::world::RoomKind;
 use crate::world::blueprint::{
-    BlueprintCell, BlueprintGrid, BlueprintKind, CardinalDir, CompoundPlanner, DoorIntent,
-    DoorKind, FitError, LocalCell, OutdoorLayer, ParcelContext, ParcelPlan, RoomMeta, SpaceId,
-    StairLink, parcel_id, place_blueprint_along_frontage,
+    BlueprintCell, BlueprintGrid, BlueprintKind, CompoundPlanner, DoorIntent, DoorKind, FitError,
+    LocalCell, OutdoorLayer, ParcelContext, ParcelPlan, RoomMeta, SpaceId, StairLink, parcel_id,
+    place_blueprint_along_frontage,
 };
 use crate::world::{floorplan, furnish};
 
@@ -69,26 +68,16 @@ impl CompoundPlanner for ColonialParcel {
                         });
                     match candidate {
                         Ok(structure) => {
-                            let access = context.frontage.access;
-                            let door = structure.front_door;
-                            let bend = match context.frontage.side {
-                                CardinalDir::North | CardinalDir::South => {
-                                    Position::new(door.x, access.y)
-                                }
-                                CardinalDir::East | CardinalDir::West => {
-                                    Position::new(access.x, door.y)
-                                }
-                            };
                             return Ok(ParcelPlan {
                                 id,
                                 bounds: context.bounds,
                                 frontage: context.frontage,
                                 zone: context.zone,
                                 outdoor: OutdoorLayer {
-                                    paths: [(access, bend), (bend, door)]
-                                        .into_iter()
-                                        .filter(|(start, end)| start != end)
-                                        .collect(),
+                                    paths: floorplan::frontage_path(
+                                        context.frontage,
+                                        structure.front_door,
+                                    ),
                                     ..OutdoorLayer::default()
                                 },
                                 structures: vec![structure],

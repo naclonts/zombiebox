@@ -11,9 +11,7 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowId},
 };
-use zombiebox_core::{
-    ActionGame, ActionInput, CountyFixture, Position, Tile3D, Vec2, Weapon, World,
-};
+use zombiebox_core::{ActionGame, ActionInput, CountyFixture, Tile3D, Vec2, Weapon, World};
 use zombiebox_render3d::{CameraMode, GpuContext, Presentation, SurfaceFrameOutcome};
 
 const TICK: Duration = Duration::from_nanos(1_000_000_000 / 60);
@@ -29,27 +27,17 @@ enum CountyScene {
 
 fn county_game(seed: u64, scene: CountyScene) -> Result<ActionGame, String> {
     let fixture = match scene {
-        CountyScene::Default => return Ok(ActionGame::county(seed)),
-        CountyScene::ResidentialStreet => CountyFixture::ResidentialStreet,
+        CountyScene::Default | CountyScene::ResidentialStreet => {
+            return Ok(ActionGame::county(seed));
+        }
         CountyScene::ColonialLot => CountyFixture::ColonialLot,
         CountyScene::SupportLot => CountyFixture::SupportLot,
     };
     let world = World::with_fixture(seed, fixture);
-    let plans = world.fixture_plans();
-    let plan = plans
-        .first()
+    let plan = world
+        .fixture_plan()
         .ok_or("no compatible fixture lot for this seed")?;
-    let target = if matches!(scene, CountyScene::ResidentialStreet) {
-        let other = plans
-            .get(1)
-            .ok_or("no compatible reference street for this seed")?;
-        let a = plan.structures[0].front_door;
-        let b = other.structures[0].front_door;
-        let (ix, iy) = plan.frontage.side.inward();
-        Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8)
-    } else {
-        plan.frontage.access
-    };
+    let target = plan.frontage.access;
     let mut game = ActionGame::county_with_world(world);
     game.teleport(Tile3D::from_pos(target, 0))
         .ok_or("fixture access is not a valid teleport destination")?;
@@ -403,24 +391,19 @@ mod tests {
 
     #[test]
     fn fixture_scenes_start_at_their_access_points() {
+        let start = county_game(42, CountyScene::Default).unwrap().player_tile();
+        assert_eq!(
+            county_game(42, CountyScene::ResidentialStreet)
+                .unwrap()
+                .player_tile(),
+            start
+        );
         for (scene, fixture) in [
-            (
-                CountyScene::ResidentialStreet,
-                CountyFixture::ResidentialStreet,
-            ),
             (CountyScene::ColonialLot, CountyFixture::ColonialLot),
             (CountyScene::SupportLot, CountyFixture::SupportLot),
         ] {
             let world = World::with_fixture(42, fixture);
-            let plans = world.fixture_plans();
-            let expected = if matches!(scene, CountyScene::ResidentialStreet) {
-                let a = plans[0].structures[0].front_door;
-                let b = plans[1].structures[0].front_door;
-                let (ix, iy) = plans[0].frontage.side.inward();
-                Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8)
-            } else {
-                plans[0].frontage.access
-            };
+            let expected = world.fixture_plan().unwrap().frontage.access;
             assert_eq!(
                 county_game(42, scene).unwrap().player_tile().pos(),
                 expected

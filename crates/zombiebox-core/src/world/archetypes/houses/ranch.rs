@@ -58,7 +58,10 @@ impl CompoundPlanner for RanchParcel {
             frontage: context.frontage,
             zone: context.zone,
             outdoor: OutdoorLayer {
-                paths: vec![(context.frontage.access, structure.front_door)],
+                paths: crate::world::floorplan::frontage_path(
+                    context.frontage,
+                    structure.front_door,
+                ),
                 driveways,
                 vehicle_slots: vec![(slot_min, structure.transform.world_facing(slot.facing))],
                 ..OutdoorLayer::default()

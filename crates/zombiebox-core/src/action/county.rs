@@ -203,8 +203,26 @@ impl CountyStage {
         // Materialize initial 7x7 window chunks.
         stage.materialize_window_chunks(world, wcx, wcy);
 
-        // Upgrade starter house's first cache to Pistol + 12 rounds and guarantee an outdoor Axe cache.
-        if let Some((_, ref starter_b)) = nearest_res {
+        // Starter supplies follow the furnished starter house when it replaces
+        // the legacy parcel, whose cache sites are no longer generated.
+        if world.fixture() == crate::CountyFixture::ResidentialStreet
+            && let Some(plan) = world.fixture_plan()
+            && let Some(starter) = plan.structures.first()
+        {
+            let entry = starter.front_door;
+            let (dx, dy) = plan.frontage.side.inward();
+            let pistol = Position::new(entry.x + dx, entry.y + dy);
+            stage.add_starter_cache(
+                (1 << 63) | 1,
+                pistol,
+                CacheLoot {
+                    weapon: Some(Weapon::Pistol),
+                    pistol_ammo: 12,
+                    ..CacheLoot::default()
+                },
+            );
+            stage.ensure_starter_axe(entry, wake);
+        } else if let Some((_, ref starter_b)) = nearest_res {
             stage.setup_starter_gear(starter_b, wake);
         }
 
@@ -1182,7 +1200,10 @@ impl CountyStage {
             };
         }
 
-        // Guarantee a starter Axe cache on a walkable approach tile outside starter_b.entry.
+        self.ensure_starter_axe(starter_b.entry, wake);
+    }
+
+    fn ensure_starter_axe(&mut self, entry: Position, wake: Position) {
         let wake_vec = Vec2::new(wake.x as f32, wake.y as f32);
         let has_nearby_axe = self.caches.iter().any(|c| {
             c.pos.floor == 0
@@ -1193,29 +1214,36 @@ impl CountyStage {
             return;
         }
 
-        if let Some(axe_pos) = self.find_starter_axe_tile(starter_b, wake) {
-            // This cache is added by the run, outside the generated chunk slot space.
-            let id = 1 << 63;
-            self.cache_index_by_id.insert(id, self.caches.len());
-            self.caches.push(SupplyCache {
-                id,
-                pos: Tile3D::from_pos(axe_pos, 0),
-                kind: CacheKind::Weapon,
-                loot: CacheLoot {
+        if let Some(axe_pos) = self.find_starter_axe_tile(entry, wake) {
+            self.add_starter_cache(
+                1 << 63,
+                axe_pos,
+                CacheLoot {
                     weapon: Some(Weapon::Axe),
                     ..CacheLoot::default()
                 },
-                opened: false,
-            });
+            );
         }
     }
 
-    fn find_starter_axe_tile(&self, starter_b: &Building, wake: Position) -> Option<Position> {
+    fn add_starter_cache(&mut self, id: CacheId, pos: Position, loot: CacheLoot) {
+        // Run-owned IDs live outside the generated chunk-slot space.
+        self.cache_index_by_id.insert(id, self.caches.len());
+        self.caches.push(SupplyCache {
+            id,
+            pos: Tile3D::from_pos(pos, 0),
+            kind: CacheKind::Weapon,
+            loot,
+            opened: false,
+        });
+    }
+
+    fn find_starter_axe_tile(&self, entry: Position, wake: Position) -> Option<Position> {
         let mut candidates: Vec<(u32, u32, Position)> = Vec::new();
         for dy in -5..=5_i32 {
             for dx in -5..=5_i32 {
-                let p = Position::new(starter_b.entry.x + dx, starter_b.entry.y + dy);
-                if p == starter_b.entry || p == wake {
+                let p = Position::new(entry.x + dx, entry.y + dy);
+                if p == entry || p == wake {
                     continue;
                 }
                 let t = Tile3D::from_pos(p, 0);
@@ -1233,7 +1261,7 @@ impl CountyStage {
                 if self.caches.iter().any(|c| c.pos == t) {
                     continue;
                 }
-                let d_entry = p.distance(starter_b.entry);
+                let d_entry = p.distance(entry);
                 let d_wake = p.distance(wake);
                 let surface_bias = u32::from(!matches!(
                     cell.surface,
@@ -3478,7 +3506,7 @@ mod tests {
         let seed = 42;
         let world = World::new(seed);
         assert_eq!(world.fixture(), CountyFixture::ResidentialStreet);
-        assert_eq!(world.fixture_plans().len(), 2);
+        assert_eq!(world.fixture_plans().len(), 3);
         let plan = world.fixture_plan().expect("default fixture plan");
         let fridge = plan.structures[0]
             .props_world()
@@ -3765,7 +3793,7 @@ mod tests {
         for seed in [42, 63] {
             let world = World::new(seed);
             let plans = world.fixture_plans();
-            assert_eq!(plans.len(), 2);
+            assert_eq!(plans.len(), 3);
             let mut chunks: Vec<_> = plans
                 .iter()
                 .flat_map(|plan| plan.structures.iter())

@@ -2,17 +2,17 @@
 
 Status: host integration verified; visual and device review remain open.
 
-`World::with_fixture(seed, CountyFixture::ResidentialStreet)` selects two
-compatible existing residential lots along the same frontage in deterministic
-nearest-to-spawn order. `World::new(seed)` selects the same reference street (falling back to a
-single Craftsman if no compatible pair fits); `World::legacy(seed)` keeps the legacy baseline. `SupportLot` is the
-independent two-floor fixture. `World::fixture_plans()` exposes all selected
-parcel plans, while `fixture_plan()` remains the first plan.
+`World::new(seed)` and `CountyFixture::ResidentialStreet` place a Craftsman,
+a Ranch, and a Colonial near the county start. Generation keeps three lots
+along the starting street wide and deep enough to fit the furnished
+footprints. The selector ranks reachable frontages by road distance and
+commits the three plans together on distinct lots before relief.
+`World::fixture_plans()` exposes all three plans, and `fixture_plan()`
+identifies the Craftsman. `World::legacy(seed)` keeps the legacy baseline.
+`SupportLot` is the independent two-floor fixture.
 
-The pair is selected before relief and generated through normal parcel pads,
-chunk streaming and the blueprint materializer. Candidate pairs have matching
-frontage direction and boundary line and a gap of at most six tiles. Both
-planners must fit before either lot is replaced. Pedestrian paths and
+The houses use the normal parcel pads, chunk streaming and blueprint
+materializer. Pedestrian paths and
 vehicle driveways are separate `OutdoorLayer` fields, rendered as gravel and
 pavement respectively. `vehicle_slots` use the world-space minimum corner of
 an oriented car footprint; the runtime registers the parked car through the
@@ -32,7 +32,7 @@ XDG_RUNTIME_DIR=/tmp VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.jso
 
 Use `--mode orbit` for the alternate view. The output defaults to
 `/tmp/zombiebox-preview3d/residential-street-s42-overview-Isometric.png`.
-Use `--focus ranch` or `--focus craftsman` for a closer facade.
+Use `--focus ranch`, `--focus craftsman` or `--focus colonial` for a closer facade.
 
 In the original WP 3.3 captures, seed `42` had Craftsman A at `(284,195)` and ranch A at
 `(313,195)`, both facing south. The static car anchor was `(322,190)`,
@@ -79,10 +79,9 @@ commit `c2f4de9`.
 cargo run -p zombiebox-render3d --example viewer --features viewer -- --residential-street --seed 42
 ```
 
-The viewer starts across the road from the selected pair. Substitute `--seed
-63` to see the other reference arrangement. Use `--support-lot --seed 42` in
-place of `--residential-street` for the two-floor support fixture. The normal
-viewer still starts the default county when no fixture flag is supplied.
+The viewer starts at the normal county spawn. Substitute `--seed 63` to see
+another starting neighborhood. Use `--support-lot --seed 42` in place of
+`--residential-street` for the two-floor support fixture.
 
 Move with WASD, aim with the arrow keys, fire with Space, and interact with E.
 Z/X/C/V select weapons; R reloads, H heals, Shift walks quietly, and P pauses.
@@ -113,7 +112,14 @@ cargo run -p zombiebox-render3d --example viewer --features viewer -- --colonial
 Capture the facade with `preview3d --scene colonial --seed 42 --mode orbit`.
 Use `--focus upstairs` to inspect the stair hall or `--focus bedroom` for a furnished cutaway. Seed `42` selects Colonial B with north frontage. Seed `0` selects Colonial A with north frontage. Seed `18446744073709551615` selects Colonial A with west frontage for the live orientation check.
 
-The current seed `42` reference street has the Ranch entry at `(352,170)` and the Craftsman entry at `(320,169)`, both facing north. The new street changed the starter bike approach. Starter placement now prefers a short clear departure from the shoulder, which restored the live acceleration, steering, and ejection checks.
+Seed `42` now starts at `(354,163)`. The north-facing front doors are
+`(354,169)` for the Craftsman, `(317,170)` for the Ranch, and `(284,167)`
+for the Colonial. The audit over seeds `0..63` and `u64::MAX` found all
+three houses, with the longest walk to a front door at 81 tiles. Live
+input tests walked from spawn through all three doors in seeds `42` and
+`u64::MAX`. Starter placement favors a clear departure from the shoulder,
+and all 17 motorcycle tests passed. The starter Axe is on the Craftsman
+approach, and the pistol with 12 rounds is inside its front door.
 
 The Colonial tests cover eight seeds over all four frontage orientations and three lot sizes. The live checks walk from the road to both stair layouts and back down, sweep both stories’ doors in both directions, replay opposite chunk orders, and compare frontage placement after changing loot profiles. The workspace suite passed 271 tests with one ignored diagnostic. The viewer fixture-start test also passed.
 

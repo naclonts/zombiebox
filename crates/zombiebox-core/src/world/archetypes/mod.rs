@@ -31,7 +31,7 @@ pub enum CountyFixture {
     BlueprintLot,
     /// Replace one existing county lot with the furnished WP 3.2 Craftsman.
     CraftsmanLot,
-    /// Two compatible neighboring residential lots, for WP 3.3 review.
+    /// One Craftsman, Ranch and Colonial near the normal county start.
     ResidentialStreet,
     /// Small aligned two-floor support and stairs fixture.
     SupportLot,
