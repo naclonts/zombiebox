@@ -52,6 +52,7 @@ impl IndexMut<Position> for ParcelTiles {
 struct Parcel {
     lot: Lot,
     template: u64,
+    guarantee_ammo: bool,
     foundation_z: f32,
     plan: Option<ParcelPlan>,
     planned_outdoors: bool,
@@ -100,6 +101,7 @@ impl Parcels {
             parcels.push(Parcel {
                 lot,
                 template,
+                guarantee_ammo: false,
                 foundation_z: 0.0,
                 plan: None,
                 planned_outdoors: false,
@@ -120,6 +122,28 @@ impl Parcels {
                         )
                     });
                 Self::select_additional_houses(&mut parcels, &candidates);
+                // The furnished houses have their own archetypes. Cycle the legacy
+                // templates across the remaining houses so selection cannot skip
+                // a family when its original parcel becomes furnished.
+                let mut rolled_ammo = false;
+                let mut fallback = None;
+                for (ordinal, parcel) in parcels
+                    .iter_mut()
+                    .filter(|p| p.lot.district == District::Residential && p.plan.is_none())
+                    .enumerate()
+                {
+                    parcel.template = ordinal as u64;
+                    let variant = sites::loot_variant(seed, &parcel.lot);
+                    rolled_ammo |= variant.is_multiple_of(3);
+                    if fallback.as_ref().is_none_or(|(best, _)| variant < *best) {
+                        fallback = Some((variant, parcel));
+                    }
+                }
+                // A smaller neighborhood can miss every independent ammo
+                // roll. Only replace the fallback home's tools in that case.
+                if !rolled_ammo && let Some((_, parcel)) = fallback {
+                    parcel.guarantee_ammo = true;
+                }
                 starter
             }
             _ => Self::select_fixture_parcel(seed, &mut parcels, spawn, fixture),
@@ -349,6 +373,7 @@ impl Parcels {
                     seed,
                     &parcel.lot,
                     parcel.template,
+                    parcel.guarantee_ammo,
                     parcel.foundation_z,
                     &mut cells,
                 )

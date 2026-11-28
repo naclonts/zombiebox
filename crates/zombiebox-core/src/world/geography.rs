@@ -1,10 +1,12 @@
 //! Seeded county geography, roads and buildable parcels.
 use super::{
-    District, Ground, Landmark, LandmarkKind, Lot, Position, Tile, WORLD_SIZE, Water, noise,
+    District, Ground, Landmark, LandmarkKind, Lot, Position, Tile, WORLD_SIZE, Water,
+    blueprint::GridRect, noise, relief::NaturalTerrainField, town_planner::TownPlan,
 };
 
 // Work in a local valley coordinate system, then rotate and reflect the entire
 // plan. This keeps the watershed, streets and building frontages aligned.
+#[derive(Clone, Copy)]
 struct Plan {
     seed: u64,
     rotation: u64,
@@ -50,6 +52,27 @@ impl Plan {
         }
     }
     fn line(&self, tiles: &mut [Tile], a: (i32, i32), b: (i32, i32), ground: Ground) {
+        self.paint_corridor(a, b, |x, y| self.road(tiles, x, y, ground));
+    }
+
+    /// Regional approaches join the classified town raster without changing
+    /// the pavement class where their five-tile corridors meet.
+    fn extension_line(&self, tiles: &mut [Tile], a: (i32, i32), b: (i32, i32), ground: Ground) {
+        self.paint_corridor(a, b, |x, y| {
+            if let Some(index) = self.point(x, y).index() {
+                let tile = &mut tiles[index];
+                if !tile.ground.is_road() {
+                    tile.ground = if tile.water.is_some() {
+                        Ground::Bridge
+                    } else {
+                        ground
+                    };
+                }
+            }
+        });
+    }
+
+    fn paint_corridor(&self, a: (i32, i32), b: (i32, i32), mut paint: impl FnMut(i32, i32)) {
         let (mut x, mut y) = a;
         let dx = (b.0 - x).abs();
         let dy = (b.1 - y).abs();
@@ -59,7 +82,7 @@ impl Plan {
         loop {
             for oy in -2..=2 {
                 for ox in -2..=2 {
-                    self.road(tiles, x + ox, y + oy, ground);
+                    paint(x + ox, y + oy);
                 }
             }
             if (x, y) == b {
@@ -116,6 +139,29 @@ impl Plan {
             front: self.point(front.0, front.1),
         });
     }
+    fn cabin(&self, tiles: &mut [Tile], lots: &mut Vec<Lot>, cx: i32, top: i32, bottom: i32) {
+        let cy = (top + bottom) / 2;
+        for y in cy - 22..=cy + 22 {
+            for x in cx - 23..=cx + 23 {
+                let t = &mut tiles[self.index(x, y)];
+                if (x - cx) * (x - cx) * 400 + (y - cy) * (y - cy) * 529 < 529 * 484
+                    && t.water.is_none()
+                    && !t.ground.is_road()
+                    && !((cx - 13..=cx + 13).contains(&x) && (top..=bottom).contains(&y))
+                {
+                    t.ground = Ground::Forest;
+                    t.district = District::Woods;
+                }
+            }
+        }
+        self.lot(
+            tiles,
+            lots,
+            (cx - 13, top, cx + 13, bottom),
+            District::Woods,
+            (cx, bottom),
+        );
+    }
     fn landmark(
         &self,
         tiles: &mut [Tile],
@@ -142,28 +188,19 @@ fn field(seed: u64, domain: u64, x: i32, y: i32, scale: i32) -> i32 {
     (a * (scale - v) + b * v) / (scale * scale)
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ValleyMeta {
-    pub rotation: u64,
-    pub mirror: bool,
-    pub pass_y: i32,
-    pub town_min: (i32, i32),
-    pub town_max: (i32, i32),
-    pub lake_center: (i32, i32),
-    pub lake_radii: (i32, i32),
+struct NaturalLayout {
+    plan: Plan,
+    pass_y: i32,
+    lake_x: i32,
+    lake_y: i32,
+    rx: i32,
+    ry: i32,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn generate(seed: u64, tiles: &mut [Tile]) -> (Vec<Landmark>, Vec<Lot>) {
-    let (landmarks, lots, _) = generate_with_meta(seed, tiles, false);
-    (landmarks, lots)
-}
-
-pub(super) fn generate_with_meta(
-    seed: u64,
-    tiles: &mut [Tile],
-    reserve_starting_houses: bool,
-) -> (Vec<Landmark>, Vec<Lot>, ValleyMeta) {
+/// Paint only the seed-stable natural classification and base elevation. New
+/// geography can plan roads from this untouched field; legacy generation uses
+/// the same function so its initial raster remains byte-for-byte compatible.
+fn paint_natural(seed: u64, tiles: &mut [Tile]) -> NaturalLayout {
     let plan = Plan {
         seed,
         rotation: noise(seed, 0, 0, 0) % 4,
@@ -173,8 +210,6 @@ pub(super) fn generate_with_meta(
     let lake_x = plan.river_x(lake_y);
     let rx = 34 + (noise(seed, 10, 0, 0) % 12) as i32;
     let ry = 33 + (noise(seed, 11, 0, 0) % 16) as i32;
-    // The pass is a low saddle between two summits. Its eastern rim is
-    // used below to land the trailhead on a dry walkable approach.
     let pass_y = 212 + (noise(seed, 33, 0, 0) % 49) as i32;
     let ridge_edge = |y: i32| {
         let spine = 25 + field(seed, 12, 0, y, 57) / 5;
@@ -183,7 +218,6 @@ pub(super) fn generate_with_meta(
     for y in 0..WORLD_SIZE {
         let mountain_edge = ridge_edge(y);
         let channel = plan.river_x(y);
-        // The water surface falls toward the lake and the downstream edge.
         let water_level = 40 - y / 32;
         for x in 0..WORLD_SIZE {
             let t = &mut tiles[plan.index(x, y)];
@@ -235,6 +269,144 @@ pub(super) fn generate_with_meta(
             };
         }
     }
+    NaturalLayout {
+        plan,
+        pass_y,
+        lake_x,
+        lake_y,
+        rx,
+        ry,
+    }
+}
+
+/// Fit a square lot on a cardinal frontage, leaving a public approach from
+/// the selected road tile to the tile immediately outside the parcel.
+fn place_roadside_lot(
+    tiles: &mut [Tile],
+    lots: &mut Vec<Lot>,
+    reserved: &[GridRect],
+    road: Position,
+    normal: (i32, i32),
+    half_size: i32,
+    district: District,
+) -> bool {
+    let outward = |steps| Position::new(road.x + normal.0 * steps, road.y + normal.1 * steps);
+    for gap in 3..=13 {
+        let front = outward(gap);
+        let center = outward(gap + half_size);
+        let min = Position::new(center.x - half_size, center.y - half_size);
+        let max = Position::new(center.x + half_size, center.y + half_size);
+        let rect = GridRect::new(min, max);
+        if min.x < 1 || min.y < 1 || max.x >= WORLD_SIZE - 1 || max.y >= WORLD_SIZE - 1 {
+            continue;
+        }
+        if lots
+            .iter()
+            .map(|lot| GridRect::new(lot.min, lot.max))
+            .chain(reserved.iter().copied())
+            .any(|occupied| {
+                rect.intersects(occupied) || (1..gap).any(|step| occupied.contains(outward(step)))
+            })
+            || (1..gap).any(|step| tiles[outward(step).index().unwrap()].water.is_some())
+        {
+            continue;
+        }
+        if (min.y - 1..=max.y + 1).any(|y| {
+            (min.x - 1..=max.x + 1).any(|x| {
+                let t = &tiles[(y * WORLD_SIZE + x) as usize];
+                t.water.is_some() || t.ground.is_road()
+            })
+        }) {
+            continue;
+        }
+        for y in min.y..=max.y {
+            for x in min.x..=max.x {
+                let tile = &mut tiles[(y * WORLD_SIZE + x) as usize];
+                tile.district = district;
+                tile.ground = Ground::Grass;
+            }
+        }
+        for step in 1..gap {
+            let tile = &mut tiles[outward(step).index().unwrap()];
+            if !tile.ground.is_road() {
+                tile.ground = Ground::Street;
+            }
+        }
+        lots.push(Lot {
+            min,
+            max,
+            district,
+            front,
+        });
+        return true;
+    }
+    false
+}
+
+/// Fit nearest the preferred longitudinal position, allowing a parcel to
+/// slide along the street past earlier reservations, bends and wetlands.
+fn infill_street(
+    tiles: &mut [Tile],
+    lots: &mut Vec<Lot>,
+    reserved: &[GridRect],
+    road: &[Position],
+    fraction: usize,
+    radius: i32,
+    district: District,
+) -> Option<Position> {
+    let first = road.first()?;
+    let last = road.last()?;
+    let normal = if first.x.abs_diff(last.x) >= first.y.abs_diff(last.y) {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let preferred = (road.len() - 1) * fraction / 100;
+    let mut indices: Vec<_> = (0..road.len()).collect();
+    indices.sort_by_key(|i| (i.abs_diff(preferred), *i));
+    indices.into_iter().find_map(|index| {
+        let p = road[index];
+        [normal, (-normal.0, -normal.1)].into_iter().find_map(|n| {
+            place_roadside_lot(tiles, lots, reserved, p, n, radius, district).then_some(p)
+        })
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ValleyMeta {
+    pub rotation: u64,
+    pub mirror: bool,
+    pub pass_y: i32,
+    pub town_min: (i32, i32),
+    pub town_max: (i32, i32),
+    pub lake_center: (i32, i32),
+    pub lake_radii: (i32, i32),
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn generate(seed: u64, tiles: &mut [Tile]) -> (Vec<Landmark>, Vec<Lot>) {
+    let (landmarks, lots, _) = generate_with_meta(seed, tiles, false);
+    (landmarks, lots)
+}
+
+pub(super) fn generate_with_meta(
+    seed: u64,
+    tiles: &mut [Tile],
+    reserve_starting_houses: bool,
+) -> (Vec<Landmark>, Vec<Lot>, ValleyMeta) {
+    let natural = paint_natural(seed, tiles);
+    let plan = natural.plan;
+    let (lake_x, lake_y, rx, ry, pass_y) = (
+        natural.lake_x,
+        natural.lake_y,
+        natural.rx,
+        natural.ry,
+        natural.pass_y,
+    );
+    let ridge_edge = |y: i32| {
+        let spine = 25 + field(seed, 12, 0, y, 57) / 5;
+        spine * ((y - pass_y).abs() - 5).clamp(0, 32) / 32
+    };
     // Independent block widths give each seed its own network and frontage.
     let mut xs = [0; 6];
     let mut ys = [0; 6];
@@ -459,27 +631,7 @@ pub(super) fn generate_with_meta(
         cabins.push((460, 300, 324));
     }
     for (cx, top, bottom) in cabins {
-        let cy = (top + bottom) / 2;
-        for y in cy - 22..=cy + 22 {
-            for x in cx - 23..=cx + 23 {
-                let t = &mut tiles[plan.index(x, y)];
-                if (x - cx) * (x - cx) * 400 + (y - cy) * (y - cy) * 529 < 529 * 484
-                    && t.water.is_none()
-                    && !t.ground.is_road()
-                    && !((cx - 13..=cx + 13).contains(&x) && (top..=bottom).contains(&y))
-                {
-                    t.ground = Ground::Forest;
-                    t.district = District::Woods;
-                }
-            }
-        }
-        plan.lot(
-            tiles,
-            &mut lots,
-            (cx - 13, top, cx + 13, bottom),
-            District::Woods,
-            (cx, bottom),
-        );
+        plan.cabin(tiles, &mut lots, cx, top, bottom);
     }
     let hospital_x = (xs[hospital_col] + xs[hospital_col + 1]) / 2;
     let police_x = (xs[police_col] + xs[police_col + 1]) / 2;
@@ -539,6 +691,391 @@ pub(super) fn generate_with_meta(
         lake_radii: (rx, ry),
     };
     (landmarks, lots, meta)
+}
+
+/// Generate the WP 3.8 highway-ribbon fixture. Natural terrain is painted
+/// before any road or pad is chosen, so planner scores never see modified
+/// elevations or the rectangular legacy town mask.
+pub(super) fn generate_ribbon(
+    seed: u64,
+    tiles: &mut [Tile],
+) -> (
+    Vec<Landmark>,
+    Vec<Lot>,
+    ValleyMeta,
+    NaturalTerrainField,
+    TownPlan,
+) {
+    let natural = paint_natural(seed, tiles);
+    let plan = natural.plan;
+    let (lake_x, lake_y, rx, ry, pass_y) = (
+        natural.lake_x,
+        natural.lake_y,
+        natural.rx,
+        natural.ry,
+        natural.pass_y,
+    );
+
+    // Keep the ribbon on the broad valley shelf west of the river. Small
+    // seed-keyed shifts change its position while retaining a long dry spine.
+    // The bounds are rectangular only as a planner search window; no perimeter
+    // streets or rectangular district grid are emitted.
+    let field_x = 112 + (noise(seed, 44, 0, 0) % 15) as i32;
+    let field_y = 132 + (noise(seed, 45, 0, 0) % 29) as i32;
+    let field_meta = ValleyMeta {
+        rotation: plan.rotation,
+        mirror: plan.mirror,
+        pass_y,
+        town_min: (field_x, field_y),
+        town_max: (field_x + 218, field_y + 150),
+        lake_center: (lake_x, lake_y),
+        lake_radii: (rx, ry),
+    };
+    let natural_field = NaturalTerrainField::new(seed, &field_meta, tiles);
+    let mut windows = [0, -12, 12, -24, 24, -36, 36]
+        .into_iter()
+        .map(|shift| (field_x + shift / 3, (field_y + shift).clamp(90, 185), 168))
+        .chain([(104, 138, 164)]);
+    let (mut town_plan, meta) = windows
+        .find_map(|(x0, y0, depth)| {
+            let (x1, y1) = (x0 + 218, y0 + depth);
+            // Valley transforms are cardinal rotations and reflections.
+            let a = plan.point(x0, y0);
+            let b = plan.point(x1, y1);
+            let bounds = GridRect::new(
+                Position::new(a.x.min(b.x), a.y.min(b.y)),
+                Position::new(a.x.max(b.x), a.y.max(b.y)),
+            );
+            let portals = [plan.point(x0 + 3, y0 + 75), plan.point(x0 + 215, y0 + 75)];
+            let town = TownPlan::build(seed, bounds, portals, |p| natural_field.sample(p))?;
+            Some((
+                town,
+                ValleyMeta {
+                    town_min: (x0, y0),
+                    town_max: (x1, y1),
+                    ..field_meta
+                },
+            ))
+        })
+        .expect("a dry valley shelf fits the ribbon road plan");
+    let (town_x0, town_y0) = meta.town_min;
+
+    for (p, cell) in town_plan.raster() {
+        if let Some(i) = p.index() {
+            let tile = &mut tiles[i];
+            tile.district = if town_plan.roads[cell.road_index].class
+                == super::town_planner::RoadClass::Local
+            {
+                District::Residential
+            } else {
+                District::City
+            };
+            tile.ground = if tile.water.is_some() {
+                Ground::Bridge
+            } else if cell.road_index == 0 {
+                Ground::Road
+            } else {
+                Ground::Street
+            };
+            tile.elevation = tile.elevation.min(100);
+        }
+    }
+
+    let mut lots = Vec::new();
+    // Preserve the legacy rural destinations and their connecting road/trail
+    // approaches around the new town. These remain outside the ribbon plan.
+    let cabin_x = 412 + (noise(seed, 21, 0, 0) % 21) as i32;
+    let base_x = 90 + (noise(seed, 22, 0, 0) % 3) as i32;
+    let base_y = 330 + (noise(seed, 23, 0, 0) % 22) as i32;
+    let base = plan.point(base_x + 10, base_y);
+    let arterial_y = town_y0 + 75;
+    plan.extension_line(
+        tiles,
+        (town_x0 + 3, arterial_y),
+        (base_x + 10, base_y),
+        Ground::Road,
+    );
+    let base_w = 30 + (noise(seed, 8, 0, 0) % 5) as i32;
+    plan.lot(
+        tiles,
+        &mut lots,
+        (base_x, base_y + 3, base_x + base_w, base_y + 32),
+        District::MilitaryBase,
+        (base_x + 10, base_y + 3),
+    );
+
+    let trail_y = pass_y - 20;
+    let spine = 25 + field(seed, 12, 0, trail_y, 57) / 5;
+    let mountain_edge = spine * ((trail_y - pass_y).abs() - 5).clamp(0, 32) / 32;
+    let trail_x = mountain_edge;
+    let mountain = plan.point(trail_x, trail_y);
+    plan.extension_line(
+        tiles,
+        (town_x0 + 3, arterial_y),
+        (55, pass_y),
+        Ground::Trail,
+    );
+    plan.extension_line(tiles, (55, pass_y), (trail_x, trail_y), Ground::Trail);
+    let mut shore_x = lake_x;
+    while tiles[plan.index(shore_x, lake_y)].water == Some(Water::Lake) {
+        shore_x += 1;
+    }
+    shore_x += 5;
+    let lake = plan.point(shore_x, lake_y);
+    // Pick the nearest latitude where all five rows under the bridge share
+    // exactly the same river banks. This prevents a one-tile wet nose from
+    // locking a bridge corner to riverbed height.
+    let river_interval = |y: i32| {
+        let center = plan.river_x(y);
+        if tiles[plan.index(center, y)].water != Some(Water::River) {
+            return None;
+        }
+        let (mut west, mut east) = (center, center);
+        while west > 0 && tiles[plan.index(west - 1, y)].water == Some(Water::River) {
+            west -= 1;
+        }
+        while east + 1 < WORLD_SIZE && tiles[plan.index(east + 1, y)].water == Some(Water::River) {
+            east += 1;
+        }
+        Some((west, east))
+    };
+    let mut crossing_options = Vec::new();
+    for delta in -40..=40 {
+        let y = arterial_y + delta;
+        if !(2..WORLD_SIZE - 2).contains(&y) {
+            continue;
+        }
+        let rows: Vec<_> = (y - 2..=y + 2).filter_map(river_interval).collect();
+        if rows.len() == 5 && rows.iter().all(|r| *r == rows[0]) {
+            crossing_options.push((delta.abs(), y, rows[0]));
+        }
+    }
+    crossing_options.sort_by_key(|&(distance, y, _)| (distance, y));
+    let (_, crossing_y, (river_west, river_east)) =
+        crossing_options.first().copied().unwrap_or_else(|| {
+            let interval = river_interval(arterial_y).expect("river crosses the arterial shelf");
+            (0, arterial_y, interval)
+        });
+    let approach_west = ((arterial_y.min(crossing_y) - 2)..=(arterial_y.max(crossing_y) + 2))
+        .filter_map(river_interval)
+        .map(|(west, _)| west)
+        .min()
+        .unwrap_or(river_west)
+        - 2;
+    let bridge_east = river_east + 2;
+    plan.extension_line(
+        tiles,
+        (town_x0 + 215, arterial_y),
+        (approach_west, arterial_y),
+        Ground::Road,
+    );
+    plan.extension_line(
+        tiles,
+        (approach_west, arterial_y),
+        (approach_west, crossing_y),
+        Ground::Road,
+    );
+    plan.extension_line(
+        tiles,
+        (approach_west, crossing_y),
+        (bridge_east, crossing_y),
+        Ground::Road,
+    );
+    plan.extension_line(
+        tiles,
+        (bridge_east, crossing_y),
+        (cabin_x, crossing_y),
+        Ground::Trail,
+    );
+    // Run the woodland lane along the front of the main cabin clearing.
+    // Reach the lake and outlying cabins from a trunk east of every clearing.
+    let cabin = plan.point(cabin_x, crossing_y);
+    plan.cabin(tiles, &mut lots, cabin_x, crossing_y - 27, crossing_y - 3);
+    plan.extension_line(
+        tiles,
+        (cabin_x, crossing_y),
+        (480, crossing_y),
+        Ground::Trail,
+    );
+    plan.extension_line(tiles, (480, crossing_y), (480, lake_y), Ground::Trail);
+    plan.extension_line(tiles, (480, lake_y), (shore_x, lake_y), Ground::Trail);
+
+    let arterial = &town_plan.roads[0].centerline;
+    let local = &town_plan.roads[2].centerline;
+    let normal = if local[0].x == local.last().unwrap().x {
+        (1, 0)
+    } else {
+        (0, 1)
+    };
+    // The local street supports parallel rows. Try the closest pair first so
+    // the three primary house families stay within walking distance of spawn.
+    let mut starter_count = 0;
+    for along in [18, 49, 80] {
+        for side in [1, -1] {
+            if starter_count < 5
+                && place_roadside_lot(
+                    tiles,
+                    &mut lots,
+                    &[],
+                    local[along],
+                    (normal.0 * side, normal.1 * side),
+                    15,
+                    District::Residential,
+                )
+            {
+                starter_count += 1;
+            }
+        }
+    }
+    let collector = &town_plan.roads[1].centerline;
+    for _ in starter_count..5 {
+        [collector, arterial]
+            .into_iter()
+            .find_map(|road| {
+                infill_street(tiles, &mut lots, &[], road, 50, 15, District::Residential)
+            })
+            .expect("starter frontage");
+    }
+    let hospital = infill_street(tiles, &mut lots, &[], arterial, 50, 15, District::Hospital)
+        .expect("hospital frontage");
+    let police = infill_street(tiles, &mut lots, &[], arterial, 25, 15, District::Police)
+        .expect("police frontage");
+    // Scout buildable blocks before infill consumes the larger envelopes.
+    // Protect the whole public connector alongside each selected block, then
+    // let the final frontage pass fill gaps between the materialized parcels.
+    let candidates = super::frontage::reserve(seed, &town_plan, &natural_field, tiles, &lots);
+    use super::frontage::FrontageUse;
+    for use_hint in [FrontageUse::Commercial, FrontageUse::Residential] {
+        town_plan.frontages.extend(
+            candidates
+                .iter()
+                .filter(|s| s.use_hint == use_hint)
+                .take(2)
+                .cloned(),
+        );
+    }
+    for slot in candidates {
+        if town_plan.frontages.len() >= 4 {
+            break;
+        }
+        if !town_plan.frontages.iter().any(|s| s.id == slot.id) {
+            town_plan.frontages.push(slot);
+        }
+    }
+    let reserved: Vec<_> = town_plan
+        .frontages
+        .iter()
+        .flat_map(|slot| [slot.bounds, slot.connector_bounds()])
+        .collect();
+    let mut place_city = |fraction| {
+        [13, 11, 9]
+            .into_iter()
+            .find_map(|radius| {
+                [arterial, collector].into_iter().find_map(|road| {
+                    infill_street(
+                        tiles,
+                        &mut lots,
+                        &reserved,
+                        road,
+                        fraction,
+                        radius,
+                        District::City,
+                    )
+                })
+            })
+            .expect("downtown frontage")
+    };
+    let downtown = place_city(35);
+    place_city(55);
+    place_city(70);
+    // Step down to compact detached homes along the county approach. Keeping
+    // this row outside the core leaves the arterial's retail reserves usable.
+    let verge = plan.point(1, 0);
+    let origin = plan.point(0, 0);
+    let normal = (verge.x - origin.x, verge.y - origin.y);
+    let west_x = town_x0 + 3;
+    let mut houses = 0;
+    for y in (arterial_y + 15)..base_y - 12 {
+        let x = west_x + (base_x + 10 - west_x) * (y - arterial_y) / (base_y - arterial_y);
+        let p = plan.point(x, y);
+        for side in [-1, 1] {
+            if houses < 3
+                && place_roadside_lot(
+                    tiles,
+                    &mut lots,
+                    &reserved,
+                    p,
+                    (normal.0 * side, normal.1 * side),
+                    9,
+                    District::Residential,
+                )
+            {
+                houses += 1;
+            }
+        }
+        if houses == 3 {
+            break;
+        }
+    }
+    assert_eq!(houses, 3, "residential approach frontages");
+
+    let residential = town_plan.local_junction;
+    for (p, district) in [
+        (residential, District::Residential),
+        (downtown, District::City),
+        (hospital, District::Hospital),
+        (police, District::Police),
+    ] {
+        if let Some(i) = p.index() {
+            tiles[i].district = district;
+        }
+    }
+    let mut landmarks = vec![
+        Landmark {
+            kind: LandmarkKind::Residential,
+            entrance: residential,
+        },
+        Landmark {
+            kind: LandmarkKind::Downtown,
+            entrance: downtown,
+        },
+        Landmark {
+            kind: LandmarkKind::Hospital,
+            entrance: hospital,
+        },
+        Landmark {
+            kind: LandmarkKind::Police,
+            entrance: police,
+        },
+        Landmark {
+            kind: LandmarkKind::ArmyBase,
+            entrance: base,
+        },
+        Landmark {
+            kind: LandmarkKind::Cabin,
+            entrance: cabin,
+        },
+        Landmark {
+            kind: LandmarkKind::Lake,
+            entrance: lake,
+        },
+        Landmark {
+            kind: LandmarkKind::Mountain,
+            entrance: mountain,
+        },
+    ];
+    let extras = (noise(seed, 32, 0, 0) % 3) as usize;
+    for (cx, top, bottom) in [(460, 50, 74), (460, 300, 324)].into_iter().take(extras) {
+        let route_y = bottom + 3;
+        plan.extension_line(tiles, (480, crossing_y), (480, route_y), Ground::Trail);
+        plan.extension_line(tiles, (480, route_y), (cx, route_y), Ground::Trail);
+        plan.cabin(tiles, &mut lots, cx, top, bottom);
+        landmarks.push(Landmark {
+            kind: LandmarkKind::Cabin,
+            entrance: plan.point(cx, route_y),
+        });
+    }
+    (landmarks, lots, meta, natural_field, town_plan)
 }
 
 #[cfg(test)]

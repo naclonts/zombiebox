@@ -183,6 +183,7 @@ fn starter_spawn(
     );
     let blockers = local_blockers(world, min, max);
 
+    let town = world.town_plan();
     let mut candidates = Vec::new();
     for y in min.y..=max.y {
         for x in min.x..=max.x {
@@ -191,25 +192,44 @@ fn starter_spawn(
             if d < MIN_STARTER_DISTANCE || !reachable.contains(&p) {
                 continue;
             }
-            let Some(((dx, dy), road_penalty)) = candidate_direction(world, p, &blockers) else {
+            let Some((default_heading, road_penalty)) = candidate_direction(world, p, &blockers)
+            else {
                 continue;
             };
-            // A shoulder can face directly into a house across the road.
-            // Prefer a clear starter launch even when it moves down the block.
-            let blocked_departure = (1..=DEPARTURE_LOOKAHEAD).any(|distance| {
-                let ahead = Position::new(p.x + dx * distance, p.y + dy * distance);
-                world.tile_at(ahead).is_none_or(|tile| {
-                    !tile.ground.walkable()
-                        || tile.water.is_some()
-                        || !matches!(tile.feature, Feature::Empty | Feature::Path)
+            let clear_ahead = |dx, dy| {
+                (1..=DEPARTURE_LOOKAHEAD).all(|distance| {
+                    let ahead = Position::new(p.x + dx * distance, p.y + dy * distance);
+                    world.tile_at(ahead).is_some_and(|tile| {
+                        tile.ground.walkable()
+                            && tile.water.is_none()
+                            && matches!(tile.feature, Feature::Empty | Feature::Path)
+                    })
                 })
+            };
+            // On the starter street, point down the lane toward the turnaround
+            // so a rider can enter traffic without an immediate tight turn.
+            let local_launch = town.and_then(|town| {
+                let cell = town.road_at(p)?;
+                if town.roads[cell.road_index].class != super::town_planner::RoadClass::Local {
+                    return None;
+                }
+                let dx = (town.turnaround.x - town.local_junction.x).signum();
+                let dy = (town.turnaround.y - town.local_junction.y).signum();
+                let (lane_x, lane_y) = town.projection(p, p.x as f32, p.y as f32)?;
+                let offset = (lane_x - p.x as f32).hypot(lane_y - p.y as f32);
+                clear_ahead(dx, dy).then_some(((dx, dy), (offset * 16.0) as u64))
             });
+            let fallback_penalty = if town.is_some() { 100 } else { 0 };
+            let ((dx, dy), lane_penalty) =
+                local_launch.unwrap_or((default_heading, fallback_penalty));
+            let blocked_departure = !clear_ahead(dx, dy);
             let spawn = MotorcycleSpawn {
                 slot: 0,
                 tile: p,
                 heading: (dy as f32).atan2(dx as f32),
             };
             let score = u64::from(d) * 10
+                + lane_penalty
                 + u64::from(road_penalty) * 25
                 + u64::from(blocked_departure) * BLOCKED_DEPARTURE_PENALTY
                 + super::noise_for_vehicles(seed, tile_key(p)) % 10;

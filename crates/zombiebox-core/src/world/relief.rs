@@ -2,6 +2,7 @@
 
 use super::geography::ValleyMeta;
 use super::sites::PlannedPad;
+use super::town_planner::{RoadClass, TownPlan};
 use super::{Ground, Position, Tile, WORLD_SIZE, Water, noise};
 use crate::spatial::{MIN_BRIDGE_CLEARANCE, TERRAIN_GRID_SIDE, TerrainGrid, WATER_SURFACE_Z};
 use std::cmp::Reverse;
@@ -105,13 +106,7 @@ fn edge_is_road(tiles: &[Tile], x0: i32, y0: i32, x1: i32, y1: i32) -> bool {
     }
 }
 
-pub(super) fn generate(
-    seed: u64,
-    tiles: &[Tile],
-    meta: &ValleyMeta,
-    pads: &[PlannedPad],
-) -> (TerrainGrid, Vec<f32>) {
-    // Stage 1: Continuous Macro Topography
+fn macro_heights(seed: u64, meta: &ValleyMeta, legacy: bool) -> Box<[f32]> {
     let coarse = NoiseLattice::<10>::new(seed, 101, 64.0);
     let medium = NoiseLattice::<35>::new(seed, 102, 16.0);
 
@@ -175,7 +170,7 @@ pub(super) fn generate(
                 meta.town_max.1 as f32 - 6.0,
                 vy,
             );
-            let town_mask = town_x * town_y;
+            let town_mask = if legacy { town_x * town_y } else { 0.0 };
 
             let base_elevation = 0.50 + smoothstep(4.0, 36.0, water_bank_dist) * 3.80;
             let med = medium.sample(vx, vy);
@@ -191,6 +186,221 @@ pub(super) fn generate(
         }
     }
 
+    heights
+}
+
+/// Inputs measured before roads, grading or building placement.
+#[derive(Clone, Copy, Debug)]
+pub struct NaturalTerrainSample {
+    pub height: f32,
+    pub slope: f32,
+    pub water_distance: f32,
+    pub suitability: f32,
+}
+
+pub(super) struct NaturalTerrainField {
+    heights: Box<[f32]>,
+    water_distance: Vec<u8>,
+    mountain: Vec<bool>,
+}
+
+impl NaturalTerrainField {
+    pub(super) fn new(seed: u64, meta: &ValleyMeta, tiles: &[Tile]) -> Self {
+        let mut water_distance = vec![u8::MAX; tiles.len()];
+        let mut queue = VecDeque::new();
+        for (index, tile) in tiles.iter().enumerate() {
+            if tile.water.is_some() {
+                water_distance[index] = 0;
+                queue.push_back(Position::new(
+                    index as i32 % WORLD_SIZE,
+                    index as i32 / WORLD_SIZE,
+                ));
+            }
+        }
+        // Saturated tile distance in the Chebyshev metric. Diagonal
+        // neighbours count as one tile so shore setbacks are conservative.
+        while let Some(p) = queue.pop_front() {
+            let distance = water_distance[p.index().unwrap()].saturating_add(1);
+            for dy in -1..=1 {
+                for dx in -1..=1 {
+                    let q = Position::new(p.x + dx, p.y + dy);
+                    if let Some(index) = q.index()
+                        && distance < water_distance[index]
+                    {
+                        water_distance[index] = distance;
+                        queue.push_back(q);
+                    }
+                }
+            }
+        }
+        Self {
+            heights: macro_heights(seed, meta, false),
+            water_distance,
+            mountain: tiles
+                .iter()
+                .map(|tile| tile.ground == Ground::Mountain)
+                .collect(),
+        }
+    }
+
+    pub(super) fn sample(&self, p: Position) -> Option<NaturalTerrainSample> {
+        let index = p.index()?;
+        let a = self.heights[grid_idx(p.x, p.y)];
+        let b = self.heights[grid_idx(p.x + 1, p.y)];
+        let c = self.heights[grid_idx(p.x, p.y + 1)];
+        let d = self.heights[grid_idx(p.x + 1, p.y + 1)];
+        let slope = (b - a).hypot(d - b).max((d - c).hypot(c - a));
+        let water_distance = f32::from(self.water_distance[index]);
+        let suitability = if self.mountain[index] {
+            0.0
+        } else {
+            smoothstep(3.0, 20.0, water_distance) * (1.0 - smoothstep(0.03, 0.20, slope))
+        };
+        Some(NaturalTerrainSample {
+            height: 0.5 * (a + d),
+            slope,
+            water_distance,
+            suitability,
+        })
+    }
+}
+
+pub(super) fn generate(
+    seed: u64,
+    tiles: &[Tile],
+    meta: &ValleyMeta,
+    pads: &[PlannedPad],
+) -> (TerrainGrid, Vec<f32>) {
+    generate_from_heights(tiles, pads, macro_heights(seed, meta, true), None)
+}
+
+pub(super) fn generate_ribbon(
+    tiles: &[Tile],
+    pads: &[PlannedPad],
+    natural: NaturalTerrainField,
+    town: &TownPlan,
+) -> (TerrainGrid, Vec<f32>) {
+    generate_from_heights(tiles, pads, natural.heights, Some(town))
+}
+
+/// Smooth and clamp a one-dimensional elevation profile. Branches inherit
+/// their first sample from the already graded parent road at the junction.
+fn road_profiles(town: &TownPlan, heights: &[f32]) -> Vec<Vec<f32>> {
+    let mut profiles: Vec<Vec<f32>> = Vec::with_capacity(town.roads.len());
+    for (index, road) in town.roads.iter().enumerate() {
+        let line = &road.continuous_centerline;
+        let mut profile: Vec<_> = line
+            .iter()
+            .map(|&[x, y]| {
+                let gx = (x + 0.5).floor() as i32;
+                let gy = (y + 0.5).floor() as i32;
+                let u = x + 0.5 - gx as f32;
+                let v = y + 0.5 - gy as f32;
+                let a = heights[grid_idx(gx, gy)];
+                let b = heights[grid_idx(gx + 1, gy)];
+                let c = heights[grid_idx(gx, gy + 1)];
+                let d = heights[grid_idx(gx + 1, gy + 1)];
+                (a + (b - a) * u) * (1.0 - v) + (c + (d - c) * u) * v
+            })
+            .collect();
+        let grade = match road.class {
+            RoadClass::Arterial => 0.060,
+            _ => 0.10,
+        };
+        let step = |i: usize| {
+            let [ax, ay] = line[i - 1];
+            let [bx, by] = line[i];
+            grade * (ax - bx).hypot(ay - by)
+        };
+
+        for i in (1..line.len()).rev() {
+            profile[i - 1] = profile[i - 1].clamp(profile[i] - step(i), profile[i] + step(i));
+        }
+        for (parent, parent_profile) in town.roads[..index].iter().zip(&profiles) {
+            if let Some(junction_index) = parent
+                .continuous_centerline
+                .iter()
+                .position(|p| *p == line[0])
+            {
+                profile[0] = parent_profile[junction_index];
+                break;
+            }
+        }
+        for i in 1..line.len() {
+            profile[i] = profile[i].clamp(profile[i - 1] - step(i), profile[i - 1] + step(i));
+        }
+        profiles.push(profile);
+    }
+    profiles
+}
+
+struct RoadGradeTarget {
+    height: f32,
+    max_step: f32,
+    fixed: bool,
+}
+
+fn road_target(
+    town: &TownPlan,
+    profiles: &[Vec<f32>],
+    gx: i32,
+    gy: i32,
+) -> Option<RoadGradeTarget> {
+    let x = gx as f32 - 0.5;
+    let y = gy as f32 - 0.5;
+    let mut best: Option<(usize, f32, f32)> = None;
+    let mut max_step = 0.084_f32;
+    let in_bulb =
+        (x - town.turnaround.x as f32).abs() <= 2.5 && (y - town.turnaround.y as f32).abs() <= 2.5;
+    for ty in gy - 1..=gy {
+        for tx in gx - 1..=gx {
+            let p = Position::new(tx, ty);
+            let Some(cell) = town.road_at(p) else {
+                continue;
+            };
+            let road = &town.roads[cell.road_index];
+            let profile = &profiles[cell.road_index];
+            if road.class == RoadClass::Arterial {
+                // Per-axis bounds cover the full gradient of either triangle.
+                max_step = max_step.min(0.063);
+            }
+            let start = cell.segment_index.saturating_sub(2);
+            let end = (cell.segment_index + 2).min(profile.len() - 2);
+            // The index belongs to the tile center. At a corner the closest
+            // point may lie on either adjacent segment.
+            for j in start..=end {
+                let [ax, ay] = road.continuous_centerline[j];
+                let [bx, by] = road.continuous_centerline[j + 1];
+                let (dx, dy) = (bx - ax, by - ay);
+                let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                let distance = (x - ax - t * dx).powi(2) + (y - ay - t * dy).powi(2);
+                let z = if in_bulb && road.class == RoadClass::Local {
+                    max_step = max_step.min(0.020);
+                    *profile.last().unwrap()
+                } else {
+                    profile[j] + (profile[j + 1] - profile[j]) * t
+                };
+                if best.is_none_or(|(road_index, d, _)| {
+                    cell.road_index < road_index || (cell.road_index == road_index && distance < d)
+                }) {
+                    best = Some((cell.road_index, distance, z));
+                }
+            }
+        }
+    }
+    best.map(|(road_index, _, height)| RoadGradeTarget {
+        height,
+        max_step,
+        fixed: town.roads[road_index].class == RoadClass::Arterial,
+    })
+}
+
+fn generate_from_heights(
+    tiles: &[Tile],
+    pads: &[PlannedPad],
+    mut heights: Box<[f32]>,
+    town: Option<&TownPlan>,
+) -> (TerrainGrid, Vec<f32>) {
     // Vertex classification over incident tiles.
     let mut in_road_graph = vec![false; GRID_LEN];
     let mut touches_dry_road = vec![false; GRID_LEN];
@@ -254,9 +464,26 @@ pub(super) fn generate(
     let mut road_adj = vec![[u32::MAX; 4]; n_road];
     let mut road_z = Vec::with_capacity(n_road);
     let mut min_floor = Vec::with_capacity(n_road);
+    let profiles = town.map(|town| road_profiles(town, &heights));
+    let mut max_step = Vec::with_capacity(n_road);
+    let mut on_profile = Vec::with_capacity(n_road);
+    let mut fixed_arterial = Vec::with_capacity(n_road);
 
     for (ri, &(gx, gy, v)) in road_verts.iter().enumerate() {
-        road_z.push(heights[v]);
+        let target = town
+            .zip(profiles.as_deref())
+            .and_then(|(town, profiles)| road_target(town, profiles, gx, gy));
+        on_profile.push(target.is_some());
+        let target = target.unwrap_or(RoadGradeTarget {
+            height: heights[v],
+            max_step: ROAD_LIPSCHITZ_STEP,
+            fixed: false,
+        });
+        road_z.push(target.height);
+        max_step.push(target.max_step);
+        // Keep the projected arterial surface intact while relaxing the
+        // junctions, side streets and older regional approaches around it.
+        fixed_arterial.push(target.fixed);
         min_floor.push(if touches_any_bridge[v] {
             MIN_BRIDGE_CLEARANCE
         } else if touches_lake[v] {
@@ -281,6 +508,10 @@ pub(super) fn generate(
     let mut next_road_z = vec![0.0f32; n_road];
     for _ in 0..5 {
         for ri in 0..n_road {
+            if on_profile[ri] {
+                next_road_z[ri] = road_z[ri];
+                continue;
+            }
             let mut sum = road_z[ri];
             let mut count = 1.0f32;
             for &nb in &road_adj[ri] {
@@ -304,13 +535,13 @@ pub(super) fn generate(
         if bits != f32_to_ord_u32(road_z[u]) {
             continue;
         }
-        let cand = road_z[u] + ROAD_LIPSCHITZ_STEP;
         for &nb in &road_adj[u] {
             if nb == u32::MAX {
                 break;
             }
             let v = nb as usize;
-            if cand < road_z[v] {
+            let cand = road_z[u] + max_step[u].min(max_step[v]);
+            if !fixed_arterial[v] && cand < road_z[v] {
                 road_z[v] = cand;
                 min_heap.push((Reverse(f32_to_ord_u32(cand)), nb));
             }
@@ -334,13 +565,13 @@ pub(super) fn generate(
         if bits != f32_to_ord_u32(road_z[u]) {
             continue;
         }
-        let cand = road_z[u] - ROAD_LIPSCHITZ_STEP;
         for &nb in &road_adj[u] {
             if nb == u32::MAX {
                 break;
             }
             let v = nb as usize;
-            if cand > road_z[v] {
+            let cand = road_z[u] - max_step[u].min(max_step[v]);
+            if !fixed_arterial[v] && cand > road_z[v] {
                 road_z[v] = cand;
                 max_heap.push((f32_to_ord_u32(cand), nb));
             }
@@ -366,6 +597,16 @@ pub(super) fn generate(
             heights[v] = road_z[ri];
             locked[v] = true;
         }
+    }
+
+    if town.is_some() {
+        blend_ribbon_skirt(
+            &mut heights,
+            &locked,
+            &on_profile,
+            &road_verts,
+            &water_count,
+        );
     }
 
     // Stage 3: Road-to-Terrain Pre-Blend & Flat Building Pads
@@ -670,4 +911,48 @@ pub(super) fn generate(
     }
 
     (TerrainGrid::new(heights, bridges), foundations)
+}
+
+/// Smooth bounded falloff from graded streets into rolling natural relief.
+fn blend_ribbon_skirt(
+    heights: &mut [f32],
+    locked: &[bool],
+    on_profile: &[bool],
+    road_verts: &[(i32, i32, usize)],
+    water_count: &[u8],
+) {
+    const RADIUS: i32 = 12;
+    let mut targets = vec![0.0; GRID_LEN];
+    let mut weights = vec![0.0; GRID_LEN];
+    for (road, &(gx, gy, v)) in road_verts.iter().enumerate() {
+        if !on_profile[road] || !locked[v] {
+            continue;
+        }
+        // Sample the rim of the four-tile carriageway at a regular interval.
+        if (gx + gy) % 3 != 0 {
+            continue;
+        }
+        for y in (gy - RADIUS).max(0)..=(gy + RADIUS).min(WORLD_SIZE) {
+            for x in (gx - RADIUS).max(0)..=(gx + RADIUS).min(WORLD_SIZE) {
+                let index = grid_idx(x, y);
+                if locked[index] || water_count[index] != 0 {
+                    continue;
+                }
+                let distance = ((x - gx) as f32).hypot((y - gy) as f32);
+                if distance >= RADIUS as f32 {
+                    continue;
+                }
+                let weight = 1.0 - smoothstep(0.0, RADIUS as f32, distance);
+                targets[index] += weight * heights[v];
+                weights[index] += weight;
+            }
+        }
+    }
+    for (index, &weight) in weights.iter().enumerate() {
+        if weight > 0.0 {
+            let target = targets[index] / weight;
+            let blend = weight / (1.0 + weight);
+            heights[index] += blend * (target - heights[index]);
+        }
+    }
 }

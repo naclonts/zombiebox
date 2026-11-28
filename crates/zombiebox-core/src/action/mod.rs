@@ -3144,23 +3144,18 @@ mod tests {
     #[test]
     fn disabled_motorcycle_skid_remains_in_registry_across_streaming_revisit() {
         let mut game = ActionGame::county(42);
-        let (id, spawn, _) = game
+        let (id, spawn) = game
             .vehicles
             .iter()
             .find_map(|(id, state)| {
-                state.motorcycle().map(|bike| {
-                    (
-                        id,
-                        Tile3D::from_vec2(bike.body.position.xy(), 0),
-                        bike.condition,
-                    )
-                })
+                let bike = state.motorcycle()?;
+                (id.0 & 0xff == 0).then(|| (id, Tile3D::from_vec2(bike.body.position.xy(), 0)))
             })
-            .expect("seeded bike");
+            .expect("starter bike");
         let bike = game.vehicles.motorcycle_mut(id).unwrap();
         bike.condition = 0;
         bike.phase = MotorcyclePhase::Skidding;
-        bike.body.velocity = Vec3::new(6.0, 0.0, 0.0);
+        bike.body.velocity = bike.body.facing_xy().extend(0.0) * 6.0;
         bike.recovery_ticks = 0;
         game.step(ActionInput::default());
         let moved = game.vehicles.motorcycle(id).unwrap().body.position;
@@ -3538,6 +3533,9 @@ mod tests {
     #[test]
     fn craftsman_note_is_readable_and_wall_breach_persists() {
         let mut game = ActionGame::county(42);
+        let structure = game.world.fixture_plan().unwrap().structures[0].clone();
+        game.teleport(Tile3D::from_pos(structure.front_door, 0))
+            .expect("Craftsman approach streams");
         let (readable, anchor) = *game
             .readable_fixtures
             .iter()
@@ -3565,7 +3563,6 @@ mod tests {
         assert!(hud.read_open);
         assert_eq!(hud.read_id, readable as u8);
 
-        let structure = game.world.fixture_plan().unwrap().structures[0].clone();
         let (wall_local, _) = structure
             .blueprint
             .cells
@@ -3589,9 +3586,17 @@ mod tests {
             .expect("wall takes rocket damage");
         assert!(result.destroyed);
         assert_eq!(game.stage.tile_kind(wall), TileKind::Rubble);
-        let wake = game.world.wake_position();
-        game.teleport(Tile3D::from_pos(wake, 0))
+        let distant_road = game
+            .world
+            .landmarks()
+            .iter()
+            .filter(|l| l.kind == crate::LandmarkKind::Cabin)
+            .max_by_key(|l| l.entrance.distance(structure.front_door))
+            .expect("distant woodland cabin")
+            .entrance;
+        game.teleport(Tile3D::from_pos(distant_road, 0))
             .expect("teleport away from the breach");
+        assert_ne!(game.stage.tile_kind(wall), TileKind::Rubble);
         game.teleport(inside).expect("teleport back to the breach");
         assert_eq!(
             game.stage.tile_kind(wall),

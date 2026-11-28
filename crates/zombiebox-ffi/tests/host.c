@@ -143,8 +143,9 @@ static void check_action_v3_motorcycle(void) {
     uint64_t time_ns = 1000000000ULL;
     ZbAction *county = zb_action_v2_create_county(42);
     assert(county);
-    /* Seed 42's deterministic starter motorcycle is at tile (354, 166). */
-    assert(zb_action_v2_teleport(county, 354, 166, 0, NULL));
+    /* Starter motorcycle fixture for generator v3, seed 42. */
+    const int32_t starter_x = 280, starter_y = 285;
+    assert(zb_action_v2_teleport(county, starter_x, starter_y, 0, NULL));
 
     ZbActionFrameInputV3 v3;
     memset(&v3, 0, sizeof v3);
@@ -164,7 +165,7 @@ static void check_action_v3_motorcycle(void) {
     assert(out.control_kind == ZB_CONTROL_MOTORCYCLE);
     assert(out.base.interact_kind == ZB_INTERACT_DISMOUNT);
     assert(out.condition_pct == 100);
-    assert(!zb_action_v2_teleport(county, 360, 166, 0, NULL));
+    assert(!zb_action_v2_teleport(county, starter_x + 6, starter_y, 0, NULL));
 
     /* A stale on-foot schema cannot repeat Interact or apply foot movement. */
     const uint16_t mounted_speed = out.speed_mph_x10;
@@ -201,13 +202,13 @@ static void check_action_v3_motorcycle(void) {
     time_ns += tick_ns;
     assert(zb_action_v3_update(county, time_ns, &v3, &out));
     assert(out.control_kind == ZB_CONTROL_ON_FOOT);
-    assert(zb_action_v2_teleport(county, 354, 166, 0, NULL));
+    assert(zb_action_v2_teleport(county, starter_x, starter_y, 0, NULL));
     zb_action_v2_destroy(county);
 
     /* Legacy v2 stays on foot and never exposes the motorcycle-only prompt. */
     county = zb_action_v2_create_county(42);
     assert(county);
-    assert(zb_action_v2_teleport(county, 354, 166, 0, NULL));
+    assert(zb_action_v2_teleport(county, starter_x, starter_y, 0, NULL));
     ZbActionFrameInput v2;
     memset(&v2, 0, sizeof v2);
     v2.select_weapon = ZB_WEAPON_UNCHANGED;

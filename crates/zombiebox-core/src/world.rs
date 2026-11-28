@@ -4,6 +4,7 @@ pub mod archetypes;
 pub mod blueprint;
 mod dressing;
 mod floorplan;
+mod frontage;
 pub mod furnish;
 mod geography;
 pub mod massing;
@@ -11,6 +12,7 @@ mod parcels;
 use parcels::{ParcelTiles, Parcels};
 mod relief;
 mod sites;
+pub mod town_planner;
 mod vehicles;
 pub use archetypes::CountyFixture;
 pub use blueprint::{
@@ -20,6 +22,8 @@ pub use blueprint::{
     PlacedStructure, PlacementId, PlacementStrategy, PlannedProp, RoomMeta, RuleKey,
     StructureContext, StructureGenerator, StructureId, WallPreference, ZoneKind,
 };
+pub use frontage::{FrontageConnector, FrontageSlot, FrontageUse};
+pub use relief::NaturalTerrainSample;
 pub use sites::*;
 #[cfg(test)]
 pub(crate) use vehicles::MOTORCYCLE_SLOTS;
@@ -34,7 +38,8 @@ use std::sync::Arc;
 pub const CHUNK_SIZE: i32 = 16;
 pub const CHUNKS_PER_SIDE: i32 = 32;
 pub const WORLD_SIZE: i32 = CHUNK_SIZE * CHUNKS_PER_SIDE;
-pub const GENERATOR_VERSION: u32 = 2;
+pub const GENERATOR_VERSION: u32 = 3;
+const LEGACY_WORLD_NOISE_VERSION: u64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Position {
@@ -180,6 +185,7 @@ struct County {
     terrain: TerrainGrid,
     spawn: Position,
     fixture: CountyFixture,
+    town: Option<town_planner::TownPlan>,
 }
 
 #[derive(Clone, Debug)]
@@ -191,7 +197,7 @@ pub struct World {
 }
 
 impl World {
-    /// Default county generation includes all five furnished house families.
+    /// Default highway-ribbon county with all five furnished house families.
     pub fn new(seed: u64) -> Self {
         Self::with_fixture(seed, CountyFixture::ResidentialStreet)
     }
@@ -201,15 +207,24 @@ impl World {
         Self::with_fixture(seed, CountyFixture::None)
     }
 
-    /// Select the generation fixture explicitly. `CountyFixture::None` retains
-    /// the legacy baseline; the other variants stream authored structures.
+    /// Select the generation fixture explicitly. `ResidentialStreet` uses
+    /// highway-ribbon geography. Individual building fixtures and `None`
+    /// keep the legacy geography for repeatable comparisons.
     pub fn with_fixture(seed: u64, fixture: CountyFixture) -> Self {
+        Self::generate(seed, fixture, fixture == CountyFixture::ResidentialStreet)
+    }
+
+    fn generate(seed: u64, fixture: CountyFixture, ribbon: bool) -> Self {
         let mut tiles = vec![Tile::default(); (WORLD_SIZE * WORLD_SIZE) as usize];
-        let (landmarks, lots, valley_meta) = geography::generate_with_meta(
-            seed,
-            &mut tiles,
-            fixture == CountyFixture::ResidentialStreet,
-        );
+        let (landmarks, lots, meta, ribbon) = if ribbon {
+            let (landmarks, lots, meta, natural, mut town) =
+                geography::generate_ribbon(seed, &mut tiles);
+            town.frontages = frontage::reserve(seed, &town, &natural, &tiles, &lots);
+            (landmarks, lots, meta, Some((natural, town)))
+        } else {
+            let (landmarks, lots, meta) = geography::generate_with_meta(seed, &mut tiles, false);
+            (landmarks, lots, meta, None)
+        };
         let spawn = landmarks
             .iter()
             .find(|l| l.kind == LandmarkKind::Residential)
@@ -218,7 +233,21 @@ impl World {
         let mut parcels = Parcels::new(seed, lots, spawn, fixture, &tiles);
         let planned = parcels.planned_pads(seed, &tiles);
         let pads: Vec<_> = planned.iter().map(|(_, pad)| *pad).collect();
-        let (terrain, foundations) = relief::generate(seed, &tiles, &valley_meta, &pads);
+        let (terrain, foundations, town) = if let Some((natural, mut town)) = ribbon {
+            let (terrain, foundations) = relief::generate_ribbon(&tiles, &pads, natural, &town);
+            for slot in &mut town.frontages {
+                let [a, _, _, d] = terrain.quad(slot.connector.road).expect("fronting road");
+                let road_z = (a + d) * 0.5;
+                let run = slot.connector.road.distance(slot.connector.frontage) as f32;
+                let max_rise = 0.12 * run;
+                slot.foundation_z = (0.7 * road_z + 0.3 * slot.foundation_z)
+                    .clamp(road_z - max_rise, road_z + max_rise);
+            }
+            (terrain, foundations, Some(town))
+        } else {
+            let (terrain, foundations) = relief::generate(seed, &tiles, &meta, &pads);
+            (terrain, foundations, None)
+        };
         for ((parcel_idx, _), foundation_z) in planned.into_iter().zip(foundations) {
             parcels.set_foundation(parcel_idx, foundation_z);
         }
@@ -231,8 +260,14 @@ impl World {
                 terrain,
                 spawn,
                 fixture,
+                town,
             })),
         }
+    }
+
+    /// Immutable road geometry and reserved frontage for a ribbon county.
+    pub fn town_plan(&self) -> Option<&town_planner::TownPlan> {
+        self.county.as_ref()?.town.as_ref()
     }
 
     pub fn birch_street(seed: u64) -> Self {
@@ -531,6 +566,26 @@ pub(crate) fn noise_for_vehicles(seed: u64, key: u64) -> u64 {
 }
 
 fn noise(seed: u64, domain: u64, x: i32, y: i32) -> u64 {
-    let stream = crate::mix64(domain.wrapping_add(u64::from(GENERATOR_VERSION) << 32));
+    let stream = crate::mix64(domain.wrapping_add(LEGACY_WORLD_NOISE_VERSION << 32));
     fixture_hash(seed ^ stream, x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ribbon_plan_is_independent_of_furnished_building_templates() {
+        for seed in [1, 7, 42] {
+            let furnished = World::new(seed);
+            let plain = World::generate(seed, CountyFixture::None, true);
+            assert!(!furnished.fixture_plans().is_empty());
+            assert!(plain.fixture_plans().is_empty());
+            assert_eq!(
+                furnished.town_plan().unwrap().canonical_hash(),
+                plain.town_plan().unwrap().canonical_hash(),
+                "seed {seed}"
+            );
+        }
+    }
 }

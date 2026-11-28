@@ -11,9 +11,9 @@ Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [
 3. **Build one connected town.** Start with a highway ribbon, a residential street or cul-de-sac, and actual foot and motorcycle routes. Add crossroads, split-bank, and bay/lakeshore morphologies in follow-up packages within Phase 3.
 4. **Switch county generation after verification.** Keep current police, hospital, downtown, and cabin content reachable through a legacy adapter. Retire the Army Base from active county generation together with its landmark, lot, routing, and runtime special cases. Phase 4 owns civic replacements, Phase 5 owns new infected variants, and later milestones own the circus, freeway interchanges, and infinite-region streaming. Phase 3 uses a state highway as the first regional spine.
 
-Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
+Use opt-in fixtures to review individual buildings. The fixtures select data at the generation entry point and feed the same materializer as the county. The WP 3.8 highway-ribbon terrain is the default county layout.
 
-> The current county start includes one furnished Craftsman, Ranch, and Colonial within walking distance of spawn. Regular generation also places one split-level and one duplex on separate road-connected residential lots. `CountyFixture::{ColonialLot, SplitLevelLot, DuplexLot}` isolates a furnished family for review, `CountyFixture::BlueprintLot` selects the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
+> The current county start includes one furnished Craftsman, Ranch, and Colonial within walking distance of spawn. Regular generation also places one split-level and one duplex on separate road-connected residential lots. `CountyFixture::{ColonialLot, SplitLevelLot, DuplexLot}` isolates a furnished family for review, `CountyFixture::BlueprintLot` selects the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. Generator v3 is the highway-ribbon cutover. The Army Base retirement remains WP 3.11.
 
 ## 1. Ownership and shared contracts
 
@@ -325,10 +325,12 @@ Handoff: [WP 3.7 handoff](phase3-wp37-handoff.md).
 
 ### WP 3.8 — Natural terrain and highway-ribbon town
 
+Handoff: [WP 3.8 handoff](phase3-wp38-handoff.md).
+
 - **Owns** `world.rs`, `world/geography.rs`, `world/relief.rs`, and new `world/town_planner.rs`.
-- **Build** natural terrain inputs, road graph and raster, highway ribbon, collector and residential cul-de-sac on an opt-in seed fixture. Use explicit tie-breaks, grade and water checks, and retain `ValleyMeta` or its replacement for terrain/bridge code. Put the first residential street on a reachable dry block.
+- **Build** natural terrain inputs, road graph and raster, highway ribbon, collector and residential cul-de-sac in the default county. Use explicit tie-breaks, grade and water checks, and retain `ValleyMeta` or its replacement for terrain/bridge code. Put the first residential street on a reachable dry block.
 - **Accept** stable road hashes and routes from spawn to the primary arterial and residential street. Drive a motorcycle through the grades, junction and turnaround. Run the existing terrain seam and raycast checks. Record a clean pre-change baseline and diagnose any changed terrain failure before handing off.
-- **Hand off** frontage and lot input APIs, road classes, sampling units and route fixture coordinates. At this point, the primary game mode should be cutover to use this generated layout.
+- **Hand off** frontage and lot input APIs, road classes, sampling units and route fixture coordinates. The primary game mode uses the generated layout.
 
 ### WP 3.9 — Zoning, retail frontage and dressing
 

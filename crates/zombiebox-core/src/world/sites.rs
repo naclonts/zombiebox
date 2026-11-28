@@ -942,7 +942,18 @@ fn take_site(
     Some(candidates.swap_remove(index))
 }
 
-fn populate(seed: u64, lot: &Lot, building: &Building, tiles: &mut ParcelTiles, sites: &mut Sites) {
+pub(super) fn loot_variant(seed: u64, lot: &Lot) -> u64 {
+    noise(seed, 0x4c4f4f5454595045, lot.min.x, lot.min.y)
+}
+
+fn populate(
+    seed: u64,
+    lot: &Lot,
+    guarantee_ammo: bool,
+    building: &Building,
+    tiles: &mut ParcelTiles,
+    sites: &mut Sites,
+) {
     let mut accessible = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::from([(building.entry, 0)]);
     while let Some((p, floor)) = queue.pop_front() {
@@ -981,7 +992,7 @@ fn populate(seed: u64, lot: &Lot, building: &Building, tiles: &mut ParcelTiles, 
         District::City => 10,
         _ => 2,
     };
-    let variant = noise(seed, 0x4c4f4f5454595045, lot.min.x, lot.min.y);
+    let variant = loot_variant(seed, lot);
     for i in 0..loot_count {
         let kind = match lot.district {
             District::Hospital => {
@@ -1017,7 +1028,7 @@ fn populate(seed: u64, lot: &Lot, building: &Building, tiles: &mut ParcelTiles, 
             District::Residential => {
                 if i == 0 {
                     LootKind::Household
-                } else if variant.is_multiple_of(3) {
+                } else if guarantee_ammo || variant.is_multiple_of(3) {
                     LootKind::Ammo
                 } else {
                     LootKind::Tools
@@ -1116,6 +1127,7 @@ pub(super) fn generate(
     seed: u64,
     lot: &Lot,
     ordinal: u64,
+    guarantee_ammo: bool,
     foundation_z: f32,
     tiles: &mut ParcelTiles,
 ) -> Sites {
@@ -1141,7 +1153,7 @@ pub(super) fn generate(
     }
     let building = floorplan(lot, k, n, min, max, foundation_z);
     place_building(lot, &building, tiles);
-    populate(seed, lot, &building, tiles, &mut sites);
+    populate(seed, lot, guarantee_ammo, &building, tiles, &mut sites);
     sites.buildings.push(building);
     sites
 }

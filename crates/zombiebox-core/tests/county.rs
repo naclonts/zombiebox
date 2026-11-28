@@ -163,3 +163,86 @@ fn cross_chunk_buildings_share_floors_and_each_spawn_has_one_owner() {
     assert_eq!(sites.infected.len(), infected.len());
     assert!(!world.walkable_at(world.wake_position(), 1));
 }
+
+#[test]
+fn ribbon_counties_materialize_the_full_roster_on_connected_approaches() {
+    for seed in [0, 1, 2, 3, 42, 42 + (1 << 42), u64::MAX] {
+        verify_ribbon_county(seed);
+    }
+}
+
+#[test]
+#[ignore = "extended deterministic geography audit"]
+fn audit_ribbon_geography_across_seeds() {
+    for seed in (0..64).chain((1_u64..=256).map(|n| n.wrapping_mul(0x9e37_79b9_7f4a_7c15))) {
+        verify_ribbon_county(seed);
+    }
+}
+
+fn verify_ribbon_county(seed: u64) {
+    use BuildingKind::*;
+    let world = World::new(seed);
+    let houses = world.fixture_plans();
+    assert_eq!(houses.len(), 5, "seed {seed} furnished houses");
+    let buildings = &world.sites().unwrap().buildings;
+    for kind in [
+        Hospital, Precinct, ArmyBase, Cabin, Storefront, Office, Apartments, Bungalow, Duplex,
+        SplitLevel,
+    ] {
+        assert!(
+            buildings.iter().any(|b| b.kind == kind),
+            "seed {seed} missing {kind:?}"
+        );
+    }
+    assert_eq!(
+        buildings.iter().filter(|b| b.kind == Cabin).count(),
+        world
+            .landmarks()
+            .iter()
+            .filter(|l| l.kind == LandmarkKind::Cabin)
+            .count()
+    );
+    let mut seen = std::collections::HashMap::from([(world.wake_position(), 0)]);
+    let mut queue = VecDeque::from([world.wake_position()]);
+    while let Some(p) = queue.pop_front() {
+        let next_distance = seen[&p] + 1;
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let next = Position::new(p.x + dx, p.y + dy);
+            if world.tile_at(next).is_some_and(|t| t.ground.is_road()) {
+                if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(next) {
+                    entry.insert(next_distance);
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+    for house in houses {
+        let entrance = house.frontage.access;
+        let (dx, dy) = house.frontage.side.inward();
+        let approach = Position::new(entrance.x - dx, entrance.y - dy);
+        let distance = *seen.get(&approach).expect("connected house approach");
+        let family = house.structures[0].archetype;
+        if ["craftsman_", "ranch_", "colonial_"]
+            .iter()
+            .any(|s| family.starts_with(s))
+        {
+            let path: u32 = house
+                .outdoor
+                .paths
+                .iter()
+                .map(|(a, b)| a.x.abs_diff(b.x) + a.y.abs_diff(b.y))
+                .sum();
+            assert!(
+                distance + 1 + path <= 90,
+                "seed {seed} {family} requires {} walking tiles",
+                distance + 1 + path
+            );
+        }
+    }
+    for landmark in world.landmarks() {
+        assert!(
+            seen.contains_key(&landmark.entrance),
+            "seed {seed} disconnected {landmark:?}"
+        );
+    }
+}
