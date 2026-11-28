@@ -151,6 +151,23 @@ impl PropMeshLibrary {
         ] {
             prototypes.insert(id.stem(), Prototype { mesh });
         }
+        // The same factor scales gameplay bounds and imported or procedural meshes.
+        // Closed/open variants must share the factor and pivot.
+        let mut scaled = std::collections::BTreeSet::new();
+        for &id in PropId::ALL {
+            for state in [PropState::Closed, PropState::Opened] {
+                let key = Self::asset_key(id, state);
+                if scaled.insert(key) {
+                    if let Some(prototype) = prototypes.get_mut(key) {
+                        for vertex in &mut prototype.mesh.vertices {
+                            for coordinate in &mut vertex.position {
+                                *coordinate *= id.presentation_scale();
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Self { prototypes }
     }
 

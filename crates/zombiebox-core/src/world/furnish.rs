@@ -2462,6 +2462,21 @@ mod tests {
     }
 
     #[test]
+    fn craftsman_tall_furniture_fits_beneath_ceiling() {
+        assert!(PropId::BookcaseOpen.def().collision_max.z < crate::spatial::WALL_HEIGHT);
+        assert!(PropId::Fridge.def().collision_max.z < crate::spatial::WALL_HEIGHT);
+        assert!(
+            (0..64).any(|seed| SIDES.into_iter().any(|side| {
+                furnished(seed, side)
+                    .props
+                    .iter()
+                    .any(|p| p.prop == PropId::BookcaseOpen)
+            })),
+            "bookcases should remain eligible for placement"
+        );
+    }
+
+    #[test]
     fn dining_table_keeps_clearance_from_unrelated_furniture() {
         let mut tables = 0;
         for seed in 0..64 {
@@ -2504,7 +2519,7 @@ mod tests {
             anchor: BlueprintAnchor::new(6, 4, 0),
             facing: PropFacing::North,
             required: false,
-            offset: (0.0, 0.0),
+            offset: (-0.5, 0.0),
         };
         let far = PlacedProp {
             anchor: BlueprintAnchor::new(9, 4, 0),

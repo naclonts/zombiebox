@@ -30,8 +30,8 @@ pub use terrain::{
     CHUNK_VERTICES, TERRAIN_GRID_SIDE, TerrainGrid, TerrainTriangle, sample_quad_00_11,
 };
 
-/// Vertical floor-to-floor increment in world units (~34 px in 2:1 isometric at 28.284 px/unit).
-pub const FLOOR_H: f32 = 1.388;
+/// Vertical floor-to-floor increment in world units.
+pub const FLOOR_H: f32 = 1.75;
 
 /// Structural wall segment thickness (`[-0.08, +0.08]` around tile centerline).
 pub const WALL_THICKNESS: f32 = 0.16;
@@ -40,7 +40,7 @@ pub const WALL_HALF_THICKNESS: f32 = WALL_THICKNESS * 0.5;
 /// Upper-floor & roof structural slab thickness below `floor_elevation`.
 pub const SLAB_THICKNESS: f32 = 0.16;
 
-/// Clear floor-to-ceiling wall height beneath an upper floor slab (`1.388 - 0.16 = 1.228`).
+/// Clear floor-to-ceiling wall height beneath an upper floor slab.
 pub const WALL_HEIGHT: f32 = FLOOR_H - SLAB_THICKNESS;
 
 /// Window sill top offset above floor `z` (`0.38 > max_step_up = 0.22`).
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn body_shape_and_floor_elevation() {
-        assert!((floor_elevation(2.5, 2) - (2.5 + 2.0 * 1.388)).abs() < 1e-6);
+        assert!((floor_elevation(2.5, 2) - (2.5 + 2.0 * FLOOR_H)).abs() < 1e-6);
         let shape = BodyShape::new(0.25, 1.8);
         let a = shape.aabb_at(Vec3::new(1.0, 2.0, 0.5));
         assert_eq!(a.min, Vec3::new(0.75, 1.75, 0.5));

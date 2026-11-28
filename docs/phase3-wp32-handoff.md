@@ -143,9 +143,20 @@ Results:
   documented pre-existing baseline failure
   `spatial_kinematics::county_seed_42_terrain_seam_and_diagonal_raycasts`
   (`oblique ray z mismatch: hit_z=5.28868 expected=4.1443267`).
+  Follow-up: the hit was a wooden prop, not terrain. The terrain-specific
+  test now excludes other surfaces and passes.
 - Clippy reports no new warnings in the WP 3.2 files.
 
 ## Open findings / downstream notes
+
+- The shared floor spacing is now 1.75 units (1.59 below the slab), leaving
+  clearance for the Craftsman fridge and open bookcase. Pitched-roof joins
+  fill the space above exterior wall tops on irregular wings. Host checks cover
+  tall-furniture eligibility, shell mesh validity, upper-window shooting and
+  floor transitions. Furniture meshes and collision bounds now share a 0.6×
+  scale to fit the 1.05-unit survivor and 1.15-unit doorway; countertop
+  attachment heights follow their scaled hosts. Visual and handset review
+  remain outstanding.
 
 - Street-level and isometric screenshots were not captured in this host-only
   pass. WP 3.2 still needs the furnished-scene and handset review evidence

@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(sim_to_render_normal(SimVec3::ZERO), Vec3::ZERO);
         assert_eq!(render_to_sim_normal(Vec3::ZERO), SimVec3::ZERO);
 
-        assert!((floor_elevation(2.5, 2) - (2.5 + 2.0 * 1.388)).abs() < 1e-6);
+        assert!((floor_elevation(2.5, 2) - (2.5 + 2.0 * FLOOR_H)).abs() < 1e-6);
 
         let tile = Tile3D::new(4, -3, 2);
         assert_eq!(

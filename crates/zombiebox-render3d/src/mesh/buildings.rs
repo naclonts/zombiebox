@@ -435,6 +435,49 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                     true
                 };
                 let top = z + if above { WALL_HEIGHT } else { FLOOR_H };
+                // Close the space beneath a pitched roof where an irregular wing's
+                // exterior wall lies inside the wing bounding rectangle.
+                if bs.has_pitched_roof
+                    && !cell(s, p, f + 1).is_some_and(|v| v.building_id == c.building_id)
+                    && matches!(
+                        c.kind,
+                        TileKind::ExteriorWall
+                            | TileKind::Window
+                            | TileKind::BrokenWindow
+                            | TileKind::Door { .. }
+                    )
+                {
+                    let wing = info.wing_at(info.wing_index_at(p, f));
+                    let rise = |vx: f32, vy: f32| {
+                        let (left, right) = (wing.min_x as f32, wing.max_x as f32);
+                        let (near, far) = (wing.min_y as f32, wing.max_y as f32);
+                        let dx = ((vx - left).min(right - vx) / ((right - left) * 0.5).max(1.0))
+                            .clamp(0.0, 1.0);
+                        let dy = ((vy - near).min(far - vy) / ((far - near) * 0.5).max(1.0))
+                            .clamp(0.0, 1.0);
+                        0.95 * dx.min(dy)
+                    };
+                    let segments: &[(f32, f32)] = match c.orientation {
+                        WallOrientation::AlongY => &[(0.0, 1.0)],
+                        WallOrientation::AlongX => &[(1.0, 0.0)],
+                        WallOrientation::Corner => &[(1.0, 0.0), (0.0, 1.0)],
+                    };
+                    for &(dx, dy) in segments {
+                        let a = Vec3::new(x - dx * 0.5, top, y - dy * 0.5);
+                        let b = Vec3::new(x + dx * 0.5, top, y + dy * 0.5);
+                        let c = a + Vec3::Y * rise(a.x, a.z);
+                        let d = b + Vec3::Y * rise(b.x, b.z);
+                        let m = wallmeta.with_tag(GeometryTag::WallUpper);
+                        if d.y > top + 1e-5 {
+                            out.push_triangle(a, b, d, color, m);
+                            out.push_triangle(a, d, b, color, m);
+                        }
+                        if c.y > top + 1e-5 {
+                            out.push_triangle(a, d, c, color, m);
+                            out.push_triangle(a, c, d, color, m);
+                        }
+                    }
+                }
                 let along_y = c.orientation == WallOrientation::AlongY;
                 let rect = |a0: f32, a1: f32| {
                     if along_y {

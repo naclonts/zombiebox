@@ -126,6 +126,8 @@ Results:
   pre-existing baseline failure `spatial_kinematics::county_seed_42_terrain_seam_and_diagonal_raycasts`
   (`oblique ray z mismatch: hit_z=5.28868 expected=4.1443267`). The same failure
   was reproduced from a clean worktree at the starting commit `abec79b`.
+  Follow-up: the ray hit a wooden prop before the terrain; the test now
+  isolates the live terrain quads and passes.
 
 ## Open findings / downstream notes
 

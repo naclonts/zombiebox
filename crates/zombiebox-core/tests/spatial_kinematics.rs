@@ -200,8 +200,14 @@ fn support_selection_anti_snap_and_airborne_sweep() {
     assert!((submerged.z - (-1.30)).abs() < 1e-6);
 
     // Airborne sweep selects highest surface in [z_to, z_from].
-    let hit = sweep_airborne_support(&candidates, 1.50, 0.80, params.max_walkable_slope, true)
-        .expect("airborne landing on 2F slab");
+    let hit = sweep_airborne_support(
+        &candidates,
+        FLOOR_H + 0.12,
+        0.80,
+        params.max_walkable_slope,
+        true,
+    )
+    .expect("airborne landing on 2F slab");
     assert!(hit.can_land);
     assert_eq!(hit.surface.id, SupportId::Floor(slab_tile));
 }
@@ -617,11 +623,14 @@ fn birch_street_apertures_door_toggles_and_window_shatter() {
         HitSurface::Collider(ColliderKind::Wall { tile: win })
     );
 
-    // 4. 2F BuildingSlab at z = 1.32 (slab sits at [1.388 - 0.16, 1.388] = [1.228, 1.388]).
+    // 4. Ray through the upper floor slab.
     let slab_hit = game
         .spatial()
         .raycast(
-            Ray3::new(Vec3::new(wx, wy + 2.0, 1.32), Vec3::new(0.0, -1.0, 0.0)),
+            Ray3::new(
+                Vec3::new(wx, wy + 2.0, FLOOR_H - 0.08),
+                Vec3::new(0.0, -1.0, 0.0),
+            ),
             4.0,
         )
         .expect("hits 2F slab");
@@ -669,11 +678,35 @@ fn birch_street_apertures_door_toggles_and_window_shatter() {
     );
 }
 
+// Keep the live terrain quads while excluding props and building surfaces that
+// can legitimately intercept a ray before it reaches the terrain.
+struct TerrainOnly<'a, S>(&'a S);
+
+impl<S: SpatialWorld> SpatialWorld for TerrainOnly<'_, S> {
+    fn terrain_at(&self, xy: Vec2) -> Option<TerrainSample> {
+        self.0.terrain_at(xy)
+    }
+
+    fn supports_at(&self, _xy: Vec2, out: &mut Vec<SupportSurface>) {
+        out.clear();
+    }
+
+    fn colliders_in(&self, _bounds: Aabb3, out: &mut Vec<Collider>) {
+        out.clear();
+    }
+
+    fn surface_quads_in(&self, min: Position, max: Position, out: &mut Vec<SurfaceQuad>) {
+        self.0.surface_quads_in(min, max, out);
+        out.retain(|quad| matches!(quad.surface, HitSurface::Terrain { .. }));
+    }
+}
+
 #[test]
 fn county_seed_42_terrain_seam_and_diagonal_raycasts() {
     let game = ActionGame::county(42);
     let world = game.world();
-    let spatial = game.spatial();
+    let live_spatial = game.spatial();
+    let spatial = TerrainOnly(&live_spatial);
 
     let wake = world.wake_position();
     let base_x = (wake.x / 16) * 16;
@@ -721,8 +754,7 @@ fn county_seed_42_terrain_seam_and_diagonal_raycasts() {
         let hit_expected_z = world.elevation_at(ohit.point.xy()).unwrap();
         assert!(
             (ohit.point.z - hit_expected_z).abs() < 1e-4,
-            "oblique ray z mismatch: hit_z={} expected={hit_expected_z}",
-            ohit.point.z
+            "oblique ray z mismatch: hit={ohit:?} target={target:?} expected={hit_expected_z}"
         );
     }
 }

@@ -593,7 +593,7 @@ fn multi_floor_3d_shooting_slab_occlusion_and_fall_injury_curve() {
     assert_eq!(
         game.hud().health,
         hp_before_f1_drop,
-        "1-story hang-drop (1.388u) must deal 0 fall damage"
+        "1-story hang-drop must deal 0 fall damage"
     );
     assert!(game.events().iter().any(|e| matches!(
         e,

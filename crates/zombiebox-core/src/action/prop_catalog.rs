@@ -75,11 +75,12 @@ macro_rules! define_props {
                 match self {
                     $(Self::$id => {
                         let ([w, d], [x, y, z]) = ($span, $half);
+                        let scale = self.presentation_scale();
                         PropDef {
                             id: self,
                             span: PropSpan::new(w, d),
-                            collision_min: Vec3::new(-x, -y, 0.0),
-                            collision_max: Vec3::new(x, y, z),
+                            collision_min: Vec3::new(-x * scale, -y * scale, 0.0),
+                            collision_max: Vec3::new(x * scale, y * scale, z * scale),
                             cover: PropCover::$cover,
                             attachment: CellAttachment::$layer,
                             durability: $hp,
@@ -89,6 +90,49 @@ macro_rules! define_props {
                     },)+
                 }
             }
+        }
+    }
+}
+
+impl PropId {
+    /// Furniture was authored at human meter scale; the survivor is 1.05 units tall.
+    /// Keep rendered meshes and their simulation bounds in the same scale.
+    pub const fn presentation_scale(self) -> f32 {
+        match self {
+            Self::Table
+            | Self::Sofa
+            | Self::Bed
+            | Self::Chair
+            | Self::Desk
+            | Self::Toilet
+            | Self::Fridge
+            | Self::FirstAidKit
+            | Self::HospitalBed
+            | Self::IvStand
+            | Self::ShoppingCart
+            | Self::BedDouble
+            | Self::CardboardBox
+            | Self::ChairDesk
+            | Self::BathroomSink
+            | Self::Bathtub
+            | Self::TableCoffee
+            | Self::KitchenSink
+            | Self::KitchenStove
+            | Self::KitchenCabinet
+            | Self::Television
+            | Self::BookcaseOpen
+            | Self::BookcaseClosed
+            | Self::MedicalCart
+            | Self::DiagnosticMonitor
+            | Self::Wheelchair
+            | Self::CheckoutTill
+            | Self::CheckoutLane
+            | Self::GondolaShelf
+            | Self::Note
+            | Self::Journal
+            | Self::TvStand
+            | Self::Nightstand => 0.6,
+            _ => 1.0,
         }
     }
 }

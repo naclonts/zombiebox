@@ -183,7 +183,7 @@ pub struct CameraConfig {
     pub orbit_focus_height: f32,
     pub orbit_fov_y: f32,
 
-    // Chase preset (perspective, aligned to FLOOR_H = 1.388)
+    // Chase preset (perspective, aligned to the building floor height)
     pub chase_pitch: f32,
     pub chase_distance: f32,
     pub chase_focus_height: f32,
@@ -1370,7 +1370,7 @@ mod tests {
                 .project_sim_to_screen(SimVec3::new(10.0, 20.0, FLOOR_H))
                 .unwrap();
             assert!((step_z.px.x - center.px.x).abs() < 1e-3);
-            assert!(((step_z.px.y - center.px.y) - (-34.0)).abs() < 0.01);
+            assert!(((step_z.px.y - center.px.y) - (-34.0 * FLOOR_H / 1.388)).abs() < 0.01);
 
             let se_fg = frame
                 .project_sim_to_screen(SimVec3::new(12.0, 22.0, 0.0))

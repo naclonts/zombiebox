@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn floor_height_constant_matches_baseline() {
-        assert!((FLOOR_H - 1.388).abs() < 1e-6);
+        assert!((FLOOR_H - 1.75).abs() < 1e-6);
     }
 
     #[test]

@@ -32,7 +32,7 @@ The repository contains the selected Kenney Furniture Kit GLBs under `kenney/fur
 | Shelves and generic cabinet | `bookcaseOpen.glb`, `bookcaseClosedDoors.glb` | Reuse for rooms and review the cabinet silhouette for a lockable storage variant. |
 | Stockroom and household boxes | `cardboardBoxClosed.glb`, `cardboardBoxOpen.glb` | Use as existing paired states where a cardboard box suits the room. |
 
-The first five samples have these source measurements after applying their authored node transforms. Extents are horizontal X × horizontal Z × vertical Y in GLB units. The converted furniture uses a common 2× scale and the manifest stores bounds in simulation XYZ meters. Check the final footprint in the gallery.
+The first five samples have these source measurements after applying their authored node transforms. Extents are horizontal X × horizontal Z × vertical Y in GLB units. The converted furniture uses a common 2× source scale and the manifest stores those authored bounds. At runtime, indoor furniture and its collision bounds use a further 0.6× scale to match the 1.05-unit survivor. Check the final footprint in the gallery.
 
 | Source GLB | Source extents | Source triangles |
 | --- | --- | ---: |

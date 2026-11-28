@@ -38,7 +38,7 @@ fn craftsman_props_have_render_prototypes() {
 fn procedural_furniture_fits_its_collider() {
     let library = PropMeshLibrary::shared();
     const SLOP: f32 = 0.02;
-    for id in [PropId::TvStand, PropId::Nightstand, PropId::Television] {
+    for &id in CRAFTSMAN_PROPS {
         let def = id.def();
         let (half_x, half_depth, height) = (
             def.collision_max.x,
@@ -66,4 +66,15 @@ fn procedural_furniture_fits_its_collider() {
             "{id:?} height {lo:?}..{hi:?}"
         );
     }
+}
+
+#[test]
+fn furniture_proportions_match_the_survivor_and_door() {
+    use zombiebox_core::{DOOR_OPENING_HEIGHT, PLAYER_HEIGHT, WALL_HEIGHT};
+    let fridge = PropId::Fridge.def().collision_max.z;
+    let stove = PropId::KitchenStove.def().collision_max.z;
+    let shelf = PropId::BookcaseOpen.def().collision_max.z;
+    assert!(stove > PLAYER_HEIGHT * 0.4 && stove < PLAYER_HEIGHT * 0.65);
+    assert!(fridge > PLAYER_HEIGHT && fridge < DOOR_OPENING_HEIGHT);
+    assert!(shelf < WALL_HEIGHT && fridge < WALL_HEIGHT);
 }

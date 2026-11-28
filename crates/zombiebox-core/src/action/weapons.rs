@@ -905,7 +905,7 @@ pub(crate) fn compute_player_aim_3d(
                 let cand_muzzle = player_body
                     .position
                     .with_z(foot_z + UPPER_LEDGE_MUZZLE_HEIGHT);
-                let ahead_xy = cand_muzzle.xy() + facing * 5.5;
+                let ahead_xy = cand_muzzle.xy() + facing * (5.5 * FLOOR_H / 1.388);
                 let gz = world.terrain_at(ahead_xy).map_or(0.0, |tr| tr.z);
                 let dir = (ahead_xy.extend(gz + 0.55) - cand_muzzle).normalized();
                 return (cand_muzzle, dir);
@@ -2904,7 +2904,7 @@ mod tests {
             MonsterId(1),
             MonsterKind::Shambler,
             0,
-            Tile3D::new(10, 5, 0),
+            Tile3D::new(13, 5, 0),
         )];
         let player = Pose {
             position: Vec2::new(5.0, 5.0),

@@ -2164,7 +2164,7 @@ impl ActionGame {
                         local.z.clamp(0.0, extent.z),
                     );
                 let dist = (face - eye).length();
-                if dist > INTERACT_CACHE_RADIUS || !self.has_line_of_sight_from(eye, face) {
+                if dist > INTERACT_FEATURE_RADIUS || !self.has_line_of_sight_from(eye, face) {
                     return None;
                 }
                 Some((dist, prop))
@@ -3972,19 +3972,19 @@ mod tests {
         );
         assert_eq!(ActionGame::compute_fall_damage(FLOOR_H * 2.0), (1, 16));
         assert_eq!(ActionGame::compute_fall_damage(FLOOR_H * 3.0), (2, 22));
-        let (cliff_dmg, cliff_rec) = ActionGame::compute_fall_damage(6.5);
-        assert!(cliff_dmg >= 3, "drop > 5.0 units must deal >= 3 HP damage");
+        let (cliff_dmg, cliff_rec) = ActionGame::compute_fall_damage(10.0);
+        assert!(cliff_dmg >= 3, "a four-story drop must deal >= 3 HP damage");
         assert_eq!(cliff_rec, 26);
 
         let mut game = ActionGame::residential(42);
         let start_hp = game.hud().health;
         let xy = game.player_body.position.xy();
         game.player_body = BodyState::airborne(
-            xy.extend(6.5),
+            xy.extend(10.0),
             Vec3::new(0.0, 0.0, -4.0),
             game.player_body.heading,
         );
-        game.fall_peak_z = Some(6.5);
+        game.fall_peak_z = Some(10.0);
 
         let mut landed_ev = None;
         for _ in 0..120 {
