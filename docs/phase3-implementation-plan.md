@@ -317,6 +317,8 @@ Host checks exercise deterministic placement and fit on seeds `0`, `1`, `7`, `42
 
 ### WP 3.7 — Highway gas station
 
+Handoff: [WP 3.7 handoff](phase3-wp37-handoff.md).
+
 - **Owns** retail compound definitions and gas station fixture. Coordinate with the catalog owner for a pump or counter addition.
 - **Build** independent mart and canopy placements on one parcel, paths and pump islands, test vehicle slots, a sign pylon, and a fixture driveway connected to a current road. Share checkout and shelf rules with the grocery. Keep open canopy cells outdoor and emit roof support through the common blueprint.
 - **Accept** a drive in, pass a pump, and exit or turn around with normal parking populated. Walk through the public path to the WC, read a sign, approach the till and stream away and back. Verify the two structures and each parked vehicle keep one stable identity. Hand off minimum feasible frontage, depth, and access parameters to WP 3.9.
@@ -326,7 +328,7 @@ Host checks exercise deterministic placement and fit on seeds `0`, `1`, `7`, `42
 - **Owns** `world.rs`, `world/geography.rs`, `world/relief.rs`, and new `world/town_planner.rs`.
 - **Build** natural terrain inputs, road graph and raster, highway ribbon, collector and residential cul-de-sac on an opt-in seed fixture. Use explicit tie-breaks, grade and water checks, and retain `ValleyMeta` or its replacement for terrain/bridge code. Put the first residential street on a reachable dry block.
 - **Accept** stable road hashes and routes from spawn to the primary arterial and residential street. Drive a motorcycle through the grades, junction and turnaround. Run the existing terrain seam and raycast checks. Record a clean pre-change baseline and diagnose any changed terrain failure before handing off.
-- **Hand off** frontage and lot input APIs, road classes, sampling units and route fixture coordinates.
+- **Hand off** frontage and lot input APIs, road classes, sampling units and route fixture coordinates. At this point, the primary game mode should be cutover to use this generated layout.
 
 ### WP 3.9 — Zoning, retail frontage and dressing
 
@@ -341,6 +343,8 @@ Host checks exercise deterministic placement and fit on seeds `0`, `1`, `7`, `42
 - **Accept** fixed review fixtures for each morphology, plus multi-seed topology/access regression. Drive a bridge and its approaches, and traverse dry foot routes on both banks. Inspect terrain seams and use canonical plan hashes to check repeatability. Confirm in a map view that the road hierarchy and town shapes differ visibly.
 
 ### WP 3.11 — County cutover and release checks
+
+This should be already done, but double check there's no straggling legacy generation, and clean up / remove legacy unused code and tests.
 
 - **Owns** final gating and `GENERATOR_VERSION` in `world.rs`, legacy parcel dispatch and site cleanup, `action/county.rs`, and county integration checks.
 - **Build** default dispatch for Phase 3 houses, grocery, gas and geography after fixture acceptance, and preserve current civic, downtown and cabin content through the adapter. Remove active Army Base landmarks, military lots, special materialization and obsolete tests together. Clean up the 4-quadrant paths only for migrated content. Update seed fixtures that intentionally change, documenting their new coordinates and keeping their assertions about behavior.
