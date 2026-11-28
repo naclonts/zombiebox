@@ -18,6 +18,8 @@ const STARTER_MAX_WALK: u32 = 13;
 const DISTANT_SEARCH_RADIUS: i32 = 15;
 const MIN_STARTER_DISTANCE: u32 = 2;
 const MIN_ROSTER_SEPARATION: u32 = 22;
+const DEPARTURE_LOOKAHEAD: i32 = 12;
+const BLOCKED_DEPARTURE_PENALTY: u64 = 150;
 
 /// Baseline placement for one generated motorcycle.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -166,16 +168,27 @@ fn starter_spawn(
             if d < MIN_STARTER_DISTANCE || !reachable.contains(&p) {
                 continue;
             }
-            let Some((heading, road_penalty)) = candidate_heading(world, p, &blockers) else {
+            let Some(((dx, dy), road_penalty)) = candidate_direction(world, p, &blockers) else {
                 continue;
             };
+            // A shoulder can face directly into a house across the road.
+            // Prefer a clear starter launch even when it moves down the block.
+            let blocked_departure = (1..=DEPARTURE_LOOKAHEAD).any(|distance| {
+                let ahead = Position::new(p.x + dx * distance, p.y + dy * distance);
+                world.tile_at(ahead).is_none_or(|tile| {
+                    !tile.ground.walkable()
+                        || tile.water.is_some()
+                        || !matches!(tile.feature, Feature::Empty | Feature::Path)
+                })
+            });
             let spawn = MotorcycleSpawn {
                 slot: 0,
                 tile: p,
-                heading,
+                heading: (dy as f32).atan2(dx as f32),
             };
             let score = u64::from(d) * 10
                 + u64::from(road_penalty) * 25
+                + u64::from(blocked_departure) * BLOCKED_DEPARTURE_PENALTY
                 + super::noise_for_vehicles(seed, tile_key(p)) % 10;
             candidates.push(Candidate {
                 spawn,
@@ -217,11 +230,11 @@ fn spawn_near_anchor(
             if d == 0 {
                 continue;
             }
-            if let Some((heading, road_penalty)) = candidate_heading(world, p, &blockers) {
+            if let Some(((dx, dy), road_penalty)) = candidate_direction(world, p, &blockers) {
                 let spawn = MotorcycleSpawn {
                     slot,
                     tile: p,
-                    heading,
+                    heading: (dy as f32).atan2(dx as f32),
                 };
                 let score = u64::from(d) * 10
                     + u64::from(road_penalty) * 25
@@ -244,7 +257,11 @@ fn spawn_near_anchor(
     })
 }
 
-fn candidate_heading(world: &World, p: Position, blockers: &LocalBlockers) -> Option<(f32, u8)> {
+fn candidate_direction(
+    world: &World,
+    p: Position,
+    blockers: &LocalBlockers,
+) -> Option<((i32, i32), u8)> {
     let tile = world.tile_at(p)?;
     if !tile.ground.walkable() || tile.water.is_some() {
         return None;
@@ -278,13 +295,13 @@ fn candidate_heading(world: &World, p: Position, blockers: &LocalBlockers) -> Op
             standings = standings.saturating_add(1);
         }
     }
-    let (dx, dy) = road?;
+    let direction = road?;
     if standings == 0 {
         return None;
     }
     // A shoulder or driveway is preferred; the road itself is a usable fallback.
     let road_penalty = u8::from(tile.ground.is_road());
-    Some(((dy as f32).atan2(dx as f32), road_penalty))
+    Some((direction, road_penalty))
 }
 
 fn local_blockers(world: &World, min: Position, max: Position) -> LocalBlockers {

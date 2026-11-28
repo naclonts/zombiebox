@@ -3,6 +3,7 @@
 pub mod archetypes;
 pub mod blueprint;
 mod dressing;
+mod floorplan;
 pub mod furnish;
 mod geography;
 pub mod massing;
@@ -190,11 +191,10 @@ pub struct World {
 }
 
 impl World {
-    /// Default county generation. Phase 3 replaces one existing lot with the
-    /// authored furnished Craftsman fixture so normal game entry points
-    /// exercise the new generation path.
+    /// Default county generation includes the furnished reference street so
+    /// normal play exercises both house generators.
     pub fn new(seed: u64) -> Self {
-        Self::with_fixture(seed, CountyFixture::CraftsmanLot)
+        Self::with_fixture(seed, CountyFixture::ResidentialStreet)
     }
 
     /// Explicitly build the pre-Phase-3 baseline for regression comparisons.

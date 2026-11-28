@@ -114,6 +114,7 @@ pub struct CountyStage {
     all_buildings: Vec<BuildingInfo>,
     registered_buildings: HashMap<BuildingUid, BuildingReg>,
     registered_blueprints: HashMap<StructureId, BuildingId>,
+    blueprint_stair_landings: HashMap<Tile3D, (i8, i8)>,
     blueprint_props: Vec<PropAnchor>,
     blueprint_prop_uids: HashSet<u64>,
     blueprint_readables: Vec<(ReadableId, PropAnchor)>,
@@ -156,6 +157,7 @@ impl CountyStage {
             all_buildings: Vec::new(),
             registered_buildings: HashMap::new(),
             registered_blueprints: HashMap::new(),
+            blueprint_stair_landings: HashMap::new(),
             blueprint_props: Vec::new(),
             blueprint_prop_uids: HashSet::new(),
             blueprint_readables: Vec::new(),
@@ -565,6 +567,21 @@ impl CountyStage {
             wing_count,
         });
         self.registered_blueprints.insert(structure.id, id);
+        for stair in &structure.blueprint.stairs {
+            for (endpoint, landing) in [
+                (stair.lower, stair.lower_landing),
+                (stair.upper, stair.upper_landing),
+            ] {
+                let tile =
+                    Tile3D::from_pos(structure.transform.local_to_world(endpoint), endpoint.floor);
+                let direction = (
+                    (landing.u - endpoint.u) as i8,
+                    (landing.v - endpoint.v) as i8,
+                );
+                self.blueprint_stair_landings
+                    .insert(tile, structure.transform.world_stair_dir(direction));
+            }
+        }
         for anchor in structure.planned_props() {
             if self.blueprint_prop_uids.insert(anchor.anchor_uid) {
                 self.blueprint_props.push(anchor);
@@ -587,6 +604,10 @@ impl CountyStage {
     /// layer ingests these through the existing `PropAnchor` registry.
     pub fn blueprint_prop_anchors(&self) -> &[PropAnchor] {
         &self.blueprint_props
+    }
+
+    pub(crate) fn blueprint_stair_landing(&self, tile: Tile3D) -> Option<(i8, i8)> {
+        self.blueprint_stair_landings.get(&tile).copied()
     }
 
     /// Readable signs/notes authored inside blueprint structures.
@@ -2439,6 +2460,10 @@ impl SpatialStageSource for CountyStage {
     fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
         self.building_by_id(id)
     }
+
+    fn authored_stair_landing(&self, tile: Tile3D) -> Option<(i8, i8)> {
+        self.blueprint_stair_landing(tile)
+    }
 }
 
 impl SpatialWorld for CountyStage {
@@ -2542,6 +2567,7 @@ impl CombatWorld for CountyStage {
         };
         let mut out = [None, None];
         let mut count = 0usize;
+        let landing_at = |dest| self.blueprint_stair_landing(dest).unwrap_or(cell.stair_dir);
 
         match cell.kind {
             TileKind::StairsUp => {
@@ -2552,7 +2578,7 @@ impl CombatWorld for CountyStage {
                             matches!(c.kind, TileKind::StairsDown | TileKind::StairsBoth)
                         })
                     {
-                        out[count] = Some((above, cell.stair_dir));
+                        out[count] = Some((above, landing_at(above)));
                         count += 1;
                     }
                 }
@@ -2565,7 +2591,7 @@ impl CombatWorld for CountyStage {
                             matches!(c.kind, TileKind::StairsUp | TileKind::StairsBoth)
                         })
                     {
-                        out[count] = Some((below, cell.stair_dir));
+                        out[count] = Some((below, landing_at(below)));
                         count += 1;
                     }
                 }
@@ -2578,7 +2604,7 @@ impl CombatWorld for CountyStage {
                             matches!(c.kind, TileKind::StairsDown | TileKind::StairsBoth)
                         })
                     {
-                        out[count] = Some((above, cell.stair_dir));
+                        out[count] = Some((above, landing_at(above)));
                         count += 1;
                     }
                 }
@@ -2589,7 +2615,7 @@ impl CombatWorld for CountyStage {
                             matches!(c.kind, TileKind::StairsUp | TileKind::StairsBoth)
                         })
                     {
-                        out[count] = Some((below, cell.stair_dir));
+                        out[count] = Some((below, landing_at(below)));
                         count += 1;
                     }
                 }
@@ -2870,7 +2896,9 @@ fn surface_for_room(room: Option<RoomKind>) -> Surface {
             | RoomKind::Storage
             | RoomKind::Barracks,
         ) => Surface::Driveway,
-        Some(RoomKind::Living | RoomKind::Hall | RoomKind::Shop) | None => Surface::WoodFloor,
+        Some(RoomKind::Living | RoomKind::Hall | RoomKind::Shop | RoomKind::Dining) | None => {
+            Surface::WoodFloor
+        }
     }
 }
 
@@ -2887,7 +2915,7 @@ fn prop_for_room(room: Option<RoomKind>, p: Position) -> PropKind {
                 PropKind::Table
             }
         }
-        Some(RoomKind::Office | RoomKind::Hall) | None => PropKind::Table,
+        Some(RoomKind::Office | RoomKind::Hall | RoomKind::Dining) | None => PropKind::Table,
         Some(RoomKind::Cells) => PropKind::Bench,
         Some(RoomKind::Armory | RoomKind::Storage | RoomKind::Garage | RoomKind::MotorPool) => {
             PropKind::Crate
@@ -3446,10 +3474,11 @@ mod tests {
     }
 
     #[test]
-    fn default_county_entry_uses_craftsman_fixture_and_legacy_is_explicit() {
+    fn default_county_entry_uses_reference_street_and_legacy_is_explicit() {
         let seed = 42;
         let world = World::new(seed);
-        assert_eq!(world.fixture(), CountyFixture::CraftsmanLot);
+        assert_eq!(world.fixture(), CountyFixture::ResidentialStreet);
+        assert_eq!(world.fixture_plans().len(), 2);
         let plan = world.fixture_plan().expect("default fixture plan");
         let fridge = plan.structures[0]
             .props_world()
@@ -3463,12 +3492,28 @@ mod tests {
         assert_eq!(World::legacy(seed).fixture(), CountyFixture::None);
         assert!(World::legacy(seed).fixture_plan().is_none());
 
-        let game = crate::action::ActionGame::county(seed);
+        let mut game = crate::action::ActionGame::county(seed);
+        game.teleport(Tile3D::from_pos(plan.frontage.access, 0))
+            .expect("fixture access");
         assert!(
             game.prop_anchors()
                 .iter()
                 .any(|anchor| anchor.anchor_uid == fridge.anchor_uid),
-            "default county run should stream the Craftsman fixtures"
+            "default county run should stream the Craftsman furniture"
+        );
+        let ranch = world
+            .fixture_plans()
+            .into_iter()
+            .find(|plan| !plan.outdoor.vehicle_slots.is_empty())
+            .expect("default county includes the ranch parcel");
+        game.teleport(Tile3D::from_pos(ranch.frontage.access, 0))
+            .expect("ranch access");
+        let car = ranch.outdoor.vehicle_slots[0].0;
+        assert!(
+            game.prop_anchors()
+                .iter()
+                .any(|anchor| anchor.id == crate::action::PropId::Car && anchor.tile.pos() == car),
+            "default county run should stream the ranch garage car"
         );
     }
 
@@ -3488,7 +3533,7 @@ mod tests {
             assert_eq!(cell.door_axis, Some(axis));
             let info = stage.building_by_id(cell.building_id).expect("door owner");
             assert_eq!(info.uid, BuildingUid(structure.id.0));
-            let base = info.foundation_z;
+            let base = info.foundation_z + f32::from(door.cell.floor) * FLOOR_H;
             let normal = axis.normal();
             let direction = Vec2::new(normal.0 as f32, normal.1 as f32);
             let center = tile.center();
@@ -3537,7 +3582,7 @@ mod tests {
     #[test]
     fn craftsman_fixture_selection_works_across_representative_seeds() {
         for seed in [0, 1, 2, 7, 42, 63, u64::MAX] {
-            let world = World::new(seed);
+            let world = World::with_fixture(seed, CountyFixture::CraftsmanLot);
             assert_eq!(world.fixture(), CountyFixture::CraftsmanLot, "seed {seed}");
             let plan = world
                 .fixture_plan()
@@ -3717,25 +3762,61 @@ mod tests {
 
     #[test]
     fn reference_street_doors_pass_capsule_sweeps_in_both_chunk_orders() {
-        let world = World::with_fixture(42, CountyFixture::ResidentialStreet);
-        let plans = world.fixture_plans();
-        assert_eq!(plans.len(), 2);
-        let mut chunks: Vec<_> = plans
-            .iter()
-            .flat_map(|plan| plan.structures.iter())
-            .flat_map(fixture_chunks)
-            .collect();
-        chunks.sort_unstable();
-        chunks.dedup();
-        let (mut forward, _, _) = CountyStage::new(&world, 42);
-        let (mut reverse, _, _) = CountyStage::new(&world, 42);
-        for &(cx, cy) in &chunks {
-            forward.materialize_chunk(&world, cx, cy);
+        for seed in [42, 63] {
+            let world = World::new(seed);
+            let plans = world.fixture_plans();
+            assert_eq!(plans.len(), 2);
+            let mut chunks: Vec<_> = plans
+                .iter()
+                .flat_map(|plan| plan.structures.iter())
+                .flat_map(fixture_chunks)
+                .collect();
+            chunks.sort_unstable();
+            chunks.dedup();
+            let (mut forward, _, _) = CountyStage::new(&world, seed);
+            let (mut reverse, _, _) = CountyStage::new(&world, seed);
+            for &(cx, cy) in &chunks {
+                forward.materialize_chunk(&world, cx, cy);
+            }
+            for &(cx, cy) in chunks.iter().rev() {
+                reverse.materialize_chunk(&world, cx, cy);
+            }
+            for structure in plans.iter().flat_map(|plan| &plan.structures) {
+                assert_eq!(
+                    blueprint_snapshot(&forward, structure),
+                    blueprint_snapshot(&reverse, structure)
+                );
+                assert_blueprint_door_sweep(&mut forward, structure);
+                assert_blueprint_door_sweep(&mut reverse, structure);
+            }
         }
-        for &(cx, cy) in chunks.iter().rev() {
-            reverse.materialize_chunk(&world, cx, cy);
-        }
-        for structure in plans.iter().flat_map(|plan| &plan.structures) {
+    }
+
+    #[test]
+    fn colonial_lot_streams_two_floors_in_both_chunk_orders() {
+        for seed in [42, u64::MAX] {
+            let world = World::with_fixture(seed, CountyFixture::ColonialLot);
+            let plan = world.fixture_plan().expect("Colonial review lot");
+            let structure = &plan.structures[0];
+            assert_eq!(structure.blueprint.floors(), 2);
+            assert!(!structure.blueprint.doors.is_empty());
+            assert!(
+                structure
+                    .blueprint
+                    .doors
+                    .iter()
+                    .any(|door| door.cell.floor == 1),
+                "the sweep must include upstairs doors"
+            );
+            let chunks = fixture_chunks(structure);
+            let (mut forward, _, _) = CountyStage::new(&world, seed);
+            let (mut reverse, _, _) = CountyStage::new(&world, seed);
+            for &(cx, cy) in &chunks {
+                forward.materialize_chunk(&world, cx, cy);
+            }
+            for &(cx, cy) in chunks.iter().rev() {
+                reverse.materialize_chunk(&world, cx, cy);
+            }
             assert_eq!(
                 blueprint_snapshot(&forward, structure),
                 blueprint_snapshot(&reverse, structure)
@@ -3791,7 +3872,8 @@ mod tests {
             let tile = Tile3D::from_pos(stair, floor);
             let (dest, direction) = stage.stair_link(tile).expect("live stair link");
             assert_eq!(dest.floor, 1 - floor);
-            assert_eq!(direction, structure.transform.world_stair_dir((1, 0)));
+            let landing_dir = if floor == 0 { (-1, 0) } else { (1, 0) };
+            assert_eq!(direction, structure.transform.world_stair_dir(landing_dir));
         }
         let adjacent = structure
             .transform

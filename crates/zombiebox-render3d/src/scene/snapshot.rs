@@ -609,6 +609,7 @@ const fn building_style_discriminant(s: BuildingStyle) -> u8 {
         BuildingStyle::ArmyBarracks => 9,
         BuildingStyle::WoodlandCabin => 10,
         BuildingStyle::RuralBarn => 11,
+        BuildingStyle::RanchSage => 12,
     }
 }
 

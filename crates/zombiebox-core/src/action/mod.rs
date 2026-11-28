@@ -1908,6 +1908,11 @@ impl ActionGame {
         let probe_origin = dest
             .center()
             .extend(gz + dest.floor as f32 * FLOOR_H + 0.30);
+        let authored_floor_z = self.blueprint_stair_landing(dest).and_then(|_| {
+            self.stage
+                .building_by_id(self.stage.building_id(dest))
+                .map(|building| building.foundation_z + f32::from(dest.floor) * FLOOR_H)
+        });
         let candidate_dirs = [
             landing,
             (-landing.0, -landing.1),
@@ -1921,16 +1926,41 @@ impl ActionGame {
             }
             let exit_tile = Tile3D::new(dest.x + d.0 as i32, dest.y + d.1 as i32, dest.floor);
             let d_vec = Vec2::new(d.0 as f32, d.1 as f32);
-            if self.stage.is_walkable(exit_tile, false)
-                && self
-                    .stage
+            let clear = if let Some(z) = authored_floor_z {
+                // A horizontal ray from the stair center meets the descending
+                // flight itself. Snap landings need clearance from solid volumes.
+                let start = dest.center();
+                let delta = d_vec * 0.78;
+                let end = start + delta;
+                let mut colliders = Vec::new();
+                self.spatial().colliders_in(
+                    Aabb3::from_points(
+                        start.extend(z + 0.01),
+                        end.extend(z + PLAYER_HEIGHT - 0.01),
+                    )
+                    .expand_vec(Vec3::new(PLAYER_RADIUS, PLAYER_RADIUS, 0.0)),
+                    &mut colliders,
+                );
+                colliders.iter().all(|collider| {
+                    crate::spatial::collision::sweep_circle_rect_2d(
+                        start,
+                        delta,
+                        PLAYER_RADIUS,
+                        collider.bounds.min.xy(),
+                        collider.bounds.max.xy(),
+                    )
+                    .is_none()
+                })
+            } else {
+                self.stage
                     .raycast_filtered(
                         Ray3::new(probe_origin, d_vec.normalized().extend(0.0)),
                         0.78,
                         QueryFilter::DEFAULT,
                     )
                     .is_none()
-            {
+            };
+            if self.stage.is_walkable(exit_tile, false) && clear {
                 chosen_pos = Some(dest.center() + d_vec * 0.78);
                 break;
             }
@@ -2560,6 +2590,13 @@ impl ActionGame {
 
     pub(crate) fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell> {
         self.stage.spatial_cell(tile)
+    }
+
+    pub(crate) fn blueprint_stair_landing(&self, tile: Tile3D) -> Option<(i8, i8)> {
+        match &self.stage {
+            Stage::County(stage) => stage.blueprint_stair_landing(tile),
+            Stage::Residential(_) => None,
+        }
     }
 
     pub(crate) fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
@@ -3624,95 +3661,104 @@ mod tests {
 
     #[test]
     fn ranch_garage_connection_is_walkable_in_live_action() {
-        let world = World::with_fixture(42, crate::CountyFixture::ResidentialStreet);
+        use crate::world::RoomKind;
+        use crate::world::blueprint::SpaceId;
+
+        let world = World::new(42);
         let structure = world
             .fixture_plans()
             .into_iter()
             .flat_map(|p| &p.structures)
             .find(|s| s.archetype.starts_with("ranch_l_wing"))
             .expect("reference street ranch");
-        let door = structure
-            .blueprint
-            .doors
-            .iter()
-            .find(|d| {
-                d.kind == crate::DoorKind::Interior
-                    && structure.blueprint.rooms.iter().any(|r| {
-                        r.wing == 1
-                            && (d.connects.0 == crate::world::blueprint::SpaceId::Room(r.id)
-                                || d.connects.1 == crate::world::blueprint::SpaceId::Room(r.id))
-                    })
-            })
-            .expect("garage connector");
-        let sign = [-1, 1]
-            .into_iter()
-            .find(|&sign| {
+        let room_id = |kind| {
+            SpaceId::Room(
                 structure
                     .blueprint
-                    .cell(crate::LocalCell::new(door.cell.u + sign, door.cell.v, 0))
-                    .is_some_and(|cell| cell.wing == 1 && cell.kind.walkable())
-            })
-            .expect("garage side of connector");
-        let start = structure.transform.local_to_world(crate::LocalCell::new(
-            door.cell.u - sign,
-            door.cell.v,
-            0,
-        ));
-        let target = structure.transform.local_to_world(crate::LocalCell::new(
-            door.cell.u + 2 * sign,
-            door.cell.v,
-            0,
-        ));
-        let door_pos = structure.transform.local_to_world(door.cell);
+                    .rooms
+                    .iter()
+                    .find(|room| room.kind == kind)
+                    .expect("ranch room")
+                    .id,
+            )
+        };
+        let garage = room_id(RoomKind::Garage);
+        let utility = room_id(RoomKind::Storage);
+        let kitchen = room_id(RoomKind::Kitchen);
+        let mut crossings = Vec::new();
+        for (from, to) in [(kitchen, utility), (utility, garage)] {
+            let door = structure
+                .blueprint
+                .doors
+                .iter()
+                .find(|door| {
+                    door.kind == crate::DoorKind::Interior
+                        && (door.connects == (from, to) || door.connects == (to, from))
+                })
+                .expect("interior door along the garage to kitchen route");
+            let (du, dv) = door.tangent.normal();
+            let adjacent =
+                |sign| crate::LocalCell::new(door.cell.u + du * sign, door.cell.v + dv * sign, 0);
+            let sign = [-1, 1]
+                .into_iter()
+                .find(|&sign| {
+                    structure
+                        .blueprint
+                        .cell(adjacent(sign))
+                        .and_then(|cell| cell.room)
+                        .map(SpaceId::Room)
+                        == Some(to)
+                })
+                .expect("door opens onto the destination room");
+            let transform = structure.transform;
+            crossings.push((
+                transform.local_to_world(adjacent(-sign)),
+                transform.local_to_world(door.cell),
+                transform.local_to_world(adjacent(sign)),
+                to == garage,
+            ));
+        }
+
         let mut game = ActionGame::county_with_world(world);
-        assert_eq!(
-            game.teleport(Tile3D::from_pos(start, 0)),
-            Some(Tile3D::from_pos(start, 0))
-        );
-        game.monsters.clear();
-        game.step(ActionInput {
-            interact: true,
-            ..ActionInput::default()
-        });
-        assert!(
-            matches!(
-                game.stage.tile_kind(Tile3D::from_pos(door_pos, 0)),
-                TileKind::Door { open: true, .. }
-            ),
-            "garage connector should open"
-        );
-        let direction =
-            Vec2::new((target.x - start.x) as f32, (target.y - start.y) as f32).normalized();
-        for _ in 0..180 {
-            if game
-                .player
-                .position
-                .distance(Tile3D::from_pos(target, 0).center())
-                < 0.35
-            {
-                break;
-            }
+        for (start, door, target, enters_garage) in crossings {
+            let start_tile = Tile3D::from_pos(start, 0);
+            let door_tile = Tile3D::from_pos(door, 0);
+            let target_tile = Tile3D::from_pos(target, 0);
+            assert_eq!(game.teleport(start_tile), Some(start_tile));
+            game.monsters.clear();
             game.step(ActionInput {
-                movement: direction,
+                interact: true,
                 ..ActionInput::default()
             });
+            assert!(matches!(
+                game.stage.tile_kind(door_tile),
+                TileKind::Door { open: true, .. }
+            ));
+            for _ in 0..120 {
+                let delta = target_tile.center() - game.player.position;
+                if delta.length() < 0.22 {
+                    break;
+                }
+                game.step(ActionInput {
+                    movement: delta.normalized(),
+                    ..ActionInput::default()
+                });
+            }
+            assert!(
+                game.player.position.distance(target_tile.center()) < 0.22,
+                "interior crossing from {start:?} to {target:?} blocked"
+            );
+            if enters_garage {
+                let info = game
+                    .stage
+                    .building_by_id(game.stage.building_id(target_tile))
+                    .unwrap();
+                assert_ne!(
+                    info.cutaway_slot_at(start, 0),
+                    info.cutaway_slot_at(target, 0)
+                );
+            }
         }
-        assert!(
-            game.player
-                .position
-                .distance(Tile3D::from_pos(target, 0).center())
-                < 0.35,
-            "survivor did not reach garage: {:?}, target {target:?}",
-            game.player.position
-        );
-        let info = game
-            .stage
-            .building_by_id(game.stage.building_id(Tile3D::from_pos(target, 0)))
-            .unwrap();
-        assert_ne!(
-            info.cutaway_slot_at(start, 0),
-            info.cutaway_slot_at(target, 0)
-        );
     }
 
     #[test]
@@ -3834,6 +3880,142 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn colonial_approach_and_two_way_stairs_work_in_live_action() {
+        for seed in [42, u64::MAX] {
+            let world = World::with_fixture(seed, crate::CountyFixture::ColonialLot);
+            let plan = world.fixture_plan().expect("Colonial review lot");
+            assert_eq!(plan.zone, crate::world::blueprint::ZoneKind::Residential);
+            let structure = &plan.structures[0];
+            let access = plan.frontage.access;
+            let front_door = structure.front_door;
+            let paths = plan.outdoor.paths.clone();
+            let (dx, dy) = plan.frontage.side.inward();
+            let inside = Position::new(front_door.x + dx, front_door.y + dy);
+            let stairs = structure.blueprint.stairs[0];
+            let lower =
+                Tile3D::from_pos(structure.transform.local_to_world(stairs.lower_landing), 0);
+            let upper =
+                Tile3D::from_pos(structure.transform.local_to_world(stairs.upper_landing), 1);
+            let route_to_stairs = {
+                use crate::world::blueprint::BlueprintKind;
+                use std::collections::{HashMap, HashSet, VecDeque};
+                let blueprint = &structure.blueprint;
+                let hall_id = blueprint.cell(stairs.lower_landing).unwrap().room.unwrap();
+                let hall: HashSet<_> = blueprint
+                    .cells
+                    .iter()
+                    .filter(|(local, cell)| {
+                        local.floor == 0
+                            && cell.room == Some(hall_id)
+                            && cell.kind == BlueprintKind::Floor
+                    })
+                    .map(|(&local, _)| structure.transform.local_to_world(local))
+                    .collect();
+                assert!(hall.contains(&inside));
+                let mut pending = VecDeque::from([inside]);
+                let mut previous = HashMap::from([(inside, inside)]);
+                while let Some(pos) = pending.pop_front() {
+                    if pos == lower.pos() {
+                        break;
+                    }
+                    for (dx, dy) in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
+                        let next = Position::new(pos.x + dx, pos.y + dy);
+                        if hall.contains(&next)
+                            && let std::collections::hash_map::Entry::Vacant(entry) =
+                                previous.entry(next)
+                        {
+                            entry.insert(pos);
+                            pending.push_back(next);
+                        }
+                    }
+                }
+                let mut route = Vec::new();
+                let mut pos = lower.pos();
+                while pos != inside {
+                    route.push(pos);
+                    pos = *previous
+                        .get(&pos)
+                        .expect("stairs reachable through the entry hall");
+                }
+                route
+            };
+            let road = Position::new(access.x - dx, access.y - dy);
+            assert!(
+                world
+                    .tile_at(road)
+                    .is_some_and(|tile| tile.ground.is_road())
+            );
+            let mut game = ActionGame::county_with_world(world);
+            let start = Tile3D::from_pos(road, 0);
+            assert_eq!(game.teleport(start), Some(start));
+            game.monsters.clear();
+            let walk_to = |game: &mut ActionGame, pos: Position, door: bool| {
+                let destination = Tile3D::from_pos(pos, 0).center();
+                let mut opened = false;
+                for _ in 0..90 {
+                    let delta = destination - game.player.position;
+                    if delta.length() < 0.19 {
+                        break;
+                    }
+                    let interact = door && !opened && delta.length() < 0.9;
+                    opened |= interact;
+                    game.step(ActionInput {
+                        movement: if interact {
+                            Vec2::ZERO
+                        } else {
+                            delta.normalized()
+                        },
+                        interact,
+                        ..ActionInput::default()
+                    });
+                }
+                assert!(
+                    game.player.position.distance(destination) < 0.19,
+                    "seed {seed} cannot reach {pos:?} from {:?}",
+                    game.player.position
+                );
+            };
+            walk_to(&mut game, access, false);
+            let mut last = access;
+            assert!(!paths.is_empty());
+            for (start, end) in paths {
+                assert_eq!(start, last);
+                assert!(start.x == end.x || start.y == end.y);
+                let mut pos = start;
+                while pos != end {
+                    pos.x += (end.x - pos.x).signum();
+                    pos.y += (end.y - pos.y).signum();
+                    walk_to(&mut game, pos, pos == front_door);
+                }
+                last = end;
+            }
+            assert_eq!(last, front_door);
+            walk_to(&mut game, inside, false);
+            for pos in route_to_stairs.into_iter().rev() {
+                walk_to(&mut game, pos, false);
+            }
+            for arrival in [upper, lower] {
+                for _ in 0..40 {
+                    game.step(ActionInput::default());
+                }
+                game.step(ActionInput {
+                    interact: true,
+                    ..ActionInput::default()
+                });
+                assert_eq!(game.player_tile(), arrival, "seed {seed}");
+                assert!(game.events().iter().any(|event| matches!(
+                    event,
+                    ActionEvent::FloorChanged {
+                        to_floor,
+                        via: FloorTransition::Stairs,
+                        ..
+                    } if *to_floor == arrival.floor
+                )));
+            }
+        }
     }
 
     #[test]

@@ -388,18 +388,7 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                     let wing = info.wing_at(info.wing_index_at(p, f));
                     if bs.has_pitched_roof {
                         // Shared vertex heights make roof slopes continuous across tiles/chunks.
-                        let rise = |vx: f32, vy: f32| {
-                            let left = wing.min_x as f32;
-                            let right = wing.max_x as f32;
-                            let near = wing.min_y as f32;
-                            let far = wing.max_y as f32;
-                            let dx = ((vx - left).min(right - vx)
-                                / ((right - left) * 0.5).max(1.0))
-                            .clamp(0.0, 1.0);
-                            let dy = ((vy - near).min(far - vy) / ((far - near) * 0.5).max(1.0))
-                                .clamp(0.0, 1.0);
-                            0.95 * dx.min(dy)
-                        };
+                        let rise = |vx, vy| info.style.roof_rise_at(wing, vx, vy);
                         let a = Vec3::new(rx0, eave + rise(rx0, ry0), ry0);
                         let b = Vec3::new(rx1, eave + rise(rx1, ry0), ry0);
                         let d = Vec3::new(rx0, eave + rise(rx0, ry1), ry1);
@@ -448,15 +437,7 @@ pub(crate) fn build_chunk_building_shell(s: &ChunkSnapshot) -> MeshBuffer {
                     )
                 {
                     let wing = info.wing_at(info.wing_index_at(p, f));
-                    let rise = |vx: f32, vy: f32| {
-                        let (left, right) = (wing.min_x as f32, wing.max_x as f32);
-                        let (near, far) = (wing.min_y as f32, wing.max_y as f32);
-                        let dx = ((vx - left).min(right - vx) / ((right - left) * 0.5).max(1.0))
-                            .clamp(0.0, 1.0);
-                        let dy = ((vy - near).min(far - vy) / ((far - near) * 0.5).max(1.0))
-                            .clamp(0.0, 1.0);
-                        0.95 * dx.min(dy)
-                    };
+                    let rise = |vx, vy| info.style.roof_rise_at(wing, vx, vy);
                     let segments: &[(f32, f32)] = match c.orientation {
                         WallOrientation::AlongY => &[(0.0, 1.0)],
                         WallOrientation::AlongX => &[(1.0, 0.0)],
@@ -667,6 +648,37 @@ mod tests {
             .collect();
         assert!(roof.iter().any(|v| v.normal[1] > 0.0));
         assert!(roof.iter().any(|v| v.normal[1] < 0.0));
+    }
+
+    #[test]
+    fn ranch_style_lowers_the_meshed_roof_above_the_same_eaves() {
+        let game = ActionGame::residential(42);
+        let info = game.buildings()[0];
+        let coord = ChunkCoord::from_pos(Position::new(info.x, info.y));
+        let mut snapshot = build_chunk_snapshot(&game, coord, 1);
+        let peak_rise = |snapshot: &ChunkSnapshot| {
+            build_chunk_building_shell(snapshot)
+                .vertices
+                .iter()
+                .filter_map(|vertex| {
+                    let meta = vertex.unpacked_meta();
+                    (meta.tag == GeometryTag::Roof && meta.building_id == info.cutaway_slot(0))
+                        .then_some(
+                            vertex.position[1] - info.foundation_z - meta.floor as f32 * FLOOR_H,
+                        )
+                })
+                .fold(0.0, f32::max)
+        };
+        let standard = peak_rise(&snapshot);
+        snapshot
+            .buildings
+            .iter_mut()
+            .find(|building| building.info.id == info.id)
+            .unwrap()
+            .info
+            .style = zombiebox_core::BuildingStyle::RanchSage;
+        let ranch = peak_rise(&snapshot);
+        assert!(ranch > 0.0 && ranch < standard);
     }
 
     #[test]

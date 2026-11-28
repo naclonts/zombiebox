@@ -68,7 +68,7 @@ impl MaterialRegistry {
     pub fn for_building_style(style: BuildingStyle) -> RetroMaterial {
         use BuildingStyle::*;
         match style {
-            BirchSage => m(
+            BirchSage | RanchSage => m(
                 c(177, 174, 126),
                 c(103, 112, 83),
                 c(231, 205, 151),

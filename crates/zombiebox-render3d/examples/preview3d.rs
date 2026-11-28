@@ -3,7 +3,8 @@
 use glam::{UVec2, Vec3};
 use std::path::PathBuf;
 use zombiebox_core::{
-    ActionGame, CountyFixture, Ground, LandmarkKind, Position, Tile3D, WORLD_SIZE, Water, World,
+    ActionGame, CountyFixture, Ground, LandmarkKind, Position, RoomKind, Tile3D, WORLD_SIZE, Water,
+    World,
 };
 use zombiebox_render3d::coords::{heading_to_render_quat, sim_to_render_point};
 use zombiebox_render3d::{
@@ -25,6 +26,7 @@ enum SceneChoice {
     CountyWoods,
     CountyCraftsman,
     CountyResidentialStreet,
+    CountyColonial,
     CountyMountains,
 }
 
@@ -40,6 +42,7 @@ impl SceneChoice {
             "woods" | "county-woods" => Ok(Self::CountyWoods),
             "craftsman" | "craftsman-lot" => Ok(Self::CountyCraftsman),
             "residential-street" => Ok(Self::CountyResidentialStreet),
+            "colonial" | "colonial-lot" => Ok(Self::CountyColonial),
             "mountains" | "county-mountains" => Ok(Self::CountyMountains),
             other => Err(format!("Unknown --scene '{other}'")),
         }
@@ -668,15 +671,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if scene != SceneChoice::BirchStreet {
-        let world = if scene == SceneChoice::CountyResidentialStreet {
-            World::with_fixture(seed, CountyFixture::ResidentialStreet)
-        } else {
-            World::new(42)
+        let world = match scene {
+            SceneChoice::CountyCraftsman => World::with_fixture(seed, CountyFixture::CraftsmanLot),
+            SceneChoice::CountyResidentialStreet => {
+                World::with_fixture(seed, CountyFixture::ResidentialStreet)
+            }
+            SceneChoice::CountyColonial => World::with_fixture(seed, CountyFixture::ColonialLot),
+            _ => World::new(42),
         };
         let mut county = ActionGame::county_with_world(world.clone());
         let mut mgr = SceneManager::new();
-        if scene == SceneChoice::CountyResidentialStreet {
-            for plan in world.fixture_plans() {
+        if matches!(
+            scene,
+            SceneChoice::CountyResidentialStreet | SceneChoice::CountyColonial
+        ) {
+            let plans = world.fixture_plans();
+            for plan in &plans {
                 println!(
                     "parcel {:?}..{:?}, frontage {:?}, structures {:?}, slots {:?}",
                     plan.bounds.min,
@@ -689,44 +699,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     plan.outdoor.vehicle_slots
                 );
             }
-            let plans = world.fixture_plans();
-            if plans.len() != 2 {
-                return Err("no compatible reference street".into());
-            }
-            let a = plans[0].structures[0].front_door;
-            let b = plans[1].structures[0].front_door;
-            let (ix, iy) = plans[0].frontage.side.inward();
-            let target = match focus_name.as_str() {
-                "overview" => Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8),
-                "ranch" | "craftsman" => {
-                    let plan = plans
-                        .iter()
-                        .find(|p| {
-                            p.structures[0]
-                                .name
-                                .to_ascii_lowercase()
-                                .contains(&focus_name)
-                        })
-                        .ok_or("requested house not found")?;
-                    let structure = &plan.structures[0];
-                    let door = structure.front_door;
-                    let bounds = structure.bounds;
-                    let (cx, cy) = (
-                        (bounds.min.x + bounds.max.x) / 2,
-                        (bounds.min.y + bounds.max.y) / 2,
-                    );
-                    if ix == 0 {
-                        Position::new(cx, door.y - iy * 6)
-                    } else {
-                        Position::new(door.x - ix * 6, cy)
+            let plan = plans.first().ok_or("no compatible fixture lot")?;
+            let (ix, iy) = plan.frontage.side.inward();
+            let (target, scene_name, orbit_distance) = if scene == SceneChoice::CountyColonial {
+                let structure = &plan.structures[0];
+                let door = structure.front_door;
+                let (target, distance) = match focus_name.as_str() {
+                    "overview" => (Tile3D::new(door.x - ix * 5, door.y - iy * 5, 0), 1.35),
+                    "upstairs" => {
+                        let landing = structure.blueprint.stairs[0].upper_landing;
+                        (
+                            Tile3D::from_pos(
+                                structure.transform.local_to_world(landing),
+                                landing.floor,
+                            ),
+                            1.25,
+                        )
                     }
-                }
-                _ => return Err("--focus must be overview, ranch or craftsman".into()),
+                    "bedroom" => {
+                        let room = structure
+                            .blueprint
+                            .rooms
+                            .iter()
+                            .find(|room| room.kind == RoomKind::Bedroom)
+                            .ok_or("Colonial fixture has no bedroom")?;
+                        let count = room.cells.len() as i32;
+                        let (u, v) = room
+                            .cells
+                            .iter()
+                            .fold((0, 0), |(u, v), cell| (u + cell.u, v + cell.v));
+                        let target = room
+                            .cells
+                            .iter()
+                            .min_by_key(|cell| {
+                                (cell.u * count - u).abs() + (cell.v * count - v).abs()
+                            })
+                            .ok_or("Colonial bedroom is empty")?;
+                        (
+                            Tile3D::from_pos(
+                                structure.transform.local_to_world(*target),
+                                room.floor,
+                            ),
+                            1.0,
+                        )
+                    }
+                    _ => {
+                        return Err(
+                            "--focus for colonial must be overview, upstairs or bedroom".into()
+                        );
+                    }
+                };
+                (target, "colonial", distance)
+            } else {
+                let other = plans.get(1).ok_or("no compatible reference street")?;
+                let a = plan.structures[0].front_door;
+                let b = other.structures[0].front_door;
+                let target = match focus_name.as_str() {
+                    "overview" => Position::new((a.x + b.x) / 2 - ix * 8, (a.y + b.y) / 2 - iy * 8),
+                    "ranch" | "craftsman" => {
+                        let plan = plans
+                            .iter()
+                            .find(|p| {
+                                p.structures[0]
+                                    .name
+                                    .to_ascii_lowercase()
+                                    .contains(&focus_name)
+                            })
+                            .ok_or("requested house not found")?;
+                        let structure = &plan.structures[0];
+                        let door = structure.front_door;
+                        let bounds = structure.bounds;
+                        let (cx, cy) = (
+                            (bounds.min.x + bounds.max.x) / 2,
+                            (bounds.min.y + bounds.max.y) / 2,
+                        );
+                        if ix == 0 {
+                            Position::new(cx, door.y - iy * 6)
+                        } else {
+                            Position::new(door.x - ix * 6, cy)
+                        }
+                    }
+                    _ => return Err("--focus must be overview, ranch or craftsman".into()),
+                };
+                let distance = if focus_name == "overview" { 2.5 } else { 1.3 };
+                (Tile3D::from_pos(target, 0), "residential-street", distance)
             };
-            println!(
-                "street focus {target:?}; teleport {:?}",
-                county.teleport(Tile3D::from_pos(target, 0))
-            );
+            let arrived = county
+                .teleport(target)
+                .ok_or("fixture focus is inaccessible")?;
+            println!("{scene_name} focus {target:?}; arrived at {arrived:?}");
 
             let mut presentation = Presentation::new(&ctx, size.0, size.1);
             presentation.camera_mut().set_mode(mode);
@@ -737,12 +798,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 presentation
                     .camera_mut()
-                    .orbit_scale_distance(if focus_name == "overview" { 2.5 } else { 1.3 });
+                    .orbit_scale_distance(orbit_distance);
             }
             let out_path = positional_out.unwrap_or_else(|| {
-                out_dir.join(format!(
-                    "residential-street-s{seed}-{focus_name}-{mode:?}.png"
-                ))
+                out_dir.join(format!("{scene_name}-s{seed}-{focus_name}-{mode:?}.png"))
             });
             let start = std::time::Instant::now();
             presentation

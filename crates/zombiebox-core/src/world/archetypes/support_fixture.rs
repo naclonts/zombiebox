@@ -98,7 +98,7 @@ pub fn support_fixture_blueprint() -> BlueprintGrid {
         .with_room(u16::from(floor) + 1)
         .indoor()
         .with_roof();
-        cell.stair_dir = (1, 0);
+        cell.stair_dir = if floor == 0 { (1, 0) } else { (-1, 0) };
         bp.set_cell(LocalCell::new(3, 3, floor), cell);
         bp.rooms.push(RoomMeta {
             id: u16::from(floor) + 1,
@@ -119,7 +119,7 @@ pub fn support_fixture_blueprint() -> BlueprintGrid {
         lower: LocalCell::new(3, 3, 0),
         upper: LocalCell::new(3, 3, 1),
         lower_landing: LocalCell::new(4, 3, 0),
-        upper_landing: LocalCell::new(4, 3, 1),
+        upper_landing: LocalCell::new(2, 3, 1),
     });
     bp
 }

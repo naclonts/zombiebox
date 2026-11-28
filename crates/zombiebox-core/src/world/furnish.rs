@@ -179,15 +179,24 @@ impl Occupancy {
 pub fn furnish(seed: u64, blueprint: &mut BlueprintGrid) -> Result<FurnishReport, FitError> {
     let mut reserved = reserve_circulation(blueprint);
     let mut occupancy = Occupancy::default();
-    let mut placed_by_rule: BTreeMap<RuleKey, Vec<PlacedProp>> = BTreeMap::new();
     let mut placed_props: Vec<PlannedProp> = Vec::new();
     let mut required_keys = BTreeSet::new();
+    let mut seen_grammars = BTreeSet::new();
 
     for room in blueprint.rooms.clone() {
+        // Relational rules refer to fixtures in this room, not a previous room.
+        let mut placed_by_rule: BTreeMap<RuleKey, Vec<PlacedProp>> = BTreeMap::new();
         let rules = rules_for(room.kind);
-        if rules.is_empty() {
+        let Some(first_rule) = rules.first() else {
             continue;
-        }
+        };
+        // Keep the first room's existing placement keys. Namespace subsequent
+        // rooms before placing anything, so optional props never affect IDs.
+        let namespace = if seen_grammars.insert(first_rule.key) {
+            0
+        } else {
+            u32::from(room.id) << 16
+        };
         let room_cells = room_cell_set(blueprint, &room);
         if room_cells.is_empty() {
             continue;
@@ -213,6 +222,7 @@ pub fn furnish(seed: u64, blueprint: &mut BlueprintGrid) -> Result<FurnishReport
             for (rule, placed) in group_rules.iter().zip(fixtures) {
                 record_placement(
                     &room,
+                    namespace,
                     rule,
                     0,
                     placed,
@@ -241,6 +251,7 @@ pub fn furnish(seed: u64, blueprint: &mut BlueprintGrid) -> Result<FurnishReport
                 )? {
                     record_placement(
                         &room,
+                        namespace,
                         rule,
                         copy,
                         placed,
@@ -264,6 +275,7 @@ pub fn furnish(seed: u64, blueprint: &mut BlueprintGrid) -> Result<FurnishReport
 
 fn record_placement(
     room: &RoomMeta,
+    namespace: u32,
     rule: &PropPlacementRule,
     copy: u8,
     placed: PlacedProp,
@@ -271,7 +283,9 @@ fn record_placement(
     placed_props: &mut Vec<PlannedProp>,
     required_keys: &mut BTreeSet<LocalPlacementKey>,
 ) {
-    let key = placement_key(rule.key, copy);
+    let in_room = |base: LocalPlacementKey| LocalPlacementKey(base.0 | namespace);
+    let key = in_room(placement_key(rule.key, copy));
+    let host = host_key(rule).map(in_room);
     // Attachments sit on their host's surface. Their xy offset already
     // centers them on the host, so only the surface height is added here.
     let offset_m = match rule.strategy {
@@ -288,7 +302,7 @@ fn record_placement(
         anchor: placed.anchor,
         facing: placed.facing,
         room: Some(room.id),
-        host: host_key(rule),
+        host,
         offset_m,
         loot: rule.loot,
     });
@@ -2003,6 +2017,7 @@ fn rules_for(kind: RoomKind) -> &'static [PropPlacementRule] {
     match kind {
         RoomKind::Kitchen => KITCHEN_RULES,
         RoomKind::Living => LIVING_RULES,
+        RoomKind::Dining => DINING_RULES,
         RoomKind::Bedroom => BEDROOM_RULES,
         RoomKind::Bathroom => BATHROOM_RULES,
         _ => &[],
@@ -2106,6 +2121,29 @@ const KITCHEN_RULES: &[PropPlacementRule] = &[
         priority: 20,
         clutter: true,
         loot: None,
+    },
+];
+
+const DINING_RULES: &[PropPlacementRule] = &[
+    PropPlacementRule {
+        key: RuleKey(90),
+        required: 1,
+        priority: 100,
+        clutter: false,
+        ..KITCHEN_RULES[4]
+    },
+    PropPlacementRule {
+        key: RuleKey(91),
+        strategy: PlacementStrategy::Adjacent {
+            parent: RuleKey(90),
+            side: CHAIR_SIDES_OF_TABLE,
+            gap_m: (0.05, 0.15),
+            align: Align::Center,
+            face: ChildFacing::Toward,
+            requires: None,
+        },
+        maximum: 2,
+        ..KITCHEN_RULES[5]
     },
 ];
 

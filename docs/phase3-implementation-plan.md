@@ -13,7 +13,7 @@ Companion docs cover the [living buildings roadmap](living-buildings-plan.md), [
 
 Use an opt-in county fixture while the furnished-scene and device gates are open. Keep the normal game playable between packages. The fixture selects data at the generation entry point and feeds the same materializer as the county.
 
-> Current WP 3.2 testing override: `World::new` selects `CountyFixture::CraftsmanLot` by default so normal county entry streams the furnished Craftsman. `CountyFixture::BlueprintLot` remains available for the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
+> The current testing override makes the Craftsman–Ranch reference street the default county entry, with the single Craftsman as a fallback. Select `CountyFixture::ColonialLot` to review the Colonial on an existing residential lot. `CountyFixture::BlueprintLot` remains available for the WP 3.1 contract fixture, and `World::legacy` keeps the old baseline for comparisons. The full retirement and version bump remain WP 3.11.
 
 ## 1. Ownership and shared contracts
 
@@ -280,6 +280,8 @@ Handoff: [WP 3.3 handoff](phase3-wp33-handoff.md).
 - **Hand off** the first reference street for visual and performance comparison.
 
 ### WP 3.4 — Room-fit solver and Colonial
+
+Working plan and host review are recorded in the [residential handoff](phase3-wp33-handoff.md#wp-34-room-fitting-and-colonial).
 
 - **Owns** `world/floorplan.rs`, residential `world/massing.rs` and `world/archetypes/houses.rs`.
 - **Build** the bounded arrangement selector, bay cuts, common-space and landing reservations, and shared-wall opening candidates. Convert the first two house families to use these helpers where the fit remains equivalent. Add both Colonial layouts and their supported upper floors. Use a compact authored fallback when a feasible lot cannot fit the preferred arrangement.

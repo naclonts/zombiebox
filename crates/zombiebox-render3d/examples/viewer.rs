@@ -23,6 +23,7 @@ const HELP: &str = "WASD move · arrows aim · Space fire · E interact · Z/X/C
 enum CountyScene {
     Default,
     ResidentialStreet,
+    ColonialLot,
     SupportLot,
 }
 
@@ -30,6 +31,7 @@ fn county_game(seed: u64, scene: CountyScene) -> Result<ActionGame, String> {
     let fixture = match scene {
         CountyScene::Default => return Ok(ActionGame::county(seed)),
         CountyScene::ResidentialStreet => CountyFixture::ResidentialStreet,
+        CountyScene::ColonialLot => CountyFixture::ColonialLot,
         CountyScene::SupportLot => CountyFixture::SupportLot,
     };
     let world = World::with_fixture(seed, fixture);
@@ -376,11 +378,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--birch" => birch = true,
             "--residential-street" => county_scene = CountyScene::ResidentialStreet,
+            "--colonial-lot" => county_scene = CountyScene::ColonialLot,
             "--support-lot" => county_scene = CountyScene::SupportLot,
             "--seed" => seed = args.next().ok_or("--seed requires an integer")?.parse()?,
             "--help" | "-h" => {
                 println!(
-                    "Usage: viewer [--birch | --residential-street | --support-lot] [--seed N]\n{HELP}"
+                    "Usage: viewer [--birch | --residential-street | --colonial-lot | --support-lot] [--seed N]\n{HELP}"
                 );
                 return Ok(());
             }
@@ -405,6 +408,7 @@ mod tests {
                 CountyScene::ResidentialStreet,
                 CountyFixture::ResidentialStreet,
             ),
+            (CountyScene::ColonialLot, CountyFixture::ColonialLot),
             (CountyScene::SupportLot, CountyFixture::SupportLot),
         ] {
             let world = World::with_fixture(42, fixture);

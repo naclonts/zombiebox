@@ -17,6 +17,8 @@ use super::blueprint::{
     place_blueprint_in_lot,
 };
 
+#[path = "houses/colonial.rs"]
+pub mod colonial;
 pub mod houses;
 pub mod support_fixture;
 
@@ -33,6 +35,8 @@ pub enum CountyFixture {
     ResidentialStreet,
     /// Small aligned two-floor support and stairs fixture.
     SupportLot,
+    /// A furnished two-floor Colonial house.
+    ColonialLot,
 }
 
 /// Resolve the selected fixture through the same parcel-composition seam the
@@ -50,6 +54,7 @@ pub fn plan_fixture(
             houses::CraftsmanParcel.plan(context)
         }
         CountyFixture::SupportLot => support_fixture::SupportFixtureParcel.plan(context),
+        CountyFixture::ColonialLot => colonial::ColonialParcel.plan(context),
     }
 }
 

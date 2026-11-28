@@ -94,6 +94,7 @@ pub enum RoomKind {
     Barracks,
     MotorPool,
     Storage,
+    Dining,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Room {

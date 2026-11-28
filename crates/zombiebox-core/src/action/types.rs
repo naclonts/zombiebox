@@ -298,19 +298,35 @@ pub enum BuildingStyle {
     ArmyBarracks,
     WoodlandCabin,
     RuralBarn,
+    RanchSage,
 }
 
 impl BuildingStyle {
     pub const fn has_pitched_roof(self) -> bool {
-        matches!(
-            self,
+        self.roof_peak_rise() > 0.0
+    }
+
+    const fn roof_peak_rise(self) -> f32 {
+        match self {
+            Self::RanchSage => 0.48,
             Self::BirchSage
-                | Self::BlueClapboard
-                | Self::ColonialBrick
-                | Self::WarmPutty
-                | Self::WoodlandCabin
-                | Self::RuralBarn
-        )
+            | Self::BlueClapboard
+            | Self::ColonialBrick
+            | Self::WarmPutty
+            | Self::WoodlandCabin
+            | Self::RuralBarn => 0.95,
+            _ => 0.0,
+        }
+    }
+
+    /// Height above the eaves for the shared roof profile, using tile
+    /// centers on the exterior walls as the start of the slope.
+    pub fn roof_rise_at(self, wing: WingRect, x: f32, y: f32) -> f32 {
+        let (left, right) = (wing.min_x as f32, wing.max_x as f32);
+        let (near, far) = (wing.min_y as f32, wing.max_y as f32);
+        let dx = ((x - left).min(right - x) / ((right - left) * 0.5).max(1.0)).clamp(0.0, 1.0);
+        let dy = ((y - near).min(far - y) / ((far - near) * 0.5).max(1.0)).clamp(0.0, 1.0);
+        self.roof_peak_rise() * dx.min(dy)
     }
 }
 

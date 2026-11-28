@@ -1013,16 +1013,16 @@ impl BlueprintGrid {
             }
             // Runtime uses the source stair's direction to choose the arrival
             // position on the other floor.
-            for (source, destination, landing) in [
-                (stair.lower, stair.upper, stair.upper_landing),
-                (stair.upper, stair.lower, stair.lower_landing),
+            for (endpoint, landing) in [
+                (stair.lower, stair.lower_landing),
+                (stair.upper, stair.upper_landing),
             ] {
-                let direction = self.cells[&source].stair_dir;
-                if (landing.u - destination.u, landing.v - destination.v)
+                let direction = self.cells[&endpoint].stair_dir;
+                if (landing.u - endpoint.u, landing.v - endpoint.v)
                     != (i32::from(direction.0), i32::from(direction.1))
                 {
-                    return Err(FitError::AccessFailure {
-                        reason: "stair direction does not point to arrival landing",
+                    return Err(FitError::ImpossibleRoom {
+                        reason: "stair direction does not point to its landing",
                     });
                 }
             }

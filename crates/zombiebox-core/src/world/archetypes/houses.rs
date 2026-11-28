@@ -14,11 +14,10 @@ use crate::action::{
 use super::super::RoomKind;
 use super::super::furnish;
 use crate::world::blueprint::{
-    BlueprintAnchor, BlueprintAnchor as Anchor, BlueprintCell, BlueprintGrid, BlueprintKind,
-    CompoundPlanner, DoorIntent, DoorKind, FitError, Frontage, GridRect, LocalCell,
-    LocalPlacementKey, OutdoorLayer, ParcelContext, ParcelPlan, PlannedProp, PlannedSign, RoomMeta,
-    RuleKey, SpaceId, StructureContext, StructureGenerator, VehicleSlot, parcel_id,
-    place_blueprint_along_frontage,
+    BlueprintAnchor, BlueprintCell, BlueprintGrid, BlueprintKind, CompoundPlanner, DoorIntent,
+    DoorKind, FitError, Frontage, GridRect, LocalCell, LocalPlacementKey, OutdoorLayer,
+    ParcelContext, ParcelPlan, PlannedProp, PlannedSign, RoomMeta, RuleKey, SpaceId,
+    StructureContext, StructureGenerator, parcel_id, place_blueprint_along_frontage,
 };
 use crate::world::massing::FootprintMask;
 
@@ -35,6 +34,29 @@ impl StructureGenerator for CraftsmanBungalow {
 pub enum CraftsmanArrangement {
     A,
     B,
+    SideHall,
+}
+
+impl CraftsmanArrangement {
+    fn presentation(self) -> (&'static str, &'static str, BuildingStyle) {
+        match self {
+            Self::A => (
+                "Craftsman bungalow A",
+                "craftsman_bungalow_a",
+                BuildingStyle::WarmPutty,
+            ),
+            Self::B => (
+                "Craftsman bungalow B",
+                "craftsman_bungalow_b",
+                BuildingStyle::BlueClapboard,
+            ),
+            Self::SideHall => (
+                "Side-hall Craftsman",
+                "craftsman_side_hall",
+                BuildingStyle::WarmPutty,
+            ),
+        }
+    }
 }
 
 /// Compound planner used by the residential fixture and later town lots.
@@ -73,52 +95,42 @@ impl CompoundPlanner for CraftsmanParcel {
     }
 }
 
-/// Street planner that chooses Craftsman A or B from stable seed/parcel data.
-/// The default county fixture continues to use `CraftsmanParcel` (A).
+/// Selects a stable Craftsman layout for each street lot.
 pub struct CraftsmanStreetParcel;
 
 impl CompoundPlanner for CraftsmanStreetParcel {
     fn plan(&self, context: &ParcelContext) -> Result<ParcelPlan, FitError> {
-        let arrangement =
-            if crate::action::mix64(context.seed ^ parcel_id(context.seed, context.bounds).0) & 1
-                == 0
-            {
-                CraftsmanArrangement::A
-            } else {
-                CraftsmanArrangement::B
-            };
         let id = parcel_id(context.seed, context.bounds);
-        let mut blueprint = craftsman_authored(
-            &StructureContext {
-                seed: context.seed,
-                parcel: id,
-                frontage: context.frontage,
-            },
-            arrangement,
-        )?;
-        furnish::furnish(context.seed, &mut blueprint)?;
-        let (name, archetype, style) = match arrangement {
-            CraftsmanArrangement::A => (
-                "Craftsman bungalow A",
-                "craftsman_bungalow_a",
-                BuildingStyle::WarmPutty,
-            ),
-            CraftsmanArrangement::B => (
-                "Craftsman bungalow B",
-                "craftsman_bungalow_b",
-                BuildingStyle::BlueClapboard,
-            ),
+        let selection = crate::action::mix64(context.seed ^ id.0);
+        let preferred = match selection & 3 {
+            0 | 2 => CraftsmanArrangement::A,
+            1 => CraftsmanArrangement::B,
+            _ => CraftsmanArrangement::SideHall,
         };
-        let structure = place_blueprint_along_frontage(
-            context.seed,
-            id,
-            context.bounds,
-            context.frontage,
-            blueprint,
-            name,
-            archetype,
-            style,
-        )?;
+        let plan = |arrangement: CraftsmanArrangement| {
+            craftsman_arrangement_structure(
+                context.seed,
+                context.bounds,
+                context.frontage,
+                arrangement,
+            )
+        };
+        // The side-hall mass is wider than the compact authored bungalow.
+        // Skip it on narrow frontages before attempting its furnishing.
+        let (width, _) =
+            crate::world::floorplan::usable_dimensions(context.bounds, context.frontage);
+        let preferred = if preferred == CraftsmanArrangement::SideHall && width < 15 {
+            CraftsmanArrangement::A
+        } else {
+            preferred
+        };
+        let structure = plan(preferred).or_else(|error| {
+            if preferred == CraftsmanArrangement::A {
+                Err(error)
+            } else {
+                plan(CraftsmanArrangement::A)
+            }
+        })?;
         Ok(ParcelPlan {
             id,
             bounds: context.bounds,
@@ -133,378 +145,10 @@ impl CompoundPlanner for CraftsmanStreetParcel {
     }
 }
 
-/// Ranch A keeps living toward the street. Ranch B puts living at the rear,
-/// bedrooms along the side hall, and the public entry at the kitchen/utility
-/// end of the house.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RanchArrangement {
-    A,
-    B,
-}
-
-/// Compound planner for the furnished ranch fixture.
-pub struct RanchParcel;
-
-impl CompoundPlanner for RanchParcel {
-    fn plan(&self, context: &ParcelContext) -> Result<ParcelPlan, FitError> {
-        let id = parcel_id(context.seed, context.bounds);
-        let arrangement = if crate::action::mix64(context.seed ^ id.0) & 1 == 0 {
-            RanchArrangement::A
-        } else {
-            RanchArrangement::B
-        };
-        let mut blueprint = ranch_house(
-            &StructureContext {
-                seed: context.seed,
-                parcel: id,
-                frontage: context.frontage,
-            },
-            arrangement,
-        )?;
-        furnish::furnish(context.seed, &mut blueprint)?;
-        let archetype = match arrangement {
-            RanchArrangement::A => "ranch_l_wing_a",
-            RanchArrangement::B => "ranch_l_wing_b",
-        };
-        let name = match arrangement {
-            RanchArrangement::A => "L-wing ranch A",
-            RanchArrangement::B => "L-wing ranch B",
-        };
-        let mut structure = place_blueprint_along_frontage(
-            context.seed,
-            id,
-            context.bounds,
-            context.frontage,
-            blueprint,
-            name,
-            archetype,
-            BuildingStyle::BirchSage,
-        )?;
-        // Prefer the dwelling entry for pedestrian routing when the garage
-        // gate is another exterior opening on the same frontage.
-        let public_door = ranch_public_door(arrangement);
-        structure.front_door = structure.transform.local_to_world(public_door);
-        let garage_door = ranch_garage_door(arrangement);
-        let driveways = (garage_door.u - 1..=garage_door.u + 1)
-            .map(|u| {
-                (
-                    structure.transform.local_to_world(LocalCell::new(u, -1, 0)),
-                    structure.transform.local_to_world(LocalCell::new(u, 1, 0)),
-                )
-            })
-            .collect();
-        let slot_u = match arrangement {
-            RanchArrangement::A => 15,
-            RanchArrangement::B => -6,
-        };
-        let mut slot_min = crate::Position::new(i32::MAX, i32::MAX);
-        for u in slot_u..slot_u + 2 {
-            for v in 3..8 {
-                let world = structure.transform.local_to_world(LocalCell::new(u, v, 0));
-                slot_min.x = slot_min.x.min(world.x);
-                slot_min.y = slot_min.y.min(world.y);
-            }
-        }
-        Ok(ParcelPlan {
-            id,
-            bounds: context.bounds,
-            frontage: context.frontage,
-            zone: context.zone,
-            outdoor: OutdoorLayer {
-                paths: vec![(context.frontage.access, structure.front_door)],
-                driveways,
-                vehicle_slots: vec![(
-                    slot_min,
-                    structure.transform.world_facing(PropFacing::North),
-                )],
-                ..OutdoorLayer::default()
-            },
-            structures: vec![structure],
-        })
-    }
-}
-
-const GARAGE_ROOM: u16 = 20;
-
-fn ranch_garage_door(arrangement: RanchArrangement) -> LocalCell {
-    let u = match arrangement {
-        RanchArrangement::A => 17,
-        RanchArrangement::B => -4,
-    };
-    LocalCell::new(u, 2, 0)
-}
-
-fn ranch_public_door(arrangement: RanchArrangement) -> LocalCell {
-    match arrangement {
-        RanchArrangement::A => LocalCell::new(6, 2, 0),
-        RanchArrangement::B => LocalCell::new(7, 2, 0),
-    }
-}
-
-fn ranch_house(
-    context: &StructureContext,
-    arrangement: RanchArrangement,
-) -> Result<BlueprintGrid, FitError> {
-    let mut bp = match arrangement {
-        RanchArrangement::A => craftsman_bungalow(context)?,
-        RanchArrangement::B => craftsman_bungalow_b(context)?,
-    };
-    let (garage_min_u, garage_max_u, connector_u, connector_v, garage_door_u) = match arrangement {
-        RanchArrangement::A => (14, 21, 13, 8, 17),
-        RanchArrangement::B => (-7, 0, 1, 8, -4),
-    };
-    let connector_side_u = match arrangement {
-        RanchArrangement::A => garage_min_u,
-        RanchArrangement::B => garage_max_u,
-    };
-
-    // Keep the union as a small explicit footprint mask. Its three disjoint
-    // bounds also become three independent roof/cutaway wings at runtime.
-    let mut footprint = FootprintMask::new();
-    footprint.insert_rect(GridRect::new(
-        crate::Position::new(1, 2),
-        crate::Position::new(
-            13,
-            if arrangement == RanchArrangement::B {
-                17
-            } else {
-                13
-            },
-        ),
-    ));
-    footprint.insert_rect(GridRect::new(
-        crate::Position::new(4, 0),
-        crate::Position::new(
-            if arrangement == RanchArrangement::B {
-                12
-            } else {
-                8
-            },
-            1,
-        ),
-    ));
-    footprint.insert_rect(GridRect::new(
-        crate::Position::new(garage_min_u, 2),
-        crate::Position::new(garage_max_u, 9),
-    ));
-
-    // The porch deck carries its own shallow roof mass. The Craftsman's
-    // authored blueprint remains untouched by this ranch-only silhouette.
-    for local in [LocalCell::new(4, 0, 0), LocalCell::new(8, 1, 0)] {
-        if let Some(cell) = bp.cells.get_mut(&local) {
-            cell.wing = 2;
-            cell.roof = true;
-        }
-    }
-    for local in footprint.cells() {
-        if local.u < 4
-            || local.u
-                > if arrangement == RanchArrangement::B {
-                    12
-                } else {
-                    8
-                }
-            || local.v < 0
-            || local.v > 1
-        {
-            continue;
-        }
-        if let Some(cell) = bp.cells.get_mut(&local) {
-            cell.wing = 2;
-            cell.roof = true;
-        }
-    }
-    if arrangement == RanchArrangement::B {
-        for u in 9..=12 {
-            for v in 0..=1 {
-                bp.set_cell(LocalCell::new(u, v, 0), {
-                    let mut cell = BlueprintCell::new(
-                        BlueprintKind::Floor,
-                        Material::WoodLight,
-                        Surface::Porch,
-                    )
-                    .with_roof();
-                    cell.wing = 2;
-                    cell
-                });
-            }
-        }
-        for u in [10, 12] {
-            bp.set_cell(LocalCell::new(u, 0, 0), {
-                let mut cell =
-                    BlueprintCell::new(BlueprintKind::Pillar, Material::MetalPole, Surface::Porch)
-                        .load_bearing()
-                        .with_roof();
-                cell.wing = 2;
-                cell
-            });
-        }
-    }
-
-    // Garage shell is a distinct wing and distinct roof mass. Its front
-    // opening and interior connector rotate with the same frontage transform.
-    let garage = |u: i32, v: i32| {
-        arrangement == RanchArrangement::A && (14..=21).contains(&u) && (2..=9).contains(&v)
-            || arrangement == RanchArrangement::B && (-7..=0).contains(&u) && (2..=9).contains(&v)
-    };
-    for local in footprint.cells().filter(|cell| garage(cell.u, cell.v)) {
-        let on_edge =
-            local.u == garage_min_u || local.u == garage_max_u || local.v == 2 || local.v == 9;
-        let garage_door = local.u == garage_door_u && local.v == 2;
-        let cell = if garage_door {
-            BlueprintCell::new(
-                BlueprintKind::Door {
-                    exterior: true,
-                    gate: true,
-                },
-                Material::MetalPole,
-                Surface::Porch,
-            )
-        } else if on_edge && !(local.u == connector_side_u && local.v == connector_v) {
-            BlueprintCell::new(
-                BlueprintKind::ExteriorWall,
-                Material::WoodSiding,
-                Surface::Porch,
-            )
-            .load_bearing()
-        } else {
-            BlueprintCell::new(
-                BlueprintKind::Floor,
-                Material::WoodLight,
-                Surface::WoodFloor,
-            )
-            .with_room(GARAGE_ROOM)
-            .indoor()
-            .with_roof()
-        };
-        let mut cell = cell;
-        cell.wing = 1;
-        bp.set_cell(local, cell);
-    }
-
-    // Replace one main-house exterior wall cell with the indoor connection.
-    let connector = LocalCell::new(connector_u, connector_v, 0);
-    let mut connector_cell = BlueprintCell::new(
-        BlueprintKind::Door {
-            exterior: false,
-            gate: false,
-        },
-        Material::WoodDoor,
-        Surface::WoodFloor,
-    )
-    .indoor();
-    connector_cell.wing = 0;
-    bp.set_cell(connector, connector_cell);
-
-    let garage_door = ranch_garage_door(arrangement);
-    bp.add_door(DoorIntent {
-        cell: garage_door,
-        tangent: crate::action::DoorAxis::AlongX,
-        kind: DoorKind::Gate,
-        connects: (SpaceId::Exterior, SpaceId::Room(GARAGE_ROOM)),
-    });
-    bp.add_door(DoorIntent {
-        cell: connector,
-        tangent: crate::action::DoorAxis::AlongY,
-        kind: DoorKind::Interior,
-        connects: match arrangement {
-            RanchArrangement::A => (SpaceId::Room(HALL), SpaceId::Room(GARAGE_ROOM)),
-            RanchArrangement::B => (SpaceId::Room(HALL), SpaceId::Room(GARAGE_ROOM)),
-        },
-    });
-    let mut garage_cells: Vec<LocalCell> = (garage_min_u + 1..garage_max_u)
-        .flat_map(|u| (3..9).map(move |v| LocalCell::new(u, v, 0)))
-        .collect();
-    garage_cells.push(LocalCell::new(connector_side_u, connector_v, 0));
-    bp.rooms.push(RoomMeta {
-        id: GARAGE_ROOM,
-        kind: RoomKind::Garage,
-        unit: None,
-        wing: 1,
-        floor: 0,
-        cells: garage_cells,
-    });
-    bp.vehicle_slots.push(VehicleSlot {
-        anchor: Anchor::new(garage_min_u + 1, 3, 0),
-        facing: PropFacing::North,
-        length: 5,
-        width: 2,
-    });
-
-    // Ensure each authored cell is represented by the common mask, catching
-    // accidental disconnected additions while keeping ordering deterministic.
-    let porch_width = if arrangement == RanchArrangement::B {
-        9
-    } else {
-        5
-    };
-    let main_depth = if arrangement == RanchArrangement::B {
-        16
-    } else {
-        12
-    };
-    if footprint.is_empty() || footprint.len() != 13 * main_depth + porch_width * 2 + 8 * 8 {
-        return Err(FitError::ImpossibleRoom {
-            reason: "ranch footprint composition is inconsistent",
-        });
-    }
-    Ok(bp)
-}
-
-/// Deterministic furnished Ranch A/B preview entry point.
-pub fn ranch_blueprint(
-    seed: u64,
-    frontage: Frontage,
-    arrangement: RanchArrangement,
-) -> Result<BlueprintGrid, FitError> {
-    let mut bp = ranch_house(
-        &StructureContext {
-            seed,
-            parcel: crate::world::blueprint::ParcelId(1),
-            frontage,
-        },
-        arrangement,
-    )?;
-    furnish::furnish(seed, &mut bp)?;
-    Ok(bp)
-}
-
-/// Deterministic furnished Ranch A/B placed in an explicit lot.
-pub fn ranch_structure(
-    seed: u64,
-    lot: GridRect,
-    frontage: Frontage,
-    arrangement: RanchArrangement,
-) -> Result<crate::world::blueprint::PlacedStructure, FitError> {
-    let parcel = parcel_id(seed, lot);
-    let mut bp = ranch_house(
-        &StructureContext {
-            seed,
-            parcel,
-            frontage,
-        },
-        arrangement,
-    )?;
-    furnish::furnish(seed, &mut bp)?;
-    let (name, archetype) = match arrangement {
-        RanchArrangement::A => ("L-wing ranch A", "ranch_l_wing_a"),
-        RanchArrangement::B => ("L-wing ranch B", "ranch_l_wing_b"),
-    };
-    let mut structure = place_blueprint_along_frontage(
-        seed,
-        parcel,
-        lot,
-        frontage,
-        bp,
-        name,
-        archetype,
-        BuildingStyle::BirchSage,
-    )?;
-    structure.front_door = structure
-        .transform
-        .local_to_world(ranch_public_door(arrangement));
-    Ok(structure)
-}
+mod ranch;
+#[cfg(test)]
+use ranch::{GARAGE_ROOM, UTILITY, ranch_garage_door, ranch_house, ranch_public_door};
+pub use ranch::{RanchArrangement, RanchParcel, ranch_blueprint, ranch_structure};
 
 const LIVING: u16 = 1;
 const KITCHEN: u16 = 2;
@@ -530,7 +174,6 @@ fn craftsman_bungalow(_context: &StructureContext) -> Result<BlueprintGrid, FitE
     let mut bp = BlueprintGrid::new(1);
     let exterior = Material::WoodSiding;
     let interior = Material::Drywall;
-    let floor_mat = Material::WoodLight;
 
     // Main mass perimeter.
     for v in 2..=13 {
@@ -572,22 +215,7 @@ fn craftsman_bungalow(_context: &StructureContext) -> Result<BlueprintGrid, FitE
         }
     }
 
-    // Porch deck and two posts at the street edge.
-    for v in 0..=1 {
-        for u in 4..=8 {
-            bp.set_cell(
-                LocalCell::new(u, v, 0),
-                BlueprintCell::new(BlueprintKind::Floor, floor_mat, Surface::Porch),
-            );
-        }
-    }
-    for u in [4, 8] {
-        bp.set_cell(
-            LocalCell::new(u, 0, 0),
-            BlueprintCell::new(BlueprintKind::Pillar, Material::MetalPole, Surface::Porch)
-                .load_bearing(),
-        );
-    }
+    add_craftsman_porch(&mut bp, 4, 8);
 
     // Interior wall rows between the front rooms, hall and rear rooms.
     for v in [7, 9] {
@@ -663,33 +291,14 @@ fn craftsman_bungalow(_context: &StructureContext) -> Result<BlueprintGrid, FitE
         ),
     ];
     for (id, kind, min_u, max_u, min_v, max_v, surface) in rooms {
-        let mut cells = Vec::new();
-        for v in min_v..=max_v {
-            for u in min_u..=max_u {
-                let local = LocalCell::new(u, v, 0);
-                let material = match surface {
-                    Surface::KitchenTile => Material::BrickMasonry,
-                    Surface::Carpet => Material::WoodLight,
-                    _ => floor_mat,
-                };
-                bp.set_cell(
-                    local,
-                    BlueprintCell::new(BlueprintKind::Floor, material, surface)
-                        .with_room(id)
-                        .indoor()
-                        .with_roof(),
-                );
-                cells.push(local);
-            }
-        }
-        bp.rooms.push(RoomMeta {
+        add_house_room(
+            &mut bp,
             id,
             kind,
-            unit: None,
-            wing: 0,
-            floor: 0,
-            cells,
-        });
+            GridRect::new(Position::new(min_u, min_v), Position::new(max_u, max_v)),
+            surface,
+            0,
+        );
     }
 
     // One authoritative door intent per opening. Tangents follow the wall run.
@@ -746,19 +355,7 @@ fn craftsman_bungalow(_context: &StructureContext) -> Result<BlueprintGrid, FitE
         });
     }
 
-    // A readable on the bedside table. `host` ties it to the required
-    // nightstand (RuleKey 31); furnishing re-anchors the sign to that prop's
-    // placed anchor, facing and surface height, so the note stays supported.
-    bp.signs.push(PlannedSign {
-        key: LocalPlacementKey(0x6000),
-        anchor: BlueprintAnchor::new(0, 0, 0),
-        prop: PropId::Note,
-        attachment: CellAttachment::CounterTop,
-        offset_m: Vec3::new(0.0, 0.0, 1.2),
-        facing: PropFacing::North,
-        readable: Some(ReadableId::CraftsmanNote),
-        host: Some(RuleKey(31)),
-    });
+    add_craftsman_note(&mut bp);
 
     Ok(bp)
 }
@@ -897,8 +494,7 @@ fn craftsman_bungalow_b(context: &StructureContext) -> Result<BlueprintGrid, Fit
             bathroom_cells.push(local);
         }
     }
-    // Extend the bedroom into the rear-left strip while preserving its side
-    // hall entry and private dead-end circulation.
+    // Extend the rear living room to the new exterior wall.
     let mut living_cells = bedroom_rear;
     for v in 13..=16 {
         for u in 2..=6 {
@@ -985,51 +581,19 @@ fn craftsman_bungalow_b(context: &StructureContext) -> Result<BlueprintGrid, Fit
             BlueprintCell::new(kind, Material::WoodSiding, Surface::Porch).load_bearing(),
         );
     }
-    // Former rear wall cells are reused for bedroom, kitchen, or the kitchen
-    // to bathroom dividing wall.
-    for u in 2..=12 {
+    // The left bay already absorbed the former rear wall. Close the
+    // right bay with a partition between the kitchen and bathroom.
+    for u in 7..=12 {
         let local = LocalCell::new(u, 13, 0);
-        if (8..=12).contains(&u) {
-            let kind = if u == 11 {
-                BlueprintKind::Door {
-                    exterior: false,
-                    gate: false,
-                }
-            } else {
-                BlueprintKind::InteriorWall
-            };
-            bp.set_cell(
-                local,
-                BlueprintCell::new(
-                    kind,
-                    if u == 11 {
-                        Material::WoodDoor
-                    } else {
-                        Material::Drywall
-                    },
-                    Surface::WoodFloor,
-                )
-                .indoor(),
-            );
-        } else if (2..=6).contains(&u) {
-            bp.set_cell(
-                local,
-                BlueprintCell::new(BlueprintKind::Floor, Material::WoodLight, Surface::Carpet)
-                    .with_room(BEDROOM)
-                    .indoor()
-                    .with_roof(),
-            );
-        } else if u == 7 {
-            bp.set_cell(
-                local,
-                BlueprintCell::new(
-                    BlueprintKind::InteriorWall,
-                    Material::Drywall,
-                    Surface::WoodFloor,
-                )
-                .indoor(),
-            );
-        }
+        bp.set_cell(
+            local,
+            BlueprintCell::new(
+                BlueprintKind::InteriorWall,
+                Material::Drywall,
+                Surface::WoodFloor,
+            )
+            .indoor(),
+        );
     }
     bp.cells.remove(&LocalCell::new(7, 7, 0));
     bp.set_cell(
@@ -1080,12 +644,14 @@ fn craftsman_bungalow_b(context: &StructureContext) -> Result<BlueprintGrid, Fit
     {
         door.connects = (SpaceId::Room(HALL), SpaceId::Room(KITCHEN));
     }
-    bp.add_door(DoorIntent {
-        cell: LocalCell::new(11, 13, 0),
-        tangent: crate::action::DoorAxis::AlongX,
-        kind: DoorKind::Interior,
-        connects: (SpaceId::Room(KITCHEN), SpaceId::Room(BATHROOM)),
-    });
+    add_house_door(
+        &mut bp,
+        LocalCell::new(11, 13, 0),
+        DoorAxis::AlongX,
+        DoorKind::Interior,
+        (SpaceId::Room(KITCHEN), SpaceId::Room(BATHROOM)),
+        0,
+    );
 
     if footprint.len() != 13 * 16 + 5 * 2 || !footprint.contains(LocalCell::new(7, 17, 0)) {
         return Err(FitError::ImpossibleRoom {
@@ -1096,6 +662,242 @@ fn craftsman_bungalow_b(context: &StructureContext) -> Result<BlueprintGrid, Fit
     Ok(bp)
 }
 
+fn add_house_room(
+    bp: &mut BlueprintGrid,
+    id: u16,
+    kind: RoomKind,
+    bounds: GridRect,
+    surface: Surface,
+    wing: u8,
+) {
+    let material = match surface {
+        Surface::KitchenTile => Material::BrickMasonry,
+        _ => Material::WoodLight,
+    };
+    let mut cell = BlueprintCell::new(BlueprintKind::Floor, material, surface)
+        .with_room(id)
+        .indoor()
+        .with_roof();
+    cell.wing = wing;
+    let mut cells = Vec::new();
+    for v in bounds.min.y..=bounds.max.y {
+        for u in bounds.min.x..=bounds.max.x {
+            let local = LocalCell::new(u, v, 0);
+            bp.set_cell(local, cell);
+            cells.push(local);
+        }
+    }
+    bp.rooms.push(RoomMeta {
+        id,
+        kind,
+        unit: None,
+        wing,
+        floor: 0,
+        cells,
+    });
+}
+
+fn add_house_door(
+    bp: &mut BlueprintGrid,
+    cell: LocalCell,
+    tangent: DoorAxis,
+    kind: DoorKind,
+    connects: (SpaceId, SpaceId),
+    wing: u8,
+) {
+    let exterior = kind != DoorKind::Interior;
+    let mut tile = BlueprintCell::new(
+        BlueprintKind::Door {
+            exterior,
+            gate: kind == DoorKind::Gate,
+        },
+        Material::WoodDoor,
+        if exterior {
+            Surface::Porch
+        } else {
+            Surface::WoodFloor
+        },
+    );
+    tile.indoor = !exterior;
+    tile.load_bearing = exterior;
+    tile.wing = wing;
+    bp.set_cell(cell, tile);
+    bp.add_door(DoorIntent {
+        cell,
+        tangent,
+        kind,
+        connects,
+    });
+}
+
+fn add_craftsman_porch(bp: &mut BlueprintGrid, min_u: i32, max_u: i32) {
+    for v in 0..=1 {
+        for u in min_u..=max_u {
+            bp.set_cell(
+                LocalCell::new(u, v, 0),
+                BlueprintCell::new(BlueprintKind::Floor, Material::WoodLight, Surface::Porch),
+            );
+        }
+    }
+    for u in [min_u, max_u] {
+        bp.set_cell(
+            LocalCell::new(u, 0, 0),
+            BlueprintCell::new(BlueprintKind::Pillar, Material::MetalPole, Surface::Porch)
+                .load_bearing(),
+        );
+    }
+}
+
+fn add_craftsman_note(bp: &mut BlueprintGrid) {
+    // A readable on the bedside table. `host` ties it to the required
+    // nightstand (RuleKey 31); furnishing re-anchors the sign to that prop's
+    // placed anchor, facing and surface height, so the note stays supported.
+    bp.signs.push(PlannedSign {
+        key: LocalPlacementKey(0x6000),
+        anchor: BlueprintAnchor::new(0, 0, 0),
+        prop: PropId::Note,
+        attachment: CellAttachment::CounterTop,
+        offset_m: Vec3::new(0.0, 0.0, 1.2),
+        facing: PropFacing::North,
+        readable: Some(ReadableId::CraftsmanNote),
+        host: Some(RuleKey(31)),
+    });
+}
+
+/// A side-hall bungalow with rooms sized from the seed. The public rooms
+/// span the porch frontage and the hall separates the bedroom from the wet rooms.
+fn craftsman_side_hall(context: &StructureContext) -> BlueprintGrid {
+    let layout = crate::action::mix64(context.seed ^ context.parcel.0 ^ 0x82c3_c65b_8c64_9471);
+    let hall = 7 + (layout & 1) as i32;
+    // A separate frontage choice keeps glazing independent of room dimensions.
+    let front_window = 10
+        + (crate::action::mix64(context.seed ^ context.parcel.0 ^ 0x4652_4f4e_5457_494e) & 1)
+            as i32;
+    let living_end = 6 + ((layout >> 1) & 1) as i32;
+    let kitchen_end = living_end + 5 + ((layout >> 2) & 1) as i32;
+    let rear = kitchen_end + 5;
+    let mut bp = BlueprintGrid::new(1);
+
+    for v in 2..=rear {
+        for u in 1..=15 {
+            let exterior = u == 1 || u == 15 || v == 2 || v == rear;
+            let partition = v == living_end + 1
+                || (v > living_end && (u == hall - 1 || u == hall + 1))
+                || (u > hall && v == kitchen_end + 1);
+            let cell = if exterior {
+                let window = if v == 2 {
+                    matches!(u, 3 | 4) || u == front_window || u == front_window + 1
+                } else if v == rear {
+                    matches!(u, 3 | 4 | 10 | 11)
+                } else {
+                    v == living_end - 1 || v == living_end + 4 || v == rear - 2
+                };
+                BlueprintCell::new(
+                    if window {
+                        BlueprintKind::Window
+                    } else {
+                        BlueprintKind::ExteriorWall
+                    },
+                    Material::WoodSiding,
+                    Surface::Porch,
+                )
+                .load_bearing()
+            } else if partition {
+                BlueprintCell::new(
+                    BlueprintKind::InteriorWall,
+                    Material::Drywall,
+                    Surface::WoodFloor,
+                )
+                .indoor()
+            } else {
+                continue;
+            };
+            bp.set_cell(LocalCell::new(u, v, 0), cell);
+        }
+    }
+    add_craftsman_porch(&mut bp, 4, 8);
+
+    for (id, kind, min, max, surface) in [
+        (
+            LIVING,
+            RoomKind::Living,
+            (2, 3),
+            (14, living_end),
+            Surface::WoodFloor,
+        ),
+        (
+            HALL,
+            RoomKind::Hall,
+            (hall, living_end + 2),
+            (hall, rear - 1),
+            Surface::WoodFloor,
+        ),
+        (
+            BEDROOM,
+            RoomKind::Bedroom,
+            (2, living_end + 2),
+            (hall - 2, rear - 1),
+            Surface::Carpet,
+        ),
+        (
+            KITCHEN,
+            RoomKind::Kitchen,
+            (hall + 2, living_end + 2),
+            (14, kitchen_end),
+            Surface::KitchenTile,
+        ),
+        (
+            BATHROOM,
+            RoomKind::Bathroom,
+            (hall + 2, kitchen_end + 2),
+            (14, rear - 1),
+            Surface::KitchenTile,
+        ),
+    ] {
+        add_house_room(
+            &mut bp,
+            id,
+            kind,
+            GridRect::new(Position::new(min.0, min.1), Position::new(max.0, max.1)),
+            surface,
+            0,
+        );
+    }
+
+    add_house_door(
+        &mut bp,
+        LocalCell::new(6, 2, 0),
+        DoorAxis::AlongX,
+        DoorKind::Exterior,
+        (SpaceId::Exterior, SpaceId::Room(LIVING)),
+        0,
+    );
+    add_house_door(
+        &mut bp,
+        LocalCell::new(hall, living_end + 1, 0),
+        DoorAxis::AlongX,
+        DoorKind::Interior,
+        (SpaceId::Room(LIVING), SpaceId::Room(HALL)),
+        0,
+    );
+    for (u, v, room) in [
+        (hall - 1, living_end + 3, BEDROOM),
+        (hall + 1, living_end + 4, KITCHEN),
+        (hall + 1, rear - 2, BATHROOM),
+    ] {
+        add_house_door(
+            &mut bp,
+            LocalCell::new(u, v, 0),
+            DoorAxis::AlongY,
+            DoorKind::Interior,
+            (SpaceId::Room(HALL), SpaceId::Room(room)),
+            0,
+        );
+    }
+    add_craftsman_note(&mut bp);
+    bp
+}
+
 fn craftsman_authored(
     context: &StructureContext,
     arrangement: CraftsmanArrangement,
@@ -1103,6 +905,7 @@ fn craftsman_authored(
     match arrangement {
         CraftsmanArrangement::A => CraftsmanBungalow.generate(context),
         CraftsmanArrangement::B => craftsman_bungalow_b(context),
+        CraftsmanArrangement::SideHall => Ok(craftsman_side_hall(context)),
     }
 }
 
@@ -1181,18 +984,7 @@ pub fn craftsman_arrangement_structure(
         arrangement,
     )?;
     furnish::furnish(seed, &mut bp)?;
-    let (name, archetype, style) = match arrangement {
-        CraftsmanArrangement::A => (
-            "Craftsman bungalow A",
-            "craftsman_bungalow_a",
-            BuildingStyle::WarmPutty,
-        ),
-        CraftsmanArrangement::B => (
-            "Craftsman bungalow B",
-            "craftsman_bungalow_b",
-            BuildingStyle::BlueClapboard,
-        ),
-    };
+    let (name, archetype, style) = arrangement.presentation();
     place_blueprint_along_frontage(seed, parcel, lot, frontage, bp, name, archetype, style)
 }
 
@@ -1362,6 +1154,70 @@ mod tests {
     }
 
     #[test]
+    fn craftsman_side_hall_dimensions_vary_and_furnish() {
+        use std::collections::BTreeSet;
+
+        let mut layouts = BTreeSet::new();
+        let mut facade_windows = BTreeSet::new();
+        for seed in 0..64 {
+            let side = [
+                CardinalDir::North,
+                CardinalDir::East,
+                CardinalDir::South,
+                CardinalDir::West,
+            ][seed as usize % 4];
+            let blueprint = craftsman_arrangement_structure(
+                seed,
+                lot(),
+                frontage(side),
+                CraftsmanArrangement::SideHall,
+            )
+            .unwrap_or_else(|error| panic!("seed {seed} {side:?}: {error:?}"))
+            .blueprint;
+            blueprint.validate().unwrap();
+            facade_windows.insert(
+                (10..=12)
+                    .filter(|&u| {
+                        blueprint.cells[&LocalCell::new(u, 2, 0)].kind == BlueprintKind::Window
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let hall = blueprint.rooms.iter().find(|room| room.id == HALL).unwrap();
+            let door = blueprint
+                .doors
+                .iter()
+                .find(|door| door.connects == (SpaceId::Room(LIVING), SpaceId::Room(HALL)))
+                .unwrap();
+            layouts.insert((
+                hall.cells[0].u,
+                door.cell.v,
+                blueprint.local_bounds().height(),
+            ));
+            for room in [BEDROOM, KITCHEN, BATHROOM] {
+                assert!(
+                    blueprint.doors.iter().any(|door| {
+                        door.connects == (SpaceId::Room(HALL), SpaceId::Room(room))
+                    })
+                );
+            }
+            assert!(
+                blueprint
+                    .props
+                    .iter()
+                    .any(|prop| prop.prop == PropId::Fridge)
+            );
+            assert!(
+                blueprint
+                    .signs
+                    .iter()
+                    .any(|sign| sign.readable == Some(ReadableId::CraftsmanNote))
+            );
+        }
+        assert_eq!(layouts.len(), 8);
+        assert_eq!(facade_windows.len(), 2);
+    }
+
+    #[test]
     fn craftsman_plan_is_stable_and_fits_all_four_orientations() {
         for side in [
             CardinalDir::North,
@@ -1472,34 +1328,30 @@ mod tests {
                 let b = ranch_structure(42, lot(), frontage, arrangement).unwrap();
                 assert_eq!(a, b, "{side:?} {arrangement:?}");
                 assert!(lot().contains(a.bounds.min) && lot().contains(a.bounds.max));
-                match side {
+                let (width, depth) = match side {
                     CardinalDir::North | CardinalDir::South => {
-                        assert_eq!(
-                            (a.bounds.width(), a.bounds.height()),
-                            (
-                                21,
-                                if arrangement == RanchArrangement::A {
-                                    14
-                                } else {
-                                    18
-                                }
-                            ),
-                        );
+                        (a.bounds.width(), a.bounds.height())
                     }
-                    CardinalDir::East | CardinalDir::West => {
-                        assert_eq!(
-                            (a.bounds.width(), a.bounds.height()),
-                            (
-                                if arrangement == RanchArrangement::A {
-                                    14
-                                } else {
-                                    18
-                                },
-                                21
-                            ),
-                        );
-                    }
-                }
+                    CardinalDir::East | CardinalDir::West => (a.bounds.height(), a.bounds.width()),
+                };
+                assert!(width > depth);
+                let dwelling = a.blueprint.rooms.iter().filter(|room| room.wing == 0);
+                let min_u = dwelling
+                    .clone()
+                    .flat_map(|room| &room.cells)
+                    .map(|cell| cell.u)
+                    .min()
+                    .unwrap();
+                let max_u = dwelling
+                    .flat_map(|room| &room.cells)
+                    .map(|cell| cell.u)
+                    .max()
+                    .unwrap();
+                assert!(
+                    max_u - min_u + 1 > 13,
+                    "ranch dwelling is wider than the bungalow"
+                );
+                assert!(!a.blueprint.cells.contains_key(&LocalCell::new(min_u, 0, 0)));
                 let public = a
                     .blueprint
                     .doors
@@ -1509,7 +1361,7 @@ mod tests {
                 assert_eq!(a.transform.local_to_world(public.cell), a.front_door);
                 assert_eq!(public.cell, ranch_public_door(arrangement));
                 assert!(a.blueprint.doors.iter().any(|door| {
-                    door.kind == DoorKind::Gate && door.cell == ranch_garage_door(arrangement)
+                    door.kind == DoorKind::Gate && door.cell == ranch_garage_door()
                 }));
                 assert!(
                     a.blueprint
@@ -1517,24 +1369,18 @@ mod tests {
                         .iter()
                         .any(|slot| { slot.width == 2 && slot.length == 5 })
                 );
-                let garage_connector = a
-                    .blueprint
-                    .doors
-                    .iter()
-                    .find(|door| door.connects == (SpaceId::Room(HALL), SpaceId::Room(GARAGE_ROOM)))
-                    .unwrap();
-                assert_eq!(
-                    garage_connector.cell,
-                    LocalCell::new(
-                        if arrangement == RanchArrangement::A {
-                            13
-                        } else {
-                            1
-                        },
-                        8,
-                        0,
-                    )
-                );
+                for (a_id, b_id) in [(UTILITY, GARAGE_ROOM), (KITCHEN, UTILITY)] {
+                    let door = a
+                        .blueprint
+                        .doors
+                        .iter()
+                        .find(|door| door.connects == (SpaceId::Room(a_id), SpaceId::Room(b_id)))
+                        .expect("garage-to-kitchen route door");
+                    assert_eq!(door.kind, DoorKind::Interior);
+                    let left = a.blueprint.cells[&LocalCell::new(door.cell.u - 1, door.cell.v, 0)];
+                    let right = a.blueprint.cells[&LocalCell::new(door.cell.u + 1, door.cell.v, 0)];
+                    assert_eq!((left.room, right.room), (Some(a_id), Some(b_id)));
+                }
                 assert!(
                     a.blueprint
                         .rooms

@@ -14,7 +14,6 @@ use crate::{
     PropKind, Surface, Tile3D, TileKind, WORLD_SIZE, WallOrientation, World,
 };
 
-const PITCHED_ROOF_RISE: f32 = 0.95;
 const STAIR_RAILING_THICKNESS: f32 = 0.08;
 const STAIR_RAILING_HEIGHT: f32 = 0.55;
 const STAIR_SLAB_TRIM: f32 = 0.28;
@@ -65,18 +64,8 @@ fn same_building_above<S: SpatialStageSource + ?Sized>(
 }
 
 fn roof_rise_at(b: &BuildingInfo, tx: i32, ty: i32, fl: Floor) -> f32 {
-    if !b.style.has_pitched_roof() {
-        return 0.0;
-    }
     let w = b.wing_at(b.wing_index_at(Position::new(tx, ty), fl));
-    let bw = (w.max_x - w.min_x + 1).max(1);
-    let bh = (w.max_y - w.min_y + 1).max(1);
-    let dx = (tx - w.min_x).min(w.max_x - tx).max(0) as f32;
-    let dy = (ty - w.min_y).min(w.max_y - ty).max(0) as f32;
-    let max_dx = ((bw - 1) as f32 * 0.5).max(1.0);
-    let max_dy = ((bh - 1) as f32 * 0.5).max(1.0);
-    let t = (dx / max_dx).min(dy / max_dy).clamp(0.0, 1.0);
-    PITCHED_ROOF_RISE * t
+    b.style.roof_rise_at(w, tx as f32, ty as f32)
 }
 
 #[inline]
@@ -316,6 +305,9 @@ pub(crate) trait SpatialStageSource {
     fn playable_bounds(&self) -> (Position, Position);
     fn spatial_cell(&self, tile: Tile3D) -> Option<SpatialCell>;
     fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo>;
+    fn authored_stair_landing(&self, _tile: Tile3D) -> Option<(i8, i8)> {
+        None
+    }
 }
 
 /// Resolves `(support_z, support_id, surface)` at `tile.center()` for `tile.floor`.
@@ -471,6 +463,10 @@ impl SpatialStageSource for ActionGame {
     fn building_by_id(&self, id: BuildingId) -> Option<&BuildingInfo> {
         self.building_by_id(id)
     }
+
+    fn authored_stair_landing(&self, tile: Tile3D) -> Option<(i8, i8)> {
+        self.blueprint_stair_landing(tile)
+    }
 }
 
 fn clipped_footprint<S: SpatialStageSource + ?Sized>(
@@ -534,6 +530,9 @@ pub(crate) fn resolve_stair_high_dir<S: SpatialStageSource + ?Sized>(
     };
     let opp = (-low_dir.0, -low_dir.1);
     let upper_fl = tile.floor + 1;
+    if let Some(high_dir) = src.authored_stair_landing(Tile3D::new(tile.x, tile.y, upper_fl)) {
+        return (low_dir, high_dir);
+    }
 
     let is_open_exit = |d: (i8, i8)| -> bool {
         src.spatial_cell(Tile3D::new(
