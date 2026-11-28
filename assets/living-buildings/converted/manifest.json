@@ -1,0 +1,957 @@
+{
+  "format_version": 1,
+  "prototypes": {
+    "assisted-checkout-till-closed.mesh": {
+      "asset": "assisted-checkout-till",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.38,
+        0.2579,
+        0.51
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.38,
+        -0.2579,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "ac66962420840b818b119f3543492c4274d525e81519d002e35e644514fdbc47",
+      "scale": 0.001,
+      "source": "retail/assisted-checkout-till.kcad.ts",
+      "source_sha256": "de7314d5b3f257a998fdffb78a543423d6e8160edbaaff741f7fa5a46fcf4566",
+      "source_triangles": 756,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": 0,
+      "state": "closed",
+      "target_triangles": 1200,
+      "triangles": 756,
+      "url": "https://kernelcad.com/catalog/retail-store/assisted-checkout-till/",
+      "variant_edit": null,
+      "vertices": 477
+    },
+    "assisted-checkout-till-opened.mesh": {
+      "asset": "assisted-checkout-till",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.38,
+        0.4829,
+        0.51
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.38,
+        -0.2579,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "8ef7e969c1be1d912b31df8c6066b08a5286e008bec3d1d4a0800a0a80354764",
+      "scale": 0.001,
+      "source": "retail/assisted-checkout-till.kcad.ts",
+      "source_sha256": "de7314d5b3f257a998fdffb78a543423d6e8160edbaaff741f7fa5a46fcf4566",
+      "source_triangles": 1052,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": 0,
+      "state": "opened",
+      "target_triangles": 1200,
+      "triangles": 1052,
+      "url": "https://kernelcad.com/catalog/retail-store/assisted-checkout-till/",
+      "variant_edit": null,
+      "vertices": 653
+    },
+    "bathroom-sink.mesh": {
+      "asset": "bathroom-sink",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.34,
+        0.29,
+        1.12
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.34,
+        -0.29,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "981e550c6bdccf3e36ae33a0f138f4cc0d347fcfd6e2cf98ab4642228c0362b3",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/bathroomSink.glb",
+      "source_sha256": "39d4f19608cab7e0fed52303b2c689f5f51fae1bad9b6913cb53d838875e797e",
+      "source_triangles": 316,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 313,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 375
+    },
+    "bathtub.mesh": {
+      "asset": "bathtub",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        1.19,
+        0.56,
+        0.84
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -1.19,
+        -0.56,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "e2328456da32b14e7fabb7eba43171045bfe13c2db7d8513d7632f2a8d3669db",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/bathtub.glb",
+      "source_sha256": "54c405c7035aab63dc41e709dc3c50fc5bcfbc4cddc91ffc54188075a6d25d01",
+      "source_triangles": 602,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 599,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 633
+    },
+    "bed-double.mesh": {
+      "asset": "bed-double",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.956,
+        1.125,
+        0.75
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.956,
+        -1.125,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "0600abd8875ce91699b728eff051125eeb90b9d8c199f2e4c6ba8ffbf1059c74",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/bedDouble.glb",
+      "source_sha256": "c49b33e7d797d2ba1111895587dba7ff63b17a712eb9b4ceeb40a598f73e476c",
+      "source_triangles": 264,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 261,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 461
+    },
+    "bed-single.mesh": {
+      "asset": "bed-single",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.571,
+        1.125,
+        0.75
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.571,
+        -1.125,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "4b4a116bc3fca21636f0fdf1302e195c8330704b551c657890fd39e06f2b8a75",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/bedSingle.glb",
+      "source_sha256": "ca00c63f9a12da3138d902b2f5f18e0360fb6e8a5ac42ccb4bc3f185724b65d1",
+      "source_triangles": 214,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 212,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 366
+    },
+    "bookcase-closed-doors.mesh": {
+      "asset": "bookcase-closed-doors",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.4,
+        0.25,
+        1.7
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.4,
+        -0.25,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "ab6070a854df3c267f2f6bffb82f8c065b30198841b658840d80a3e86851f30a",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/bookcaseClosedDoors.glb",
+      "source_sha256": "ff33f535acdb1825c0e958a293642b39665adcae0b1317b650e83d2bb687f4e2",
+      "source_triangles": 296,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 277,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 460
+    },
+    "bookcase-open.mesh": {
+      "asset": "bookcase-open",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.4,
+        0.25,
+        1.76
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.4,
+        -0.25,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "10306da7efb7137c90a59527732abaa82e11df886516cd796cef4443ac0b546e",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/bookcaseOpen.glb",
+      "source_sha256": "750702218d68c062b15dfef6ab06a4014d1cfa8bd05f02e57c53b7e13bec157c",
+      "source_triangles": 320,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 292,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 400
+    },
+    "car.mesh": {
+      "asset": "car",
+      "author": "Quaternius",
+      "bounds_max_simulation_xyz_m": [
+        0.89891,
+        2.10609,
+        1.18028
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.89891,
+        -2.10609,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "e9566a6af0f3f95277c169b2a5cc16be7452f39cfa4f41c58fa34544f63a2d85",
+      "scale": 1.0,
+      "source": "poly-pizza/car.glb",
+      "source_sha256": "bf00f2f0386a25aa310abc0424d22586e46a59ee6c737e6b375c97c9f01bd462",
+      "source_triangles": 2954,
+      "source_version": null,
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 1150,
+      "triangles": 1153,
+      "url": "https://poly.pizza/m/Cz6yDaUcM9",
+      "variant_edit": null,
+      "vertices": 1889
+    },
+    "cardboard-box-closed.mesh": {
+      "asset": "cardboard-box",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.2125,
+        0.2125,
+        0.562
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.2125,
+        -0.2125,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "8725d5d40c9131c0d8d6f1c0a2282a69df2d6ffb87a3272fef8dcec38a26cf66",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/cardboardBoxClosed.glb",
+      "source_sha256": "4af079dca52960912764574950f0549ff2ae1224b3db1528718629473a2d5d81",
+      "source_triangles": 60,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": "closed",
+      "target_triangles": null,
+      "triangles": 60,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 92
+    },
+    "cardboard-box-opened.mesh": {
+      "asset": "cardboard-box",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.37187,
+        0.2125,
+        0.562
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.37187,
+        -0.2125,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "60ec4da780c255ae38c6b35eed3660d9d6e37f9f8de9b5973dca4d6c2deea089",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/cardboardBoxOpen.glb",
+      "source_sha256": "960da412564774c75e7b32f9af0100895e1edb877fc1e70dd34ee2422a2196d4",
+      "source_triangles": 60,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": "opened",
+      "target_triangles": null,
+      "triangles": 60,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 92
+    },
+    "chair-desk.mesh": {
+      "asset": "chair-desk",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.33495,
+        0.3143,
+        1.2152
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.33495,
+        -0.3143,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "ed6c15a34bf24540de5900fd5e132041bc61e8e2457382e84b1abb6d5a118055",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/chairDesk.glb",
+      "source_sha256": "46406619186034cbe92b19b79a5f1a8e3f442a17a70a7524ef2c0ad0f35095c6",
+      "source_triangles": 588,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 584,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 730
+    },
+    "chair.mesh": {
+      "asset": "chair",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.2,
+        0.2,
+        0.94
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.2,
+        -0.2,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "2028c395489401853e41aa240956b2bf927a3f8367d1c047b866c984dafe75bf",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/chair.glb",
+      "source_sha256": "c8a11eec93e89e31250ba91afc1b8d56c3bec7ae86640fd1239f595ff4180883",
+      "source_triangles": 170,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 162,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 229
+    },
+    "crate.mesh": {
+      "asset": "crate",
+      "author": "Quaternius",
+      "bounds_max_simulation_xyz_m": [
+        0.24035,
+        0.24037,
+        0.48069
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.24035,
+        -0.24037,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "727d637e9d127bcf267dcc48a06abdcf4b568d8f60f1b89f9feb717ddf396950",
+      "scale": 3.0,
+      "source": "poly-pizza/crate.glb",
+      "source_sha256": "57031e1b6102dd9bec3e27e966655588d18c3fdede34232a6b6497ce57030a85",
+      "source_triangles": 784,
+      "source_version": null,
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 600,
+      "triangles": 598,
+      "url": "https://poly.pizza/m/3OEFd1AWfa",
+      "variant_edit": null,
+      "vertices": 945
+    },
+    "desk-closed.mesh": {
+      "asset": "desk",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.73448,
+        0.3923,
+        0.76882
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.73448,
+        -0.3923,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "4bd7ef1afb8628aca2afe6a4a5059c7e706fa1f67abccd4b6e848d1d9a610bb3",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/desk.glb",
+      "source_sha256": "0164fe828f028b321730fb8c74502e353583f751be74da1682d42fff7d3c5a42",
+      "source_triangles": 198,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": "closed",
+      "target_triangles": null,
+      "triangles": 193,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 308
+    },
+    "desk-opened.mesh": {
+      "asset": "desk",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.73448,
+        0.6123,
+        0.76882
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.73448,
+        -0.3923,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "0cc6b3d69f4c09bb01e39059eef84ed4f0c2401e0cb4982692cf7a86202a5711",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/desk.glb",
+      "source_sha256": "0164fe828f028b321730fb8c74502e353583f751be74da1682d42fff7d3c5a42",
+      "source_triangles": 198,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": "opened",
+      "target_triangles": null,
+      "triangles": 193,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": "desk-open",
+      "vertices": 308
+    },
+    "diagnostic-monitor.mesh": {
+      "asset": "diagnostic-monitor",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.105,
+        0.06,
+        0.279
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.105,
+        -0.06,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "1cbf8455ffbc7a5bba3a9f9076de42af6b9168edf129ce448ced55d3099678f2",
+      "scale": 0.001,
+      "source": "medical/kernelcad-source/diagnostic-monitor.kcad.ts",
+      "source_sha256": "4a59b77e17ce2670812cbaf238f021c42f5e17d3e4716ba300c54240429ebcca",
+      "source_triangles": 168,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 1200,
+      "triangles": 168,
+      "url": "https://kernelcad.com/catalog/medical/diagnostic-monitor/",
+      "variant_edit": null,
+      "vertices": 100
+    },
+    "first-aid-kit.mesh": {
+      "asset": "first-aid-kit",
+      "author": "Quaternius",
+      "bounds_max_simulation_xyz_m": [
+        0.18837,
+        0.0677,
+        0.25542
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.18837,
+        -0.0677,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "eeb4b9461cf5f4859f2585d19995d676f95b3a801f5bd1db6a7f5efc3c4cdb6f",
+      "scale": 0.2,
+      "source": "poly-pizza/first-aid-kit.glb",
+      "source_sha256": "6d665861ec5f79224ed1c99e5eb685015e053b3f73b1216def773a1afa9fd816",
+      "source_triangles": 268,
+      "source_version": null,
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 268,
+      "url": "https://poly.pizza/m/Hp80p6148W",
+      "variant_edit": null,
+      "vertices": 504
+    },
+    "hospital-bed.mesh": {
+      "asset": "hospital-bed",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.325,
+        0.988,
+        1.781
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.325,
+        -0.988,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "3c91d0f77686cbf2e0a91156e483b33cb79a3368a01044f2f8090fe43141c30f",
+      "scale": 0.0026,
+      "source": "medical/kernelcad-source/hospital-bed.kcad.ts",
+      "source_sha256": "d18b5b83987451ddf2df6dbb0f91b3525a8a395153ce6c6497fe2c59023f1f20",
+      "source_triangles": 288,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": -90,
+      "state": null,
+      "target_triangles": 1200,
+      "triangles": 288,
+      "url": "https://kernelcad.com/catalog/medical/hospital-bed/",
+      "variant_edit": null,
+      "vertices": 176
+    },
+    "iv-stand.mesh": {
+      "asset": "iv-stand",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.1372,
+        0.1372,
+        1.6744
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.1372,
+        -0.1372,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "7e61bb5380b4e0b593555d9fc40bcb3d70acabf76b185694e1789e6caa67cb7d",
+      "scale": 0.0014,
+      "source": "medical/kernelcad-source/iv-stand.kcad.ts",
+      "source_sha256": "5c94250f8ccc62456a065cbc24597f1e149db7aabfcc490940028acd670e0486",
+      "source_triangles": 228,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 1200,
+      "triangles": 228,
+      "url": "https://kernelcad.com/catalog/medical/iv-stand/",
+      "variant_edit": null,
+      "vertices": 136
+    },
+    "kitchen-cabinet.mesh": {
+      "asset": "kitchen-cabinet",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.43,
+        0.45,
+        0.9
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.43,
+        -0.45,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "bdf5488e668c06ff37e7629a20c5830484e2d7f20bdb116dff3df99fb2bf344d",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/kitchenCabinet.glb",
+      "source_sha256": "7238c57778935ae25db5e57e9f7af3ba7068c71b005ff7cfbff3b6f3b1a13200",
+      "source_triangles": 114,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 114,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 184
+    },
+    "kitchen-fridge-closed.mesh": {
+      "asset": "kitchen-fridge",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.43,
+        0.29193,
+        1.84
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.43,
+        -0.29193,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "8a63e7765e825a936da2adc6b58636650dba40471d17bb3ecee869c200107123",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/kitchenFridge.glb",
+      "source_sha256": "8af4f4bbb1b5525ad8226e97926a5af60fa8fb20a3cb74dbda5328a9d320dbab",
+      "source_triangles": 250,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": "closed",
+      "target_triangles": null,
+      "triangles": 238,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 364
+    },
+    "kitchen-fridge-opened.mesh": {
+      "asset": "kitchen-fridge",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.43,
+        0.96185,
+        1.84
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.62837,
+        -0.29193,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "a8a76804cf0713072a727dbc5cf668dfc3c9fde87138c589df0327f7aa185622",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/kitchenFridge.glb",
+      "source_sha256": "8af4f4bbb1b5525ad8226e97926a5af60fa8fb20a3cb74dbda5328a9d320dbab",
+      "source_triangles": 250,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": "opened",
+      "target_triangles": null,
+      "triangles": 238,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": "fridge-open",
+      "vertices": 364
+    },
+    "kitchen-sink.mesh": {
+      "asset": "kitchen-sink",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.43,
+        0.45,
+        0.98
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.43,
+        -0.45,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "9d291b7db8841229434d28e69d7c813364e9a8d73d27af44566e77ed8370f48b",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/kitchenSink.glb",
+      "source_sha256": "7b9610277d71f00dcf1bba49cf4d98d77ce5177e84bf76c7da2f8893e542f743",
+      "source_triangles": 318,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 316,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 430
+    },
+    "kitchen-stove-electric.mesh": {
+      "asset": "kitchen-stove-electric",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.43,
+        0.45,
+        0.9
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.43,
+        -0.45,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "aae2bb7c1c02bbb174947db4747d0c7d7a29a178a26c4db524e1c65a957bcf84",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/kitchenStoveElectric.glb",
+      "source_sha256": "cf646b960d7dfed1fac27898ff6de1f0671cfa33beecbed06ead7d0684517392",
+      "source_triangles": 338,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 336,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 440
+    },
+    "lounge-sofa.mesh": {
+      "asset": "lounge-sofa",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.98,
+        0.41,
+        0.92
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.98,
+        -0.41,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "72cd984781a251da272c1b9ba36d5b1978f3aba83e81eabcd9a679b08c8f6210",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/loungeSofa.glb",
+      "source_sha256": "1886b811c0d3ad0d8525a4fd43adf4112c497c8e0ed906f06877ca3517f4c7dd",
+      "source_triangles": 128,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 123,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 210
+    },
+    "medical-cart.mesh": {
+      "asset": "medical-cart",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.273,
+        0.195,
+        0.949
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.273,
+        -0.195,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "4653f570603ecc99847c3db9ae34ec2e01db8fa66b4787eae7c1ef0838e0dc8f",
+      "scale": 0.0013,
+      "source": "medical/kernelcad-source/medical-cart.kcad.ts",
+      "source_sha256": "ffb33692bfa745c3165824dcf2a63d40990eb3cf9d78ab2c4c79546957389929",
+      "source_triangles": 272,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 1200,
+      "triangles": 272,
+      "url": "https://kernelcad.com/catalog/medical/medical-cart/",
+      "variant_edit": null,
+      "vertices": 160
+    },
+    "police-car.mesh": {
+      "asset": "police-car",
+      "author": "Quaternius",
+      "bounds_max_simulation_xyz_m": [
+        0.8817,
+        1.86615,
+        1.23989
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.8817,
+        -1.86615,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "f9e4d88405a3d61bbef34f13a69c075f3593233e903f3dfa192e060f11be1772",
+      "scale": 1.0,
+      "source": "poly-pizza/police-car.glb",
+      "source_sha256": "2ad6705f58bae2acf806eddb28acd9fc2ff6dc65a726575be5c180631b3132d0",
+      "source_triangles": 3232,
+      "source_version": null,
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 1150,
+      "triangles": 1154,
+      "url": "https://poly.pizza/m/BwwnUrWGmV",
+      "variant_edit": null,
+      "vertices": 1892
+    },
+    "shopping-cart.mesh": {
+      "asset": "shopping-cart",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.29113,
+        0.48764,
+        1.04212
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.29113,
+        -0.48764,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "ee0189685a28405e21a199c56f76e256efc4e374fcd34c2989babe81777da815",
+      "scale": 0.001,
+      "source": "retail/shopping-cart.kcad.ts",
+      "source_sha256": "cba358c59ea17ecd7338223039a67acc41a16b8dd5ce1738abe46dd1983a4ca3",
+      "source_triangles": 15596,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": 1200,
+      "triangles": 2238,
+      "url": "https://kernelcad.com/catalog/retail-store/shopping-cart/",
+      "variant_edit": null,
+      "vertices": 2922
+    },
+    "table-coffee.mesh": {
+      "asset": "table-coffee",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.661,
+        0.4,
+        0.46
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.661,
+        -0.4,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "b8e3a8a3d4352d80b869dbafb2a910cf52e13b86bdbd1beab2c188c978e5a257",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/tableCoffee.glb",
+      "source_sha256": "e38bea760fbd514efbb75528d09b4752c91af44677bbb97e6d4386c263525179",
+      "source_triangles": 124,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 116,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 168
+    },
+    "table.mesh": {
+      "asset": "table",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.84149,
+        0.44737,
+        0.65347
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.84149,
+        -0.44737,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "1a88e3577cb4e0516665a32515121768728a7a50ee84a32c40ccad4a39027ef5",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/table.glb",
+      "source_sha256": "ff1a94498d023957f4bc3ff6f55a7a82977d336dbf01a573b3364f03afe5ff61",
+      "source_triangles": 120,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 110,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 168
+    },
+    "television-vintage.mesh": {
+      "asset": "television-vintage",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.41,
+        0.27,
+        0.54
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.41,
+        -0.27,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "fabf51c2dbbbb8cbcf00f02404f16c77ff4d36df4af649a468d770cd22f3356a",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/televisionVintage.glb",
+      "source_sha256": "eb144cc8fb1e7f761e3665226e4266c8868679421d21d6548f24d2abad7c67cf",
+      "source_triangles": 280,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 280,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 336
+    },
+    "toilet.mesh": {
+      "asset": "toilet",
+      "author": "Kenney",
+      "bounds_max_simulation_xyz_m": [
+        0.31255,
+        0.47718,
+        0.90193
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.31255,
+        -0.47718,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "7e993c529ccff328d711b404dce5fdc93acf75e193720c4872b62c37f1c1cd94",
+      "scale": 2.0,
+      "source": "kenney/furniture-kit/Models/GLTF format/toilet.glb",
+      "source_sha256": "16165cfd03c56c2cb443b800570810a22ef770f65e7a468f6761d9dc14eaaeae",
+      "source_triangles": 230,
+      "source_version": "Furniture Kit 2.0",
+      "source_yaw_degrees": 0,
+      "state": null,
+      "target_triangles": null,
+      "triangles": 223,
+      "url": "https://kenney.nl/assets/furniture-kit",
+      "variant_edit": null,
+      "vertices": 338
+    },
+    "wheelchair.mesh": {
+      "asset": "wheelchair",
+      "author": "kernelCAD",
+      "bounds_max_simulation_xyz_m": [
+        0.361,
+        0.2135,
+        0.87
+      ],
+      "bounds_min_simulation_xyz_m": [
+        -0.361,
+        -0.2135,
+        0.0
+      ],
+      "license": "CC0-1.0",
+      "mesh_sha256": "cdf5e32848cea79326ba1cbf162ad50d0dc58bbab3514fa471e7e5d3a8adb8a5",
+      "scale": 0.001,
+      "source": "medical/kernelcad-source/wheelchair.kcad.ts",
+      "source_sha256": "d8f6817830df5eb0ace29ab9d6ce9afec6d74c184437b5faae25dfa8bf9f5c32",
+      "source_triangles": 316,
+      "source_version": "fbcae53585f30ab3cbc8f22f1487a40025ca3444",
+      "source_yaw_degrees": -90,
+      "state": null,
+      "target_triangles": 1200,
+      "triangles": 316,
+      "url": "https://kernelcad.com/catalog/medical/wheelchair/",
+      "variant_edit": null,
+      "vertices": 192
+    }
+  }
+}

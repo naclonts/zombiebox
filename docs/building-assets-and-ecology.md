@@ -67,9 +67,9 @@ Because `WorldVertex` (48 bytes) intentionally carries **no UVs** and `world.wgs
 
 ## 4. Asset creation pipeline & 60 Hz mobile budgets
 
-1. **Tier 1 — Parametric Rust Furniture Kit (`render3d/src/mesh/kit.rs`):** Composable box/bevel/slat/tube helpers for ~70% of rectilinear props, stripping unseen `NEG_Y` bottom and wall-mounted back faces (**~30% triangle reduction**).
-2. **Tier 2 — Style-Palette Recipes:** Props reference semantic slots (`WoodPrimary`, `MetalTrim`, `FabricMain`, `ClinicalSurface`, `Emissive`) resolved per `BuildingStyle` + `style_seed`, turning 1 mesh into residential, office, hospital, or grunge variants.
-3. **Tier 3 — Indexed Python-to-Rust/GLB Generators (`scripts/generate_*_mesh.py`):** For organic/curved hero meshes (zombie rigs/attachments, bloaters, porcelain fixtures, cruisers/ambulances, Ferris wheel gondolas). Emits **indexed `(POINTS, FACES)` tables** like `motorcycle.rs` instead of unindexed triangle literals (**~65% smaller source & faster compiles**).
+1. **Imported prototypes.** Use Kenney Furniture Kit for residential and office staples and review individual medical, retail, and exterior candidates. Record each source, author, license, and source filename. Favor realistic proportions and subdued colors at gameplay zoom. [Prop asset catalog](prop-asset-catalog.md)
+2. **Parametric modules and variants.** Use `mesh/kit.rs` for geometry driven by room dimensions or layout, including checkout lanes, shelf runs, privacy curtains, rugs, and cell bars. Reuse grocery shelving for pharmacies with different contents. Adapt doors and drawers from the base mesh where possible and use the same pivot for both states.
+3. **Shared palette and mesh library.** The offline converter bakes selected GLBs and kernelCAD models into indexed prototypes. Phase 2 will share imported and procedural prototypes through `PropMeshLibrary` and resolve materials through semantic slots such as `WoodPrimary`, `MetalTrim`, `FabricMain`, and `Emissive`. Core `PropDef` owns gameplay bounds, cover, attachment, and interaction. [Offline conversion](phase2-implementation-plan.md#offline-prototype-conversion)
 
 | Render path | Batching strategy | Mobile target (modest Android @ 60 Hz) |
 | --- | --- | --- |
